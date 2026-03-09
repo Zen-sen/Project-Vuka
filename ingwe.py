@@ -8,10 +8,22 @@ import os
 import sys
 
 # =======================================================
-#    PROJECT VUKA — AGENT INGWE  v3.0
+#    PROJECT VUKA — AGENT INGWE  v3.1
 #    The leopard does not miss because it does not rush.
 #    "Ingwe ayidlozi ngoba ayiphuthi isikhathi."
 # =======================================================
+# CHANGELOG v3.1 — MULTI-SYMBOL + MULTI-INSTANCE:
+#   SYMBOL and STRATEGY now passed as command line arguments.
+#   Run multiple instances simultaneously in separate terminals:
+#     py ingwe.py EURUSD INGWE
+#     py ingwe.py EURUSD SILVER_BULLET
+#     py ingwe.py GBPUSD SILVER_BULLET
+#   Each instance has its own log and session file:
+#     trades_EURUSD_INGWE.json
+#     sessions_EURUSD_INGWE.json  etc.
+#   Supported symbols: EURUSD, GBPUSD, USDJPY
+#   Exness cent mapping: EURUSDc, GBPUSDc, USDJPYc
+#
 # CHANGELOG v3.0 — SILVER BULLET MODE:
 #
 #   NEW: STRATEGY switch at top of config.
@@ -53,22 +65,46 @@ import sys
 # =======================================================
 
 # -------------------------------------------------------
-# ── STRATEGY SELECTOR ───────────────────────────────────
-# Pass strategy as command line argument — no file editing needed.
-#   py ingwe.py INGWE
-#   py ingwe.py SILVER_BULLET
-# Defaults to INGWE if no argument given.
+# ── STRATEGY & SYMBOL SELECTOR ──────────────────────────
+# Pass both as command line arguments — no file editing needed.
+#   py ingwe.py EURUSD INGWE
+#   py ingwe.py EURUSD SILVER_BULLET
+#   py ingwe.py GBPUSD SILVER_BULLET
+#   py ingwe.py GBPUSD INGWE
+# Defaults to EURUSD INGWE if no arguments given.
 # -------------------------------------------------------
 _valid_strategies = ("INGWE", "SILVER_BULLET")
-STRATEGY = sys.argv[1].upper() if len(sys.argv) > 1 else "INGWE"
-if STRATEGY not in _valid_strategies:
-    print(f"❌ Unknown strategy '{STRATEGY}'. Use: INGWE or SILVER_BULLET")
+_valid_symbols    = ("EURUSD", "GBPUSD", "USDJPY")
+
+_arg_symbol   = sys.argv[1].upper() if len(sys.argv) > 1 else "EURUSD"
+_arg_strategy = sys.argv[2].upper() if len(sys.argv) > 2 else "INGWE"
+
+if _arg_symbol not in _valid_symbols:
+    print(f"❌ Unknown symbol '{_arg_symbol}'. Use: {', '.join(_valid_symbols)}")
     sys.exit(1)
+if _arg_strategy not in _valid_strategies:
+    print(f"❌ Unknown strategy '{_arg_strategy}'. Use: {', '.join(_valid_strategies)}")
+    sys.exit(1)
+
+STRATEGY = _arg_strategy
+
+# Exness cent account symbol mapping
+_SYMBOL_MAP = {
+    "EURUSD": "EURUSDc",
+    "GBPUSD": "GBPUSDc",
+    "USDJPY": "USDJPYc",
+}
+SYMBOL = _SYMBOL_MAP[_arg_symbol]
+
+# Per-instance files — prevents sessions/logs from colliding
+_instance_tag = f"{_arg_symbol}_{STRATEGY}"
+LOG_FILE      = f"trades_{_instance_tag}.json"
+SESSIONS_FILE = f"sessions_{_instance_tag}.json"
 
 # -------------------------------------------------------
 # CONFIGURATION
 # -------------------------------------------------------
-SYMBOL              = "EURUSDc"
+# SYMBOL, LOG_FILE, SESSIONS_FILE set dynamically above.
 TIMEFRAME           = mt5.TIMEFRAME_M15
 RISK_PERCENT        = 1.5
 RISK_REWARD_RATIO   = 3.0
@@ -80,8 +116,6 @@ MIN_SPREAD_PIPS     = 0.0002
 MAX_DAILY_LOSS      = 50.0
 MAX_DRAWDOWN_PCT    = 10.0
 HARD_LOT_CAP        = 0.20
-LOG_FILE            = "trades.json"
-SESSIONS_FILE       = "sessions_today.json"
 SCAN_INTERVAL_SEC   = 900
 DATA_STALE_MINUTES  = 30
 MT5_RETRY_ATTEMPTS  = 3
@@ -588,7 +622,7 @@ def place_trade(direction, entry, sl, tp, lot_size):
         "tp":           tp,
         "deviation":    10,
         "magic":        234000,
-        "comment":      f"Ingwe v3.0 {STRATEGY[:2]} — Vuka",
+        "comment":      f"Ingwe v3.1 {_instance_tag}",
         "type_time":    mt5.ORDER_TIME_GTC,
         "type_filling": mt5.ORDER_FILLING_FOK,
     })
@@ -885,15 +919,18 @@ if __name__ == "__main__":
 
     summer = is_eu_summer()
     print("=" * 60)
-    print("   PROJECT VUKA — AGENT INGWE  v3.0")
+    print("   PROJECT VUKA — AGENT INGWE  v3.1")
     print("   The leopard does not miss because it does not rush.")
     print("=" * 60)
     print()
+    print(f"   Symbol:         {SYMBOL}  ({_arg_symbol})")
+    print(f"   Strategy:       {STRATEGY}")
+    print(f"   Instance:       {_instance_tag}")
     print(f"   Location:       South Africa (SAST = UTC+2, no DST)")
     print(f"   Broker:         Exness MT5  (USC cent account)")
-    print(f"   Strategy:       {STRATEGY}")
     print(f"   Market mode:    {'SUMMER (EU DST active)' if summer else 'WINTER (EU standard time)'}")
     print(f"   Exness server:  UTC+{get_exness_server_offset()}")
+    print(f"   Log file:       {LOG_FILE}")
     print()
 
     if STRATEGY == "SILVER_BULLET":
@@ -923,7 +960,7 @@ if __name__ == "__main__":
     log(f"Risk per trade:         {RISK_PERCENT}%")
     log(f"Hard lot cap:           {HARD_LOT_CAP} lots")
     log(f"Scan interval:          {SCAN_INTERVAL_SEC // 60} minutes")
-    log(f"Ingwe is awake. Hunting in {STRATEGY} mode.\n")
+    log(f"Ingwe is awake. [{_instance_tag}] hunting begins.\n")
 
     try:
         while True:
