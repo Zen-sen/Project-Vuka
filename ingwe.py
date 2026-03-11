@@ -6,12 +6,113 @@ import time
 import json
 import os
 import sys
+import hashlib
 
 # =======================================================
-#    PROJECT VUKA — AGENT INGWE  v3.1
+#    PROJECT VUKA — AGENT INGWE  v3.6
 #    The leopard does not miss because it does not rush.
 #    "Ingwe ayidlozi ngoba ayiphuthi isikhathi."
 # =======================================================
+# CHANGELOG v3.6 — THIRD CODE REVIEW HARDENING:
+#
+#   FIX 1: detect_fvg() docstring corrected.
+#   Still referenced "Ingwe uses max_age=0" after v3.4 changed it to 20.
+#   Now correctly documents max_age=20 (5hrs) for Ingwe mode.
+#   max_age=0 retained as default parameter for testing only.
+#
+#   FIX 2: Magic number now deterministic via SHA-256.
+#   Python's hash() randomises per process restart (Python 3.3+).
+#   Same instance tag could produce different magic numbers after restart.
+#   Fixed: hashlib.sha256 on instance tag → stable int in 234000-244000.
+#   _derive_magic() function introduced — documented, testable, reusable.
+#   _instance_magic computed once at startup, used in place_trade().
+#
+#   FIX 3: Magic number displayed in boot screen.
+#   Boot now shows: "Magic number: 237492 (SHA-256, stable across restarts)"
+#   Allows immediate verification in MT5 terminal without reading code.
+#
+# CHANGELOG v3.5 — SECOND CODE REVIEW HARDENING:
+#
+#   FIX 1: Removed unused fcntl import.
+#   The atomic write strategy uses os.replace() universally —
+#   cross-platform, no fcntl needed. Dead import removed cleanly.
+#
+#   FIX 2: log_trade() now uses atomic write pattern.
+#   Same write-then-rename approach as save_sessions().
+#   Trade log corruption during simultaneous writes or crashes
+#   is now prevented. Consistency across all file I/O.
+#
+#   FIX 3: Magic number now unique per instance.
+#   Was hardcoded 234000 for all instances.
+#   Now derived: abs(hash(_instance_tag)) % 10000 + 234000
+#   Each instance (EURUSD_INGWE, GBPUSD_SB etc.) gets a unique
+#   magic number in the 234000-244000 range. All trades traceable
+#   to their originating instance directly in MT5 terminal.
+#
+#   FIX 4: Extended config validation.
+#   Added ATR_PERIOD >= 5 (minimum for meaningful ATR calculation).
+#   Added DATA_STALE_MINUTES >= scan interval (stale threshold must
+#   exceed the scan cycle or every scan will flag stale data).
+#
+# CHANGELOG v3.4 — CODE REVIEW HARDENING:
+#
+#   FIX 1: Dead zone guard now universal (was INGWE-only).
+#   Silver Bullet windows don't overlap the dead zone by design,
+#   but DST edge cases could slip through. Now both strategies
+#   are blocked unconditionally during 13:00-16:00 (winter) /
+#   12:00-15:00 (summer) SAST. Two independent guards remain:
+#   the extended blackout AND is_in_dead_zone().
+#
+#   FIX 2: Ingwe FVG lookback capped at 20 candles (5 hours).
+#   Previously max_age=0 meant no age limit — Ingwe could trade
+#   on FVGs from hours ago during ranging, low-volatility markets.
+#   Silver Bullet: max_age=4 (1hr window). Ingwe: max_age=20 (5hr).
+#
+#   FIX 3: Session persistence now uses atomic write.
+#   save_sessions() writes to .tmp file then os.replace() renames
+#   atomically. Prevents partial reads if instances write simultaneously.
+#   os.replace() is atomic on same-filesystem on both Windows and Linux.
+#
+#   FIX 4: Config validation at boot.
+#   RISK_PERCENT, HARD_LOT_CAP, RISK_REWARD_RATIO, MAX_DAILY_LOSS,
+#   MAX_DRAWDOWN_PCT, SCAN_INTERVAL_SEC all validated before MT5 init.
+#   Invalid config exits immediately with a clear error message.
+#
+# CHANGELOG v3.3 — SESSION ARCHITECTURE FIX:
+#
+#   BUG 1: London Close was a separate killzone (17-19) overlapping
+#   NY Open (16-19) entirely. sessions_traded_today uses session names
+#   as keys — "New York Open" and "London Close" are different keys,
+#   so Ingwe could fire TWICE in the same hour block under two names.
+#   Fix: London Close removed. Three clean sessions only:
+#     Asian (02-06), London Open (10-13), New York Open (16-19).
+#
+#   BUG 2: Dead zone 13:00-16:00 SAST had no explicit guard.
+#   The news blackout only started at 14:30 — leaving 13:00-14:30
+#   unprotected. A trade fired at 14:09 on 2026-03-10 in this gap.
+#   Fix 1: Blackout now covers full dead zone from 13:00 (not 14:30).
+#   Fix 2: is_in_dead_zone() added as hard backstop secondary guard.
+#     Winter: blocks 13:00-16:00 SAST unconditionally.
+#     Summer: blocks 12:00-15:00 SAST unconditionally.
+#   Two independent guards — if one fails, the other catches it.
+#
+# CHANGELOG v3.2 — ORDER FILLING + STALE FVG FIX:
+#
+#   BUG 1: ORDER_FILLING_FOK not supported on Exness cent accounts.
+#   order_send() returned None — trade never reached broker.
+#   Fix: ORDER_FILLING_RETURN (Exness default, always supported).
+#
+#   BUG 2: Silver Bullet was evaluating FVGs from hours ago.
+#   A FVG at 1.15892 formed mid-morning was used for a 21:00 entry.
+#   Silver Bullet requires the FVG to form WITHIN the active window.
+#   Fix: detect_fvg(max_age=4) — only FVGs from last 4 candles (1hr).
+#   Ingwe mode: max_age=0 (unchanged — uses last 3 FVGs from history).
+#
+#   BUG 3: NY time display in boot screen was wrong.
+#   Used offset -5 (UTC to NY) instead of -7 (SAST to NY).
+#   SAST = UTC+2, NY EST = UTC-5 → SAST to NY = -7 winter, -6 summer.
+#   SB_Window3 was showing 16:00 NY instead of correct 14:00 NY.
+#
 # CHANGELOG v3.1 — MULTI-SYMBOL + MULTI-INSTANCE:
 #   SYMBOL and STRATEGY now passed as command line arguments.
 #   Run multiple instances simultaneously in separate terminals:
@@ -97,9 +198,20 @@ _SYMBOL_MAP = {
 SYMBOL = _SYMBOL_MAP[_arg_symbol]
 
 # Per-instance files — prevents sessions/logs from colliding
-_instance_tag = f"{_arg_symbol}_{STRATEGY}"
-LOG_FILE      = f"trades_{_instance_tag}.json"
-SESSIONS_FILE = f"sessions_{_instance_tag}.json"
+_instance_tag   = f"{_arg_symbol}_{STRATEGY}"
+LOG_FILE        = f"trades_{_instance_tag}.json"
+SESSIONS_FILE   = f"sessions_{_instance_tag}.json"
+
+def _derive_magic(tag: str) -> int:
+    """
+    Deterministic magic number from instance tag using SHA-256.
+    Stable across restarts — hash() randomises per process in Python 3.3+.
+    Range: 234000-244000. Each instance tag maps to exactly one value.
+    """
+    digest = hashlib.sha256(tag.encode()).hexdigest()
+    return int(digest[:8], 16) % 10000 + 234000
+
+_instance_magic = _derive_magic(_instance_tag)
 
 # -------------------------------------------------------
 # CONFIGURATION
@@ -129,28 +241,31 @@ SA_OFFSET = 2
 
 # -------------------------------------------------------
 # INGWE — KILLZONES (SAST)
+# London Close removed — fully contained within NY Open (17-19 ⊂ 16-19).
+# Keeping it as a separate session allowed double-trading in the same hour
+# block under different session names. Three clean sessions only.
 # -------------------------------------------------------
 KILLZONES_WINTER = {
     "Asian":         (2,  6),
     "London Open":   (10, 13),
     "New York Open": (16, 19),
-    "London Close":  (17, 19),
 }
 KILLZONES_SUMMER = {
     "Asian":         (2,  6),
     "London Open":   (9,  12),
     "New York Open": (15, 18),
-    "London Close":  (16, 18),
 }
 
 # Ingwe news blackouts — 15min runway before each session
+# Dead zone 13:00-16:00 (winter) / 12:00-15:00 (summer) is now
+# explicitly covered by the blackout extending to session start.
 INGWE_BLACKOUTS_WINTER = [
     (8,  30,  9, 45),   # London Open starts 10:00
-    (14, 30, 15, 45),   # NY Open starts 16:00
+    (13,  0, 15, 45),   # Dead zone + runway: 13:00-15:45, NY Open starts 16:00
 ]
 INGWE_BLACKOUTS_SUMMER = [
     (7,  30,  8, 45),   # London Open starts 09:00
-    (13, 30, 14, 45),   # NY Open starts 15:00
+    (12,  0, 14, 45),   # Dead zone + runway: 12:00-14:45, NY Open starts 15:00
 ]
 
 # -------------------------------------------------------
@@ -313,11 +428,19 @@ def load_sessions() -> set:
 
 
 def save_sessions(sessions: set):
-    with open(SESSIONS_FILE, "w") as f:
-        json.dump({
-            "date":     datetime.now().strftime("%Y-%m-%d"),
-            "sessions": list(sessions)
-        }, f, indent=2)
+    """
+    Atomic write — write to temp file then rename.
+    Prevents partial reads if two instances write simultaneously.
+    On Windows rename() is atomic for same-drive operations.
+    """
+    payload = json.dumps({
+        "date":     datetime.now().strftime("%Y-%m-%d"),
+        "sessions": list(sessions)
+    }, indent=2)
+    tmp = SESSIONS_FILE + ".tmp"
+    with open(tmp, "w") as f:
+        f.write(payload)
+    os.replace(tmp, SESSIONS_FILE)  # atomic on same filesystem
 
 
 # =======================================================
@@ -414,14 +537,19 @@ def check_displacement_validity(c1: pd.Series, c2: pd.Series) -> bool:
     return (c2["high"] - c2["low"]) > (c1_range * 1.5)
 
 
-def detect_fvg(df: pd.DataFrame) -> list:
+def detect_fvg(df: pd.DataFrame, max_age: int = 0) -> list:
     """
     Detects Fair Value Gaps and calculates fvg_50 (50% midpoint).
-    fvg_50 is the Silver Bullet entry level — always calculated,
-    used by SB mode, available to Ingwe mode for reference.
+    fvg_50 is the Silver Bullet entry level.
+
+    max_age: if > 0, only return FVGs formed within the last max_age candles.
+             Silver Bullet uses max_age=4 (1 hour on M15) — window-fresh FVGs only.
+             Ingwe uses max_age=20 (5 hours — avoids ancient FVGs in ranging markets).
+             max_age=0 means no limit (not used in production — kept for testing only).
     """
     fvgs = []
-    for i in range(2, len(df) - 1):
+    start = max(2, len(df) - max_age - 1) if max_age > 0 else 2
+    for i in range(start, len(df) - 1):
         c1, c2, c3 = df.iloc[i-2], df.iloc[i-1], df.iloc[i]
         if not check_displacement_validity(c1, c2):
             continue
@@ -485,6 +613,20 @@ def get_current_session() -> str | None:
         if s <= hour < e:
             return session
     return None
+
+
+def is_in_dead_zone() -> bool:
+    """
+    Hard backstop for the gap between London Open close and NY Open start.
+    Winter: 13:00-16:00 SAST — nothing should trade here. Ever.
+    Summer: 12:00-15:00 SAST — same.
+    This is a secondary guard in case the blackout logic has any edge case.
+    The leopard does not hunt in no-man's land.
+    """
+    hour = now_sast().hour
+    if is_eu_summer():
+        return 12 <= hour < 15
+    return 13 <= hour < 16
 
 
 def get_current_sb_window() -> str | None:
@@ -606,8 +748,10 @@ def log_trade(direction, entry, sl, tp, result, lot_size, session):
         "retcode":     result.retcode,
         "comment":     getattr(result, "comment", "")
     })
-    with open(LOG_FILE, "w") as f:
+    tmp = LOG_FILE + ".tmp"
+    with open(tmp, "w") as f:
         json.dump(trade_log, f, indent=2)
+    os.replace(tmp, LOG_FILE)  # atomic — same pattern as save_sessions()
     log(f"Trade logged → {LOG_FILE}", "TRADE")
 
 
@@ -621,10 +765,10 @@ def place_trade(direction, entry, sl, tp, lot_size):
         "sl":           sl,
         "tp":           tp,
         "deviation":    10,
-        "magic":        234000,
-        "comment":      f"Ingwe v3.1 {_instance_tag}",
+        "magic":        _instance_magic,  # deterministic per instance via SHA-256
+        "comment":      f"Ingwe v3.6 {_instance_tag}",
         "type_time":    mt5.ORDER_TIME_GTC,
-        "type_filling": mt5.ORDER_FILLING_FOK,
+        "type_filling": mt5.ORDER_FILLING_RETURN,  # Exness default — FOK not supported
     })
 
 
@@ -845,6 +989,16 @@ def run_agent():
         log("News blackout — Ingwe waits...")
         return
 
+    # GATE 4b: Dead zone — universal guard, both strategies
+    # No hunt happens in the gap between London close and NY open.
+    # Silver Bullet windows don't overlap this zone by design,
+    # but DST edge cases or window calculation errors could slip through.
+    # This is the hard backstop that catches both strategies.
+    if is_in_dead_zone():
+        dz = "13:00-16:00" if not is_eu_summer() else "12:00-15:00"
+        log(f"Dead zone ({dz} SAST) — no strategy hunts here. Ingwe waits.")
+        return
+
     daily_pnl = get_daily_pnl()
     log(f"Daily P&L: {daily_pnl:.2f} USC")
     if daily_pnl <= -MAX_DAILY_LOSS:
@@ -885,9 +1039,13 @@ def run_agent():
     log(f"SWEEP: {sweep} at {sweep_level:.5f}")
 
     # ── FVG ──────────────────────────────────────────────
-    fvgs = detect_fvg(df)
+    # Silver Bullet: max_age=4 (1hr — must form within active window)
+    # Ingwe:         max_age=20 (5hrs — avoids ancient FVGs in ranging markets)
+    fvg_lookback = 4 if STRATEGY == "SILVER_BULLET" else 20
+    fvgs = detect_fvg(df, max_age=fvg_lookback)
     if not fvgs:
-        log("No FVG confirmed. Ingwe waits...")
+        label = "within current window" if STRATEGY == "SILVER_BULLET" else "within 5hr lookback"
+        log(f"No FVG {label}. Ingwe waits...")
         return
 
     # ── TICK ─────────────────────────────────────────────
@@ -917,15 +1075,44 @@ def run_agent():
 
 if __name__ == "__main__":
 
+    # ── CONFIG VALIDATION ────────────────────────────────
+    _errors = []
+    if not (0 < RISK_PERCENT <= 5.0):
+        _errors.append(f"RISK_PERCENT {RISK_PERCENT} out of range (0-5%)")
+    if not (0.01 <= HARD_LOT_CAP <= 1.0):
+        _errors.append(f"HARD_LOT_CAP {HARD_LOT_CAP} out of range (0.01-1.0)")
+    if RISK_REWARD_RATIO < 1.0:
+        _errors.append(f"RISK_REWARD_RATIO {RISK_REWARD_RATIO} must be >= 1.0")
+    if MAX_DAILY_LOSS <= 0:
+        _errors.append(f"MAX_DAILY_LOSS {MAX_DAILY_LOSS} must be positive")
+    if MAX_DRAWDOWN_PCT <= 0 or MAX_DRAWDOWN_PCT > 50:
+        _errors.append(f"MAX_DRAWDOWN_PCT {MAX_DRAWDOWN_PCT} out of range (0-50%)")
+    if SCAN_INTERVAL_SEC < 60:
+        _errors.append(f"SCAN_INTERVAL_SEC {SCAN_INTERVAL_SEC} dangerously low (min 60s)")
+    if ATR_PERIOD < 5:
+        _errors.append(f"ATR_PERIOD {ATR_PERIOD} too low — minimum 5 for meaningful ATR")
+    if DATA_STALE_MINUTES < SCAN_INTERVAL_SEC / 60:
+        _errors.append(
+            f"DATA_STALE_MINUTES ({DATA_STALE_MINUTES}) must be >= scan interval "
+            f"({SCAN_INTERVAL_SEC/60:.0f} min) — stale threshold shorter than scan cycle"
+        )
+    if _errors:
+        print("🔴 CONFIG VALIDATION FAILED:")
+        for e in _errors:
+            print(f"   • {e}")
+        sys.exit(1)
+    # ─────────────────────────────────────────────────────
+
     summer = is_eu_summer()
     print("=" * 60)
-    print("   PROJECT VUKA — AGENT INGWE  v3.1")
+    print("   PROJECT VUKA — AGENT INGWE  v3.6")
     print("   The leopard does not miss because it does not rush.")
     print("=" * 60)
     print()
     print(f"   Symbol:         {SYMBOL}  ({_arg_symbol})")
     print(f"   Strategy:       {STRATEGY}")
     print(f"   Instance:       {_instance_tag}")
+    print(f"   Magic number:   {_instance_magic}  (SHA-256, stable across restarts)")
     print(f"   Location:       South Africa (SAST = UTC+2, no DST)")
     print(f"   Broker:         Exness MT5  (USC cent account)")
     print(f"   Market mode:    {'SUMMER (EU DST active)' if summer else 'WINTER (EU standard time)'}")
@@ -936,8 +1123,7 @@ if __name__ == "__main__":
     if STRATEGY == "SILVER_BULLET":
         print("   ACTIVE SILVER BULLET WINDOWS (SAST):")
         for name, (s, e) in get_active_sb_windows().items():
-            # show the NY equivalent
-            ny_offset = -5 if not summer else -4
+            ny_offset = -6 if summer else -7   # SAST(UTC+2) → NY: -7 winter, -6 summer
             ny_s = (s + ny_offset) % 24
             ny_e = (e + ny_offset) % 24
             print(f"     {name:<14} {s:02d}:00–{e:02d}:00 SAST   ({ny_s:02d}:00–{ny_e:02d}:00 NY)")
