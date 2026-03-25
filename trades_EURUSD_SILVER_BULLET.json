@@ -1,0 +1,16 @@
+[
+  {
+    "time": "2026-03-24 10:26:06",
+    "sast": "2026-03-24 10:26:06",
+    "strategy": "SILVER_BULLET",
+    "market_mode": "winter",
+    "session": "SB_Window1",
+    "direction": "BUY",
+    "entry": 1.15941,
+    "sl": 1.15822,
+    "tp": 1.16298,
+    "lot_size": 0.2,
+    "retcode": 10009,
+    "comment": "Ingwe_EURUSD_SIL"
+  }
+]
