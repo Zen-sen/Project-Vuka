@@ -152,10 +152,16 @@ def in_kill_zone(candle_time: str, sessions: list) -> str | None:
     return None
 
 
-def simulate_ingwe(candles: list, config: dict) -> list:
+def simulate_ingwe(candles: list, config: dict, strategy: str = "INGWE") -> list:
     trades = []
     balance = config["initial_balance"]
     daily_pnl = {}
+
+    strategy_params = {
+        "INGWE": {"fvg_chance": 0.65, "ob_chance": 0.55, "base_wr": 0.71, "sl_pips": (8, 20)},
+        "SILVER_BULLET": {"fvg_chance": 0.50, "ob_chance": 0.40, "base_wr": 0.65, "sl_pips": (10, 25)},
+    }
+    params = strategy_params.get(strategy, strategy_params["INGWE"])
 
     i = 0
     while i < len(candles) - 4:
@@ -178,8 +184,8 @@ def simulate_ingwe(candles: list, config: dict) -> list:
             i += 1
             continue
 
-        fvg_confirmed = random.random() > 0.35
-        ob_present = random.random() > 0.45
+        fvg_confirmed = random.random() > (1 - params["fvg_chance"])
+        ob_present = random.random() > (1 - params["ob_chance"])
 
         if not fvg_confirmed:
             i += 1
@@ -187,14 +193,14 @@ def simulate_ingwe(candles: list, config: dict) -> list:
 
         direction = "BUY" if random.random() > 0.5 else "SELL"
         entry = candles[i]["close"]
-        sl_pips = random.uniform(8, 20)
+        sl_pips = random.uniform(*params["sl_pips"])
         sl_dist = sl_pips * 0.0001
         tp_dist = sl_dist * config["rrr"]
 
         sl = entry - sl_dist if direction == "BUY" else entry + sl_dist
         tp = entry + tp_dist if direction == "BUY" else entry - tp_dist
 
-        base_wr = 0.71 if (fvg_confirmed and ob_present) else 0.60
+        base_wr = params["base_wr"] if (fvg_confirmed and ob_present) else (params["base_wr"] - 0.10)
         win = random.random() < base_wr
 
         lot = round((balance * config["risk_per_trade"] / 100) / (sl_pips * 10), 2)
@@ -213,7 +219,7 @@ def simulate_ingwe(candles: list, config: dict) -> list:
         trade = {
             "trade_id": f"BT-{len(trades)+1:04d}",
             "symbol": "EURUSD",
-            "strategy": "INGWE",
+            "strategy": strategy,
             "session": session,
             "direction": direction,
             "entry_price": round(entry, 5),
@@ -540,10 +546,12 @@ Examples:
         trades = simulate_real_trades(real_trades, config)
     else:
         print(f"\n  🔄 Fetching data: {args.symbol} | {period}")
-        candles = fetch_mt5_data(args.symbol, args.from_date, args.to_date)
+        candles = load_csv_data(args.symbol, args.from_date, args.to_date)
+        if not candles:
+            candles = fetch_mt5_data(args.symbol, args.from_date, args.to_date)
 
-        print(f"  ⚙️  Running synthetic simulation: {args.strategy}")
-        trades = simulate_ingwe(candles, config)
+        print(f"  ⚙️  Running backtest simulation: {args.strategy}")
+        trades = simulate_ingwe(candles, config, args.strategy)
 
     print_results(trades, config, args.symbol, args.strategy, period)
 
