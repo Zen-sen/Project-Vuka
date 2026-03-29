@@ -1,5 +1,6 @@
 import MetaTrader5 as mt5
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 import pandas as pd
 import numpy as np
 import time
@@ -140,6 +141,15 @@ SCAN_INTERVAL_SEC        = 900
 DATA_STALE_MINUTES       = 30
 MT5_RETRY_ATTEMPTS       = 3
 MT5_RETRY_DELAY_SEC      = 30
+
+# -------------------------------------------------------
+# BACKTEST MODE (Option B) — CSV Replay
+# -------------------------------------------------------
+BACKTEST_MODE            = False
+BACKTEST_CSV            = "eurusd_m15_march2026.csv"
+BACKTEST_SPEED          = 1
+_backtest_index         = 0
+_backtest_data          = None
 
 # -------------------------------------------------------
 # TIMEZONE — South Africa
@@ -415,6 +425,8 @@ def check_consecutive_losses() -> bool:
 
 
 def get_spread() -> float | None:
+    if BACKTEST_MODE:
+        return 0.00010  # 1 pip fixed spread for backtest
     tick = mt5.symbol_info_tick(SYMBOL)
     return (tick.ask - tick.bid) if tick else None
 
@@ -477,6 +489,25 @@ def get_htf_bias() -> str | None:
 
 
 def get_candles() -> pd.DataFrame | None:
+    global _backtest_index, _backtest_data
+    
+    if BACKTEST_MODE:
+        if _backtest_data is None:
+            csv_path = Path(BACKTEST_CSV)
+            if not csv_path.exists():
+                log(f"Backtest CSV not found: {BACKTEST_CSV}", "ERROR")
+                return None
+            _backtest_data = pd.read_csv(csv_path)
+            _backtest_data["time"] = pd.to_datetime(_backtest_data["time"], utc=True)
+            _backtest_index = 0
+            log(f"Backtest loaded: {len(_backtest_data)} candles from {BACKTEST_CSV}")
+        
+        if _backtest_index >= len(_backtest_data):
+            log("Backtest complete.", "INFO")
+            return None
+        
+        return _backtest_data.iloc[:_backtest_index + 1]
+    
     rates = mt5_fetch_with_retry(
         mt5.copy_rates_from_pos, SYMBOL, TIMEFRAME, 0, 200
     )
@@ -513,6 +544,73 @@ def get_asian_range(df: pd.DataFrame) -> tuple[float, float] | tuple[None, None]
     if asian.empty or len(asian) < 4:
         return None, None
     return float(asian["high"].max()), float(asian["low"].min())
+
+
+# -------------------------------------------------------
+# BACKTEST HELPERS (Option B)
+# -------------------------------------------------------
+_backtest_pending_orders = []
+
+def get_backtest_price() -> tuple[float, float] | None:
+    """Get current bid/ask from backtest CSV data."""
+    global _backtest_index, _backtest_data
+    if _backtest_data is None or _backtest_index >= len(_backtest_data):
+        return None
+    row = _backtest_data.iloc[_backtest_index]
+    bid = row["close"]
+    ask = bid + 0.00010
+    return bid, ask
+
+
+def check_backtest_limit_fill(direction: str, entry_price: float, expiry_candles: int = 4) -> bool:
+    """
+    Simulate limit order fill: price must retrace to entry within expiry_candles.
+    Returns True if filled, False if expired.
+    """
+    global _backtest_index, _backtest_data, _backtest_pending_orders
+    if _backtest_data is None:
+        return False
+    
+    candle_time = _backtest_index
+    _backtest_pending_orders.append({
+        "direction": direction,
+        "entry": entry_price,
+        "placed_at": candle_time,
+        "expiry": candle_time + expiry_candles
+    })
+    
+    for i in range(expiry_candles):
+        check_idx = _backtest_index + i + 1
+        if check_idx >= len(_backtest_data):
+            return False
+        
+        high = _backtest_data.iloc[check_idx]["high"]
+        low = _backtest_data.iloc[check_idx]["low"]
+        
+        if direction == "BUY" and low <= entry_price <= high:
+            log(f"BACKTEST: BUY LIMIT filled at {entry_price}", "TRADE")
+            return True
+        if direction == "SELL" and low <= entry_price <= high:
+            log(f"BACKTEST: SELL LIMIT filled at {entry_price}", "TRADE")
+            return True
+    
+    log(f"BACKTEST: LIMIT expired unfilled at {entry_price}", "INFO")
+    return False
+
+
+def run_backtest_step():
+    """Advance backtest by one candle (call this instead of sleep in backtest mode)."""
+    global _backtest_index, _backtest_data, BACKTEST_SPEED
+    if not BACKTEST_MODE or _backtest_data is None:
+        return
+    
+    _backtest_index += BACKTEST_SPEED
+    if _backtest_index >= len(_backtest_data):
+        log("Backtest complete.", "INFO")
+        return
+    
+    current_candle = _backtest_data.iloc[_backtest_index]
+    log(f"Backtest: {current_candle['time']} | O:{current_candle['open']} H:{current_candle['high']} L:{current_candle['low']} C:{current_candle['close']}")
 
 
 def detect_liquidity_sweep(df: pd.DataFrame):
@@ -983,6 +1081,9 @@ def has_pending_order() -> bool:
     Guards against placing duplicate limit orders on consecutive scan cycles.
     The leopard does not set two traps in the same clearing.
     """
+    if BACKTEST_MODE:
+        return False
+    
     orders = mt5.orders_get(symbol=SYMBOL)
     if not orders:
         return False
@@ -997,7 +1098,16 @@ def place_limit_order(direction: str, entry: float, sl: float,
     Expiry: LIMIT_ORDER_EXPIRY_CANDLES × SCAN_INTERVAL_SEC from now
     (default 4 × 15min = 1hr) in broker server time.
     Single submission — pending orders do not use filling modes.
+    
+    BACKTEST MODE: Simulates limit order fill based on price retracement.
     """
+    if BACKTEST_MODE:
+        filled = check_backtest_limit_fill(direction, entry, LIMIT_ORDER_EXPIRY_CANDLES)
+        class MockResult:
+            retcode = mt5.TRADE_RETCODE_DONE if filled else 10025
+            comment = "BACKTEST FILLED" if filled else "BACKTEST EXPIRED"
+        return MockResult()
+    
     order_type = (mt5.ORDER_TYPE_BUY_LIMIT
                   if direction == "BUY"
                   else mt5.ORDER_TYPE_SELL_LIMIT)
