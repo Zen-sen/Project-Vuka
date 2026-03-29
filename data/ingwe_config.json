@@ -1,0 +1,8 @@
+{
+  "adx_threshold": 30,
+  "rrr": 3.5,
+  "risk_per_trade": 1.0,
+  "applied_at": "2026-03-29T12:34:59.236483+00:00",
+  "win_rate_expected": 76.1,
+  "profit_factor_expected": 11.08
+}

@@ -220,10 +220,10 @@ sessions_traded_today = set()
 def log(msg: str, level: str = "INFO"):
     prefix = {
         "INFO":  "   ",
-        "WARN":  "⚠️  ",
-        "ERROR": "🔴 ",
-        "TRADE": "🐆 ",
-        "GUARD": "🛡️  ",
+        "WARN":  "[W] ",
+        "ERROR": "[E] ",
+        "TRADE": "[T] ",
+        "GUARD": "[G] ",
     }.get(level, "   ")
     print(f"{prefix}{msg}")
 
@@ -1659,10 +1659,10 @@ def run_agent():
     sast_now = now_sast()
     mkt_mode = "SUMMER" if is_eu_summer() else "WINTER"
 
-    print(f"\n{'─' * 60}")
+    print(f"\n{'-' * 60}")
     log(f"Scan: {sast_now.strftime('%Y-%m-%d %H:%M')} SAST  "
         f"| {STRATEGY}  | {mkt_mode}  | Exness UTC+{get_exness_server_offset()}")
-    print(f"{'─' * 60}")
+    print(f"{'-' * 60}")
 
     reset_daily_sessions()
 
@@ -1837,7 +1837,7 @@ if __name__ == "__main__":
     log(f"Hard lot cap:           {HARD_LOT_CAP} lots")
     log(f"Scan interval:          {SCAN_INTERVAL_SEC // 60} minutes")
     log(f"Daily P&L tracking:     {_instance_tag} only (magic: {_instance_magic})")
-    log(f"Trailing SL:            1:1 → BE  |  1:2 → 1:1  (v3.9.5)")
+    log(f"Trailing SL:            1:1 -> BE  |  1:2 -> 1:1  (v3.9.5)")
     log(f"Limit orders:           FVG 50% midpoint  |  Expiry: {LIMIT_ORDER_EXPIRY_CANDLES * SCAN_INTERVAL_SEC // 60}min  (v4.0)")
     log(f"Ingwe is awake. [{_instance_tag}] hunting begins.\n")
 

@@ -1,0 +1,11 @@
+{
+  "rank": 1,
+  "adx_threshold": 30,
+  "rrr": 3.5,
+  "risk_per_trade": 1.0,
+  "total_trades": 200,
+  "win_rate": 76.1,
+  "profit_factor": 11.08,
+  "net_pnl": 4840.0,
+  "avg_rr": 3.5
+}

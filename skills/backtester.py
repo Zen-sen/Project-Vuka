@@ -47,6 +47,45 @@ def now_utc():
     return datetime.now(timezone.utc).isoformat()
 
 
+def load_csv_data(symbol: str, from_date: str, to_date: str) -> list | None:
+    import pandas as pd
+    csv_map = {
+        "EURUSD": "eurusdc_m15_30days.csv",
+        "GBPUSD": "gbpusdc_m15_30days.csv",
+    }
+    csv_file = csv_map.get(symbol)
+    if not csv_file:
+        return None
+    
+    csv_path = BASE_DIR / csv_file
+    if not csv_path.exists():
+        return None
+    
+    try:
+        df = pd.read_csv(csv_path)
+        df['time'] = pd.to_datetime(df['time'])
+        
+        start = datetime.fromisoformat(from_date)
+        end = datetime.fromisoformat(to_date)
+        
+        mask = (df['time'] >= start) & (df['time'] <= end)
+        df = df[mask]
+        
+        candles = []
+        for _, r in df.iterrows():
+            candles.append({
+                "time": r['time'].isoformat(),
+                "open": r['open'], "high": r['high'],
+                "low": r['low'], "close": r['close'],
+                "volume": r['tick_volume']
+            })
+        print(f"  ✅ CSV data loaded: {len(candles)} candles")
+        return candles
+    except Exception as e:
+        print(f"  ⚠️  CSV load failed ({e})")
+        return None
+
+
 def fetch_mt5_data(symbol: str, from_date: str, to_date: str) -> list:
     try:
         import MetaTrader5 as mt5
