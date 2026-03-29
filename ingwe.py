@@ -125,13 +125,13 @@ _instance_magic = _derive_magic(_instance_tag)
 # CONFIGURATION
 # -------------------------------------------------------
 TIMEFRAME                = mt5.TIMEFRAME_M15
-RISK_PERCENT             = 1.5
-RISK_REWARD_RATIO        = 3.0
+RISK_PERCENT             = 1.0
+RISK_REWARD_RATIO        = 3.5
 ATR_PERIOD               = 14
 ATR_MULTIPLIER           = 1.5
 LIMIT_ORDER_EXPIRY_CANDLES = 4   # v4.0: Pending limit TTL = 4 × M15 = 1hr
 ADX_PERIOD               = 14
-ADX_MIN_THRESHOLD        = 20
+ADX_MIN_THRESHOLD        = 30
 MIN_SPREAD_PIPS          = 0.0002
 MAX_DAILY_LOSS           = 50.0
 MAX_DRAWDOWN_PCT         = 10.0
@@ -1002,11 +1002,9 @@ def place_limit_order(direction: str, entry: float, sl: float,
                   if direction == "BUY"
                   else mt5.ORDER_TYPE_SELL_LIMIT)
 
-    expiry_dt = int(
-        (datetime.now(timezone.utc) + timedelta(
-            seconds=LIMIT_ORDER_EXPIRY_CANDLES * SCAN_INTERVAL_SEC
-        )).timestamp()
-    )
+    server_now = datetime.now(timezone.utc) + timedelta(hours=get_exness_server_offset())
+    expiry_dt = server_now + timedelta(seconds=LIMIT_ORDER_EXPIRY_CANDLES * SCAN_INTERVAL_SEC)
+    expiry_dt = expiry_dt.replace(tzinfo=None)  # MT5 expects naive server time
 
     order = {
         "action":          mt5.TRADE_ACTION_PENDING,
@@ -1020,7 +1018,7 @@ def place_limit_order(direction: str, entry: float, sl: float,
         "magic":           _instance_magic,
         "comment":         f"Ingwe_{_instance_tag[:14]}",
         "type_time":       mt5.ORDER_TIME_SPECIFIED,
-        "type_expiration": expiry_dt,
+"expiration": expiry_dt,
     }
 
     result = mt5.order_send(order)
@@ -1028,7 +1026,7 @@ def place_limit_order(direction: str, entry: float, sl: float,
         log(f"Limit order send returned None. MT5 error: {mt5.last_error()}", "ERROR")
         return None
     if result.retcode == mt5.TRADE_RETCODE_DONE:
-        log(f"Limit order placed. Expires {datetime.fromtimestamp(expiry_dt, tz=timezone.utc).strftime('%H:%M')} UTC.", "TRADE")
+        log(f"Limit order placed. Expires {expiry_dt.strftime('%H:%M')} server time.", "TRADE")
     else:
         log(f"Limit order failed. Retcode: {result.retcode}  "
             f"Comment: {getattr(result, 'comment', 'N/A')}", "ERROR")
