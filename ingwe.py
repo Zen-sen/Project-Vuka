@@ -1114,7 +1114,7 @@ def place_limit_order(direction: str, entry: float, sl: float,
 
     server_now = datetime.now(timezone.utc) + timedelta(hours=get_exness_server_offset())
     expiry_dt = server_now + timedelta(seconds=LIMIT_ORDER_EXPIRY_CANDLES * SCAN_INTERVAL_SEC)
-    expiry_dt = expiry_dt.replace(tzinfo=None)  # MT5 expects naive server time
+    expiry_ts = int(expiry_dt.timestamp())
 
     order = {
         "action":          mt5.TRADE_ACTION_PENDING,
@@ -1128,7 +1128,7 @@ def place_limit_order(direction: str, entry: float, sl: float,
         "magic":           _instance_magic,
         "comment":         f"Ingwe_{_instance_tag[:14]}",
         "type_time":       mt5.ORDER_TIME_SPECIFIED,
-"expiration": expiry_dt,
+        "expiration":      expiry_ts,
     }
 
     result = mt5.order_send(order)
@@ -1136,7 +1136,7 @@ def place_limit_order(direction: str, entry: float, sl: float,
         log(f"Limit order send returned None. MT5 error: {mt5.last_error()}", "ERROR")
         return None
     if result.retcode == mt5.TRADE_RETCODE_DONE:
-        log(f"Limit order placed. Expires {expiry_dt.strftime('%H:%M')} server time.", "TRADE")
+        log(f"Limit order placed. Expires {expiry_ts} (Unix timestamp).", "TRADE")
     else:
         log(f"Limit order failed. Retcode: {result.retcode}  "
             f"Comment: {getattr(result, 'comment', 'N/A')}", "ERROR")
