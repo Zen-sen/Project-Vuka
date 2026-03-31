@@ -10,7 +10,7 @@ import sys
 import hashlib
 
 # =======================================================
-#    PROJECT VUKA — AGENT INGWE  v4.0
+#    PROJECT VUKA — AGENT INGWE  v4.1
 #    The leopard does not miss because it does not rush.
 #    "Ingwe ayidlozi ngoba ayiphuthi isikhathi."
 # =======================================================
@@ -80,6 +80,7 @@ _valid_symbols    = ("EURUSD", "GBPUSD", "USDJPY")
 
 _arg_symbol   = sys.argv[1].upper() if len(sys.argv) > 1 else "EURUSD"
 _arg_strategy = sys.argv[2].upper() if len(sys.argv) > 2 else "INGWE"
+_arg_check    = "--check" in sys.argv
 
 if _arg_symbol not in _valid_symbols:
     print(f"❌ Unknown symbol '{_arg_symbol}'. Use: {', '.join(_valid_symbols)}")
@@ -108,6 +109,7 @@ _SYMBOL_MAP = {
 SYMBOL = _SYMBOL_MAP[_arg_symbol]
 
 _instance_tag   = f"{_arg_symbol}_{STRATEGY}"
+_instance_short = f"{_arg_symbol[:3]}{'SB' if STRATEGY == 'SILVER_BULLET' else 'IW'}"
 LOG_FILE        = f"trades_{_instance_tag}.json"
 SESSIONS_FILE   = f"sessions_{_instance_tag}.json"
 
@@ -132,13 +134,14 @@ ATR_PERIOD               = 14
 ATR_MULTIPLIER           = 1.5
 LIMIT_ORDER_EXPIRY_CANDLES = 4   # v4.0: Pending limit TTL = 4 × M15 = 1hr
 ADX_PERIOD               = 14
-ADX_MIN_THRESHOLD        = 30
+ADX_MIN_THRESHOLD        = 20
 MIN_SPREAD_PIPS          = 0.0002
 MAX_DAILY_LOSS           = 50.0
 MAX_DRAWDOWN_PCT         = 10.0
 HARD_LOT_CAP             = 0.20
 SCAN_INTERVAL_SEC        = 900
 DATA_STALE_MINUTES       = 30
+DATA_STALE_MINUTES_ASIAN = 90   # v4.0 FIX: More lenient for Asian low-liquidity hours
 MT5_RETRY_ATTEMPTS       = 3
 MT5_RETRY_DELAY_SEC      = 30
 
@@ -286,7 +289,7 @@ def mt5_fetch_with_retry(fetch_fn, *args, **kwargs):
     return None
 
 
-def is_data_fresh(df: pd.DataFrame) -> bool:
+def is_data_fresh(df: pd.DataFrame, session: str = None) -> bool:
     if df is None or df.empty:
         return False
     last_utc = df["time"].iloc[-1]
@@ -295,8 +298,9 @@ def is_data_fresh(df: pd.DataFrame) -> bool:
     if last_utc.tzinfo is None:
         last_utc = last_utc.replace(tzinfo=timezone.utc)
     age = (datetime.now(timezone.utc) - last_utc).total_seconds() / 60
-    if age > DATA_STALE_MINUTES:
-        log(f"Data stale — last candle {age:.1f} min ago.", "WARN")
+    stale_threshold = DATA_STALE_MINUTES_ASIAN if session == "Asian" else DATA_STALE_MINUTES
+    if age > stale_threshold:
+        log(f"Data stale — last candle {age:.1f} min ago (session: {session or 'N/A'}).", "WARN")
         return False
     return True
 
@@ -311,11 +315,11 @@ def has_frozen_prices(df: pd.DataFrame, lookback: int = 4) -> bool:
     return False
 
 
-def validate_candles(df: pd.DataFrame) -> bool:
+def validate_candles(df: pd.DataFrame, session: str = None) -> bool:
     if df is None or len(df) < 50:
         log("Insufficient candle data (need 50+).", "WARN")
         return False
-    return is_data_fresh(df) and not has_frozen_prices(df)
+    return is_data_fresh(df, session) and not has_frozen_prices(df)
 
 
 # =======================================================
@@ -646,6 +650,27 @@ def detect_fvg(df: pd.DataFrame, max_age: int = 0) -> list:
     fvgs  = []
     start = max(2, len(df) - max_age - 1) if max_age > 0 else 2
     for i in range(start, len(df) - 1):
+        c1, c2, c3 = df.iloc[i-2], df.iloc[i-1], df.iloc[i]
+        if not check_displacement_validity(c1, c2):
+            continue
+        if c1["high"] < c3["low"]:
+            gap    = c3["low"] - c1["high"]
+            fvg_50 = c1["high"] + gap * 0.5
+            fvgs.append(("BULLISH_FVG", c1["high"], c3["low"], i, c2, fvg_50))
+        if c3["high"] < c1["low"]:
+            gap    = c1["low"] - c3["high"]
+            fvg_50 = c1["low"] - gap * 0.5
+            fvgs.append(("BEARISH_FVG", c3["high"], c1["low"], i, c2, fvg_50))
+    return fvgs[-3:] if fvgs else []
+
+
+def detect_immediate_fvg(df: pd.DataFrame) -> list:
+    """
+    v4.0 FIX: Detect FVGs in the most recent 3 candles only.
+    Used when price moves too fast for standard FVG detection.
+    """
+    fvgs = []
+    for i in range(max(2, len(df) - 3), len(df) - 1):
         c1, c2, c3 = df.iloc[i-2], df.iloc[i-1], df.iloc[i]
         if not check_displacement_validity(c1, c2):
             continue
@@ -1039,7 +1064,7 @@ def place_trade(direction, entry, sl, tp, lot_size):
         "tp":           tp,
         "deviation":    10,
         "magic":        _instance_magic,
-        "comment":      f"Ingwe_{_instance_tag[:14]}",   # v3.9.5 FIX-1: max 18 chars
+        "comment":      _instance_short,   # v4.0 FIX: use short tag (e.g., "EURS", "GBPS")
         "type_time":    mt5.ORDER_TIME_GTC,
     }
 
@@ -1126,17 +1151,18 @@ def place_limit_order(direction: str, entry: float, sl: float,
         "tp":              tp,
         "deviation":       10,
         "magic":           _instance_magic,
-        "comment":         f"Ingwe_{_instance_tag[:14]}",
-        "type_time":       mt5.ORDER_TIME_SPECIFIED,
-        "expiration":      expiry_ts,
+        "comment":         _instance_short,
+        "type_time":       mt5.ORDER_TIME_GTC,
     }
 
     result = mt5.order_send(order)
     if result is None:
-        log(f"Limit order send returned None. MT5 error: {mt5.last_error()}", "ERROR")
+        err = mt5.last_error()
+        log(f"Limit order send returned None. MT5 error: {err}", "ERROR")
+        log(f"Order details: price={entry}, sl={sl}, tp={tp}, type={order_type}", "ERROR")
         return None
     if result.retcode == mt5.TRADE_RETCODE_DONE:
-        log(f"Limit order placed. Expires {expiry_ts} (Unix timestamp).", "TRADE")
+        log(f"Limit order placed (GTC).", "TRADE")
     else:
         log(f"Limit order failed. Retcode: {result.retcode}  "
             f"Comment: {getattr(result, 'comment', 'N/A')}", "ERROR")
@@ -1302,17 +1328,17 @@ def evaluate_ingwe(df, fvgs, sweep, sweep_level, price, atr, lot_size, session):
     if pdh and pdl:
         if sweep == "SWEEP_HIGH" and abs(sweep_level - pdh) < atr * 0.5:
             level_sweep = True
-            log(f"PDH SWEEP: {sweep_level:.5f} ≈ PDH {pdh:.5f}  [+5]")
+            log(f"PDH SWEEP: {sweep_level:.5f} ~ PDH {pdh:.5f}  [+5]")
         elif sweep == "SWEEP_LOW" and abs(sweep_level - pdl) < atr * 0.5:
             level_sweep = True
-            log(f"PDL SWEEP: {sweep_level:.5f} ≈ PDL {pdl:.5f}  [+5]")
+            log(f"PDL SWEEP: {sweep_level:.5f} ~ PDL {pdl:.5f}  [+5]")
     if not level_sweep and asian_high and asian_low:
         if sweep == "SWEEP_HIGH" and abs(sweep_level - asian_high) < atr * 0.5:
             level_sweep = True
-            log(f"ASIAN HIGH SWEEP: {sweep_level:.5f} ≈ AR {asian_high:.5f}  [+5]")
+            log(f"ASIAN HIGH SWEEP: {sweep_level:.5f} ~ AR {asian_high:.5f}  [+5]")
         elif sweep == "SWEEP_LOW" and abs(sweep_level - asian_low) < atr * 0.5:
             level_sweep = True
-            log(f"ASIAN LOW SWEEP: {sweep_level:.5f} ≈ AR {asian_low:.5f}  [+5]")
+            log(f"ASIAN LOW SWEEP: {sweep_level:.5f} ~ AR {asian_low:.5f}  [+5]")
 
     # ── M15 BOS — dynamic lookback (v3.9) ────────────────
     bos_lookback = 12 if session == "London Open" else 20
@@ -1714,7 +1740,8 @@ def run_agent():
 
     # ── CANDLES ──────────────────────────────────────────
     df = get_candles()
-    if not validate_candles(df):
+    session_for_staleness = "Asian" if active and "Asian" in str(active) else None
+    if not validate_candles(df, session_for_staleness):
         log("Data validation failed. Ingwe will not trade on uncertain ground.", "GUARD")
         return
 
@@ -1729,9 +1756,12 @@ def run_agent():
     fvg_lookback = 4 if STRATEGY == "SILVER_BULLET" else 20
     fvgs = detect_fvg(df, max_age=fvg_lookback)
     if not fvgs:
-        label = "within current window" if STRATEGY == "SILVER_BULLET" else "within 5hr lookback"
-        log(f"No FVG {label}. Ingwe waits...")
-        return
+        fvgs = detect_immediate_fvg(df)
+        if not fvgs:
+            label = "within current window" if STRATEGY == "SILVER_BULLET" else "within 5hr lookback"
+            log(f"No FVG {label}. Ingwe waits...")
+            return
+        log("FVG found via immediate detection (post-sweep).")
 
     # ── BREAKER BLOCKS & UNICORN ZONES (SILVER BULLET only) ─
     breakers      = detect_breaker_blocks(df) if STRATEGY == "SILVER_BULLET" else []
@@ -1795,7 +1825,7 @@ if __name__ == "__main__":
 
     summer = is_eu_summer()
     print("=" * 60)
-    print("   PROJECT VUKA — AGENT INGWE  v4.0")
+    print("   PROJECT VUKA — AGENT INGWE  v4.1")
     print("   The leopard does not miss because it does not rush.")
     print("=" * 60)
     print()
@@ -1842,9 +1872,16 @@ if __name__ == "__main__":
     log(f"Ingwe is awake. [{_instance_tag}] hunting begins.\n")
 
     try:
-        while True:
+        if _arg_check:
+            log("CHECK MODE: Running single scan and exiting.")
+            print()
             run_agent()
-            time.sleep(SCAN_INTERVAL_SEC)
+            print()
+            log("Check complete. Ingwe stands down.")
+        else:
+            while True:
+                run_agent()
+                time.sleep(SCAN_INTERVAL_SEC)
     except KeyboardInterrupt:
         log("Keyboard interrupt. Ingwe stands down gracefully.")
     finally:
