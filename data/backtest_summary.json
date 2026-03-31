@@ -1,14 +1,16 @@
 {
-  "run_date": "2026-03-29T23:05:44.381912+00:00",
+  "run_date": "2026-03-31T00:05:46.292491+00:00",
   "symbol": "GBPUSD",
   "strategy": "SILVER_BULLET",
-  "period": "2026-03-01 \u2192 2026-03-30",
-  "total_trades": 45,
-  "win_rate": 62.2,
+  "period": "2025-12-01 \u2192 2026-02-28",
+  "total_trades": 122,
+  "win_rate": 63.1,
   "config": {
     "risk_per_trade": 1.0,
     "rrr": 3.0,
     "adx_threshold": 20,
+    "adx_min": null,
+    "adx_max": null,
     "spread_pips": 1.0,
     "commission_per_lot": 3.5,
     "use_trailing_sl": true,
@@ -16,6 +18,6 @@
       "london",
       "ny"
     ],
-    "initial_balance": 43.0
+    "initial_balance": 10000.0
   }
 }

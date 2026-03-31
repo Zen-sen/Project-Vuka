@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from dataclasses import dataclass, field
 from typing import Optional
+import numpy as np
 
 BASE_DIR = Path(__file__).parent.parent
 CSV_DEFAULT = BASE_DIR / "eurusd_m15_template.csv"
@@ -25,6 +26,8 @@ class BacktestConfig:
     rrr: float = 3.5
     atr_multiplier: float = 1.5
     adx_threshold: int = 30
+    adx_min: int = None
+    adx_max: int = None
     backtest_speed: int = 1
     limit_expiry_candles: int = 4
 
@@ -40,6 +43,7 @@ class Trade:
     outcome: str = "PENDING"
     pnl: float = 0.0
     session: str = ""
+    adx_at_entry: float = 25.0
 
 
 @dataclass
@@ -64,6 +68,7 @@ class IngweBacktester:
         self.current_idx = 0
         self.atr = 0.0005
         self.spread = 0.00010
+        self.adx_values = []
     
     def load_csv(self):
         if not self.config.csv_file.exists():
@@ -144,6 +149,77 @@ class IngweBacktester:
         dx = abs(plus_di - minus_di) / (plus_di + minus_di) * 100
         return dx
     
+    def cache_adx_values(self, period: int = 14):
+        if len(self.df) < period + 2:
+            self.adx_values = [25] * len(self.df)
+            return
+        
+        n = len(self.df)
+        self.adx_values = [None] * n
+        
+        high = self.df["high"].values
+        low = self.df["low"].values
+        close = self.df["close"].values
+        
+        tr_arr = np.zeros(n)
+        plus_dm_arr = np.zeros(n)
+        minus_dm_arr = np.zeros(n)
+        
+        for i in range(1, n):
+            tr_arr[i] = max(high[i] - low[i], abs(high[i] - close[i-1]), abs(low[i] - close[i-1]))
+            hd = high[i] - high[i-1]
+            ld = low[i-1] - low[i]
+            plus_dm_arr[i] = hd if (hd > ld and hd > 0) else 0.0
+            minus_dm_arr[i] = ld if (ld > hd and ld > 0) else 0.0
+        
+        atr_s = float(np.sum(tr_arr[1:period + 1]))
+        pdm_s = float(np.sum(plus_dm_arr[1:period + 1]))
+        mdm_s = float(np.sum(minus_dm_arr[1:period + 1]))
+        
+        if atr_s > 0:
+            pdi = 100.0 * pdm_s / atr_s
+            mdi = 100.0 * mdm_s / atr_s
+            di_sum = pdi + mdi
+            dx_arr = np.zeros(n)
+            dx_arr[period] = 100.0 * abs(pdi - mdi) / di_sum if di_sum else 0.0
+        else:
+            dx_arr = np.zeros(n)
+        
+        for i in range(period + 1, n):
+            atr_s += -atr_s / period + tr_arr[i]
+            pdm_s += -pdm_s / period + plus_dm_arr[i]
+            mdm_s += -mdm_s / period + minus_dm_arr[i]
+            if atr_s == 0:
+                dx_arr[i] = 0.0
+                continue
+            pdi = 100.0 * pdm_s / atr_s
+            mdi = 100.0 * mdm_s / atr_s
+            di_sum = pdi + mdi
+            dx_arr[i] = 100.0 * abs(pdi - mdi) / di_sum if di_sum else 0.0
+        
+        adx_s = dx_arr[period]
+        self.adx_values[period] = adx_s
+        for i in range(period + 1, n):
+            adx_s = (adx_s * (period - 1) + dx_arr[i]) / period
+            self.adx_values[i] = adx_s
+        
+        for i in range(period):
+            self.adx_values[i] = 25
+    
+    def get_adx_at_index(self, idx: int) -> float:
+        if idx < len(self.adx_values):
+            return self.adx_values[idx] if self.adx_values[idx] is not None else 25
+        return 25
+    
+    def get_volatility_regime(self, adx: float) -> str:
+        if adx is None:
+            return "UNKNOWN"
+        if adx > 30:
+            return "HIGH"
+        elif adx < 20:
+            return "LOW"
+        return "MEDIUM"
+    
     def get_current_price(self):
         if self.current_idx >= len(self.df):
             return None, None
@@ -195,6 +271,13 @@ class IngweBacktester:
         return False
     
     def place_order(self, direction: str, entry: float, sl: float, tp: float, session: str):
+        if self.config.adx_min is not None or self.config.adx_max is not None:
+            adx = self.get_adx_at_index(self.current_idx)
+            if self.config.adx_min is not None and adx < self.config.adx_min:
+                return
+            if self.config.adx_max is not None and adx > self.config.adx_max:
+                return
+        
         self.state.total_placed += 1
         self.state.pending_orders.append({
             "direction": direction,
@@ -203,7 +286,8 @@ class IngweBacktester:
             "tp": tp,
             "placed_at": self.current_idx,
             "expiry": self.current_idx + self.config.limit_expiry_candles,
-            "session": session
+            "session": session,
+            "adx_at_entry": self.get_adx_at_index(self.current_idx) if self.adx_values else 25
         })
     
     def check_pending_orders(self):
@@ -225,7 +309,8 @@ class IngweBacktester:
                     "entry_time": str(self.df.iloc[self.current_idx]["time"]),
                     "trailing_sl_level": None,
                     "sl_moved_to_be": False,
-                    "sl_moved_to_1r": False
+                    "sl_moved_to_1r": False,
+                    "adx_at_entry": order.get("adx_at_entry", 25)
                 })
                 
                 self.state.sessions_traded_today.add(order["session"])
@@ -304,12 +389,14 @@ class IngweBacktester:
                     print(f"    -> TRAIL 1:1->BE | SL moved to {new_sl:.5f}")
             
             closed = False
+            adx_at_entry = pos.get("adx_at_entry", 25)
             if direction == "BUY":
                 if current_price >= tp:
                     pnl = (tp - entry) * lot * 100000
                     trade = Trade(entry_time=pos["entry_time"], direction="BUY", 
                                  entry=entry, sl=pos["sl"], tp=tp, lot=lot, 
-                                 outcome="WIN", pnl=pnl, session=pos["session"])
+                                 outcome="WIN", pnl=pnl, session=pos["session"],
+                                 adx_at_entry=adx_at_entry)
                     self.state.trades.append(trade)
                     self.state.balance += pnl
                     closed = True
@@ -317,7 +404,8 @@ class IngweBacktester:
                     pnl = (pos["sl"] - entry) * lot * 100000
                     trade = Trade(entry_time=pos["entry_time"], direction="BUY",
                                  entry=entry, sl=pos["sl"], tp=tp, lot=lot,
-                                 outcome="LOSS", pnl=pnl, session=pos["session"])
+                                 outcome="LOSS", pnl=pnl, session=pos["session"],
+                                 adx_at_entry=adx_at_entry)
                     self.state.trades.append(trade)
                     self.state.balance += pnl
                     closed = True
@@ -326,7 +414,8 @@ class IngweBacktester:
                     pnl = (entry - tp) * lot * 100000
                     trade = Trade(entry_time=pos["entry_time"], direction="SELL",
                                  entry=entry, sl=pos["sl"], tp=tp, lot=lot,
-                                 outcome="WIN", pnl=pnl, session=pos["session"])
+                                 outcome="WIN", pnl=pnl, session=pos["session"],
+                                 adx_at_entry=adx_at_entry)
                     self.state.trades.append(trade)
                     self.state.balance += pnl
                     closed = True
@@ -334,7 +423,8 @@ class IngweBacktester:
                     pnl = (entry - pos["sl"]) * lot * 100000
                     trade = Trade(entry_time=pos["entry_time"], direction="SELL",
                                  entry=entry, sl=pos["sl"], tp=tp, lot=lot,
-                                 outcome="LOSS", pnl=pnl, session=pos["session"])
+                                 outcome="LOSS", pnl=pnl, session=pos["session"],
+                                 adx_at_entry=adx_at_entry)
                     self.state.trades.append(trade)
                     self.state.balance += pnl
                     closed = True
@@ -372,6 +462,12 @@ class IngweBacktester:
         
         self.load_csv()
         self.calculate_atr()
+        
+        if self.config.adx_min is not None or self.config.adx_max is not None:
+            print(f"  Caching ADX values...")
+            self.cache_adx_values()
+            adx_info = f"ADX {self.config.adx_min or 'Any'}-{self.config.adx_max or 'Any'}"
+            print(f"  🎯 Volatility Filter: {adx_info}")
         
         print(f"  Initial Balance: ${self.config.initial_balance:,.2f}")
         print(f"  Risk/Trade: {self.config.risk_per_trade}%")
@@ -452,6 +548,26 @@ class IngweBacktester:
         print(f"  Net P&L         : ${net_pnl:+,.2f}")
         print(f"  Final Balance   : ${self.state.balance:,.2f}")
         print(f"  Return %        : {((self.state.balance - self.config.initial_balance) / self.config.initial_balance * 100):+.2f}%")
+        
+        if self.adx_values:
+            regimes = {"HIGH": [], "MEDIUM": [], "LOW": []}
+            for t in self.state.trades:
+                regime = self.get_volatility_regime(t.adx_at_entry)
+                if regime in regimes:
+                    regimes[regime].append(t)
+            
+            print(f"  ")
+            print(f"  📊 VOLATILITY ANALYSIS")
+            for regime in ["HIGH", "MEDIUM", "LOW"]:
+                trade_list = regimes[regime]
+                if not trade_list:
+                    continue
+                wins = [tr for tr in trade_list if tr.outcome == "WIN"]
+                net_pnl = sum(tr.pnl for tr in trade_list)
+                wr = round(len(wins) / len(trade_list) * 100, 1)
+                print(f"  {regime:6} (ADX {'>30' if regime=='HIGH' else '<20' if regime=='LOW' else '20-30'}): "
+                      f"{len(trade_list):3} trades | {wr:5.1f}% WR | ${net_pnl:+,.2f} P&L")
+        
         print(f"{'='*60}\n")
     
     def save_results(self):
@@ -470,7 +586,9 @@ class IngweBacktester:
                 "lot": t.lot,
                 "outcome": t.outcome,
                 "pnl": round(t.pnl, 2),
-                "session": t.session
+                "session": t.session,
+                "adx_at_entry": t.adx_at_entry,
+                "volatility_regime": self.get_volatility_regime(t.adx_at_entry)
             })
         
         results = {
@@ -505,6 +623,9 @@ def main():
     parser.add_argument("--risk", type=float, default=1.0, help="Risk %% per trade")
     parser.add_argument("--rrr", type=float, default=2.0, help="Risk:Reward ratio")
     parser.add_argument("--speed", type=int, default=1, help="Backtest speed (1=slow, 100=fast)")
+    parser.add_argument("--adx-min", type=int, default=None, help="Minimum ADX filter (e.g., 20, 30)")
+    parser.add_argument("--adx-max", type=int, default=None, help="Maximum ADX filter (e.g., 30, 40)")
+    parser.add_argument("--volatility-analysis", action="store_true", help="Show breakdown by volatility regime")
     
     args = parser.parse_args()
     
@@ -513,7 +634,9 @@ def main():
         initial_balance=args.balance,
         risk_per_trade=args.risk,
         rrr=args.rrr,
-        backtest_speed=args.speed
+        backtest_speed=args.speed,
+        adx_min=args.adx_min,
+        adx_max=args.adx_max
     )
     
     tester = IngweBacktester(config)

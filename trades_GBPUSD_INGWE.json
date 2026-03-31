@@ -180,5 +180,19 @@
     "lot_size": 0.2,
     "retcode": 10009,
     "comment": "Ingwe_GBPUSD_ING"
+  },
+  {
+    "time": "2026-03-30 16:11:50",
+    "sast": "2026-03-30 16:11:50",
+    "strategy": "INGWE",
+    "market_mode": "summer",
+    "session": "New York Open",
+    "direction": "SELL",
+    "entry": 1.32054,
+    "sl": 1.32233,
+    "tp": 1.31427,
+    "lot_size": 0.2,
+    "retcode": 10009,
+    "comment": "Ingwe_GBPUSD_ING"
   }
 ]

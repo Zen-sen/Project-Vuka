@@ -11,11 +11,78 @@ import random
 import sys
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
+import pandas as pd
+import numpy as np
 
 if sys.platform == "win32":
     import codecs
     sys.stdout = codecs.getwriter('utf-8')(sys.stdout.buffer, 'strict')
     sys.stderr = codecs.getwriter('utf-8')(sys.stderr.buffer, 'strict')
+
+
+def calculate_adx_wilder(candles: list, period: int = 14):
+    """
+    Calculate ADX from candle list (Wilder smoothing).
+    Returns: (adx, plus_di, minus_di)
+    """
+    if len(candles) < period * 2 + 1:
+        return None, None, None
+    
+    high  = np.array([c["high"] for c in candles])
+    low   = np.array([c["low"] for c in candles])
+    close = np.array([c["close"] for c in candles])
+    n     = len(candles)
+    
+    tr_arr       = np.zeros(n)
+    plus_dm_arr  = np.zeros(n)
+    minus_dm_arr = np.zeros(n)
+    
+    for i in range(1, n):
+        up   = high[i]    - high[i - 1]
+        down = low[i - 1] - low[i]
+        tr_arr[i]       = max(
+            high[i] - low[i],
+            abs(high[i]  - close[i - 1]),
+            abs(low[i]   - close[i - 1])
+        )
+        plus_dm_arr[i]  = up   if (up   > down and up   > 0) else 0.0
+        minus_dm_arr[i] = down if (down > up   and down > 0) else 0.0
+    
+    atr_s = float(np.sum(tr_arr[1:period + 1]))
+    pdm_s = float(np.sum(plus_dm_arr[1:period + 1]))
+    mdm_s = float(np.sum(minus_dm_arr[1:period + 1]))
+    
+    if atr_s == 0:
+        return 0.0, 0.0, 0.0
+    
+    dx_arr = np.zeros(n)
+    pdi    = 100.0 * pdm_s / atr_s
+    mdi    = 100.0 * mdm_s / atr_s
+    di_sum = pdi + mdi
+    dx_arr[period] = 100.0 * abs(pdi - mdi) / di_sum if di_sum else 0.0
+    
+    for i in range(period + 1, n):
+        atr_s += -atr_s / period + tr_arr[i]
+        pdm_s += -pdm_s / period + plus_dm_arr[i]
+        mdm_s += -mdm_s / period + minus_dm_arr[i]
+        if atr_s == 0:
+            dx_arr[i] = 0.0
+            continue
+        pdi    = 100.0 * pdm_s / atr_s
+        mdi    = 100.0 * mdm_s / atr_s
+        di_sum = pdi + mdi
+        dx_arr[i] = 100.0 * abs(pdi - mdi) / di_sum if di_sum else 0.0
+    
+    adx_arr = np.zeros(n)
+    adx_s = dx_arr[period]
+    adx_arr[period] = adx_s
+    
+    for i in range(period + 1, n):
+        adx_s = (adx_s * (period - 1) + dx_arr[i]) / period
+        adx_arr[i] = adx_s
+    
+    return round(adx_arr[-1], 1), round(pdi, 1), round(mdi, 1)
+
 
 BASE_DIR = Path(__file__).parent.parent
 RESULTS_FILE = BASE_DIR / "data" / "backtest_results.json"
@@ -25,6 +92,8 @@ DEFAULT_CONFIG = {
     "risk_per_trade": 1.0,
     "rrr": 3.0,
     "adx_threshold": 20,
+    "adx_min": None,
+    "adx_max": None,
     "spread_pips": 1.0,
     "commission_per_lot": 3.50,
     "use_trailing_sl": True,
@@ -49,6 +118,57 @@ def now_utc():
 
 def load_csv_data(symbol: str, from_date: str, to_date: str) -> list | None:
     import pandas as pd
+    
+    sessions_dir = BASE_DIR / "data" / "sessions"
+    
+    pattern = f"{symbol.upper()}c_M15_*.csv"
+    session_files = list(sessions_dir.glob(pattern))
+    
+    if session_files:
+        start = datetime.fromisoformat(from_date)
+        end = datetime.fromisoformat(to_date)
+        
+        csv_path = None
+        for sf in session_files:
+            try:
+                df_temp = pd.read_csv(sf, sep='\t', usecols=['<DATE>', '<TIME>'])
+                df_temp['datetime'] = pd.to_datetime(df_temp['<DATE>'] + ' ' + df_temp['<TIME>'], format='%Y.%m.%d %H:%M:%S')
+                file_start = df_temp['datetime'].min()
+                file_end = df_temp['datetime'].max()
+                if file_start <= start and file_end >= end:
+                    csv_path = sf
+                    break
+            except:
+                continue
+        
+        if not csv_path:
+            csv_path = max(session_files, key=lambda f: f.stat().st_size)
+        try:
+            df = pd.read_csv(csv_path, sep='\t')
+            df['datetime'] = pd.to_datetime(df['<DATE>'] + ' ' + df['<TIME>'], format='%Y.%m.%d %H:%M:%S')
+            
+            start = datetime.fromisoformat(from_date)
+            end = datetime.fromisoformat(to_date)
+            
+            mask = (df['datetime'] >= start) & (df['datetime'] <= end)
+            df = df[mask]
+            
+            candles = []
+            for _, r in df.iterrows():
+                candles.append({
+                    "time": r['datetime'].isoformat(),
+                    "open": r['<OPEN>'], "high": r['<HIGH>'],
+                    "low": r['<LOW>'], "close": r['<CLOSE>'],
+                    "volume": r['<TICKVOL>']
+                })
+            if len(candles) == 0:
+                print(f"  ⚠️  Session CSV has no matching candles, trying 30day file...")
+            else:
+                print(f"  ✅ CSV data loaded: {len(candles)} candles from {csv_path.name}")
+                return candles
+        except Exception as e:
+            print(f"  ⚠️  Session CSV load failed ({e})")
+    
     csv_map = {
         "EURUSD": "eurusdc_m15_30days.csv",
         "GBPUSD": "gbpusdc_m15_30days.csv",
@@ -152,7 +272,42 @@ def in_kill_zone(candle_time: str, sessions: list) -> str | None:
     return None
 
 
-def simulate_ingwe(candles: list, config: dict, strategy: str = "INGWE") -> list:
+def get_volatility_regime(adx: float) -> str:
+    if adx is None:
+        return "UNKNOWN"
+    if adx > 30:
+        return "HIGH"
+    elif adx < 20:
+        return "LOW"
+    return "MEDIUM"
+
+
+def analyze_by_volatility(trades: list) -> dict:
+    regimes = {"HIGH": [], "MEDIUM": [], "LOW": [], "UNKNOWN": []}
+    for t in trades:
+        regime = t.get("volatility_regime", "UNKNOWN")
+        regimes[regime].append(t)
+    
+    results = {}
+    for regime, trade_list in regimes.items():
+        if not trade_list:
+            results[regime] = {"trades": 0, "wins": 0, "losses": 0, "win_rate": 0, "net_pnl": 0}
+            continue
+        wins = [tr for tr in trade_list if tr["outcome"] == "WIN"]
+        losses = [tr for tr in trade_list if tr["outcome"] == "LOSS"]
+        net_pnl = sum(tr["pnl_usd"] for tr in trade_list)
+        results[regime] = {
+            "trades": len(trade_list),
+            "wins": len(wins),
+            "losses": len(losses),
+            "win_rate": round(len(wins) / len(trade_list) * 100, 1),
+            "net_pnl": round(net_pnl, 2)
+        }
+    return results
+
+
+def simulate_ingwe(candles: list, config: dict, strategy: str = "INGWE", use_real_adx: bool = True,
+                   adx_min: int = None, adx_max: int = None) -> list:
     trades = []
     balance = config["initial_balance"]
     daily_pnl = {}
@@ -162,6 +317,13 @@ def simulate_ingwe(candles: list, config: dict, strategy: str = "INGWE") -> list
         "SILVER_BULLET": {"fvg_chance": 0.50, "ob_chance": 0.40, "base_wr": 0.65, "sl_pips": (10, 25)},
     }
     params = strategy_params.get(strategy, strategy_params["INGWE"])
+
+    adx_values = [None] * len(candles)
+    if use_real_adx and len(candles) >= 50:
+        print(f"  Calculating real ADX for {len(candles)} candles...")
+        for i in range(50, len(candles)):
+            adx, _, _ = calculate_adx_wilder(candles[max(0, i-50):i+1])
+            adx_values[i] = adx
 
     i = 0
     while i < len(candles) - 4:
@@ -179,8 +341,19 @@ def simulate_ingwe(candles: list, config: dict, strategy: str = "INGWE") -> list
             i += 1
             continue
 
-        adx_mock = random.uniform(10, 40)
-        if adx_mock < config["adx_threshold"]:
+        if use_real_adx and adx_values[i] is not None:
+            adx = adx_values[i]
+        else:
+            adx = random.uniform(10, 40)
+        
+        if adx < config["adx_threshold"]:
+            i += 1
+            continue
+
+        if adx_min is not None and adx < adx_min:
+            i += 1
+            continue
+        if adx_max is not None and adx > adx_max:
             i += 1
             continue
 
@@ -233,7 +406,8 @@ def simulate_ingwe(candles: list, config: dict, strategy: str = "INGWE") -> list
             "rr_achieved": round(rr, 2),
             "fvg_confirmed": fvg_confirmed,
             "ob_present": ob_present,
-            "adx_at_entry": round(adx_mock, 1),
+            "adx_at_entry": round(adx if adx else 0, 1),
+            "volatility_regime": get_volatility_regime(adx),
             "balance_after": balance
         }
         trades.append(trade)
@@ -508,6 +682,9 @@ Examples:
     parser.add_argument("--balance", type=float, default=10000.0, help="Initial balance (default: 10000)")
     parser.add_argument("--live-trades", action="store_true", help="Use actual trade entries from data/trades_*.json")
     parser.add_argument("--monte-carlo", type=int, default=0, help="Run N Monte Carlo simulations")
+    parser.add_argument("--adx-min", type=int, default=None, help="Minimum ADX filter (e.g., 20, 30)")
+    parser.add_argument("--adx-max", type=int, default=None, help="Maximum ADX filter (e.g., 30, 40)")
+    parser.add_argument("--volatility-analysis", action="store_true", help="Show breakdown by volatility regime")
 
     args = parser.parse_args()
 
@@ -522,6 +699,9 @@ Examples:
 
     config = {**DEFAULT_CONFIG, "risk_per_trade": args.risk, "rrr": args.rrr, "initial_balance": args.balance}
     period = f"{args.from_date} → {args.to_date}"
+
+    if args.adx_min or args.adx_max:
+        print(f"  🎯 ADX Filter: {args.adx_min or 'Any'} - {args.adx_max or 'Any'}")
 
     if args.live_trades:
         print(f"\n  📊 Loading REAL trades from data files")
@@ -551,9 +731,20 @@ Examples:
             candles = fetch_mt5_data(args.symbol, args.from_date, args.to_date)
 
         print(f"  ⚙️  Running backtest simulation: {args.strategy}")
-        trades = simulate_ingwe(candles, config, args.strategy)
+        trades = simulate_ingwe(candles, config, args.strategy, adx_min=args.adx_min, adx_max=args.adx_max)
 
     print_results(trades, config, args.symbol, args.strategy, period)
+
+    if args.volatility_analysis and trades:
+        sep()
+        print(f"  📊 VOLATILITY ANALYSIS")
+        sep()
+        analysis = analyze_by_volatility(trades)
+        for regime in ["HIGH", "MEDIUM", "LOW"]:
+            r = analysis[regime]
+            print(f"  {regime:6} (ADX {'>30' if regime=='HIGH' else '<20' if regime=='LOW' else '20-30'}): "
+                  f"{r['trades']:3} trades | {r['win_rate']:5.1f}% WR | ${r['net_pnl']:+,.2f} P&L")
+        sep()
 
     BASE_DIR.joinpath("data").mkdir(parents=True, exist_ok=True)
     with open(RESULTS_FILE, "w") as f:
