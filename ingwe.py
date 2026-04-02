@@ -10,31 +10,29 @@ import sys
 import hashlib
 
 # =======================================================
-#    PROJECT VUKA — AGENT INGWE  v4.1
+#    PROJECT VUKA — AGENT INGWE  v4.2
 #    The leopard does not miss because it does not rush.
 #    "Ingwe ayidlozi ngoba ayiphuthi isikhathi."
 # =======================================================
-# CHANGELOG v4.0 — LIMIT ORDER ENTRY AT FVG 50% (3 changes):
+# CHANGELOG v4.2 — MARKET ORDERS REINSTATED:
+#
+#   v4.0 limit orders (FVG 50% midpoint) produced 0% win rate
+#   across all instances. Static limit levels got filled into
+#   reversals during range-bound conditions. Reverted to market
+#   orders with the same confluence logic.
+#
+#   - All 4 evaluate_ingwe() paths use place_trade() (market).
+#   - Entry price = current market price (bid), not fvg_50.
+#   - Price-side guard removed — no static level constraint.
+#   - has_pending_order() guard removed — market orders fill
+#     instantly or fail; no duplicate risk.
+#   - place_limit_order() kept for future use.
+#
+# CHANGELOG v4.1 — LIMIT ORDER ENTRY AT FVG 50%:
 #
 #   FIX-1: place_limit_order() added to Section 10.
-#     Uses TRADE_ACTION_PENDING with BUY_LIMIT / SELL_LIMIT.
-#     Auto-expires after LIMIT_ORDER_EXPIRY_CANDLES × scan
-#     interval (default 4 × 15min = 1hr) via ORDER_TIME_SPECIFIED.
-#     No filling fallback chain — pending orders do not use
-#     filling mode. Single submission.
-#
 #   FIX-2: has_pending_order() guard added to Section 10.
-#     Checks mt5.orders_get() filtered by _instance_magic.
-#     Prevents double-placing limit orders on consecutive scans
-#     when an unfilled order is already live.
-#
 #   FIX-3: evaluate_ingwe() — all 4 paths converted to limit orders.
-#     Entry: fvg_50 (FVG 50% midpoint) instead of current price.
-#     SL/TP: recalculated from fvg_50, not from tick price.
-#     Price-side guard added per direction — if price already
-#     past fvg_50, limit would never fire; skip and wait.
-#     Session lock fires on order placement (not fill) — one
-#     order per session, consistent with existing philosophy.
 #
 # CHANGELOG v3.9.5 — TRAILING SL + COMMENT FIX (2 fixes):
 #
@@ -132,6 +130,7 @@ RISK_PERCENT             = 1.0
 RISK_REWARD_RATIO        = 3.5
 ATR_PERIOD               = 14
 ATR_MULTIPLIER           = 1.5
+MIN_SL_ATR_MULTIPLIER    = 0.5
 LIMIT_ORDER_EXPIRY_CANDLES = 4   # v4.0: Pending limit TTL = 4 × M15 = 1hr
 ADX_PERIOD               = 14
 ADX_MIN_THRESHOLD        = 20
@@ -1267,9 +1266,10 @@ def reset_daily_sessions():
 def evaluate_ingwe(df, fvgs, sweep, sweep_level, price, atr, lot_size, session):
     """
     Full multi-confluence model.
-    v4.0:   All 4 paths → BUY_LIMIT / SELL_LIMIT at FVG 50% midpoint.
-            has_pending_order() guard before FVG loop.
-            Price-side guard per direction (limit must have room to fire).
+    v4.3:   Three hard gates added after GBPUSD loss (ADX<20, D1 bias
+            conflict, SL min distance). All block entry regardless of score.
+    v4.2:   Market orders reinstated — same confluence logic, no static
+            limit levels. Reverted from v4.0 which produced 0% win rate.
     v3.9.4: FIX-1 zone check removed from Paths C/D.
     v3.9.3: True Wilder ADX.
     v3.9.2: Zone context logging.
@@ -1281,6 +1281,14 @@ def evaluate_ingwe(df, fvgs, sweep, sweep_level, price, atr, lot_size, session):
         log("ADX unavailable.", "WARN")
         return
     log(f"ADX: {adx:.1f}  |  +DI: {plus_di:.1f}  |  -DI: {minus_di:.1f}")
+
+    # ── FIX-1: HARD ADX GATE (v4.3) ───────────────────────
+    # v4.3: ADX < 20 blocks ALL entries regardless of score.
+    # The trade that lost had ADX 12.6 — range-bound, choppy.
+    if adx < ADX_MIN_THRESHOLD:
+        log(f"ADX {adx} below minimum ({ADX_MIN_THRESHOLD}) — "
+            f"range-bound. Ingwe does not hunt in the chop.", "GUARD")
+        return
 
     spread      = get_spread()
     spread_pips = spread * 10000 if spread else 0
@@ -1300,19 +1308,26 @@ def evaluate_ingwe(df, fvgs, sweep, sweep_level, price, atr, lot_size, session):
         return
     log(f"H1 Trend: {trend}")
 
-    # ── HTF BIAS (v3.9) ──────────────────────────────────
+    # ── FIX-2: HARD HTF BIAS GATE (v4.3) ────────────────
+    # v4.3: D1+H4 bias is a hard requirement — not optional.
+    # If HTF is unavailable or conflicts with H1 trend, no trade.
     htf_bias = get_htf_bias()
-    if htf_bias:
-        log(f"HTF Bias (D1+H4): {htf_bias}")
-        if htf_bias != trend:
-            log(f"HTF bias ({htf_bias}) conflicts with H1 trend ({trend}). "
-                f"Ingwe does not trade against the higher timeframe.", "GUARD")
-            return
-        log(f"HTF bias confirms H1 trend — full top-down alignment.  [+10]")
-    else:
-        log("HTF bias: conflicted or unavailable — no bonus, trade may proceed.")
+    if not htf_bias:
+        log("HTF bias unavailable — Ingwe requires top-down confirmation. Standing down.", "GUARD")
+        return
+    log(f"HTF Bias (D1+H4): {htf_bias}")
+    if htf_bias != trend:
+        log(f"HTF bias ({htf_bias}) conflicts with H1 trend ({trend}). "
+            f"Ingwe does not trade against the higher timeframe.", "GUARD")
+        return
+    log(f"HTF bias confirms H1 trend — full top-down alignment.  [+10]")
 
-    htf_bias_ok = (htf_bias == trend) if htf_bias else False
+    htf_bias_ok = True
+
+    # ── FIX-3: SL MINIMUM DISTANCE (v4.3) ───────────────
+    # v4.3: SL must be at least MIN_SL_ATR_MULTIPLIER × ATR.
+    # Prevents sub-pip SLs that get swept in low-vol conditions.
+    min_sl = atr * MIN_SL_ATR_MULTIPLIER
 
     # ── KEY LEVEL CONTEXT ────────────────────────────────
     pdh, pdl = get_pdh_pdl()
@@ -1357,11 +1372,6 @@ def evaluate_ingwe(df, fvgs, sweep, sweep_level, price, atr, lot_size, session):
         zone = "PREMIUM" if price >= mid else "DISCOUNT"
         return f"{zone} (price={price:.5f}, mid={mid:.5f})"
 
-    # ── PENDING ORDER GUARD (v4.0) ────────────────────────
-    if has_pending_order():
-        log("Pending limit order already live — Ingwe waits for fill or expiry.", "GUARD")
-        return
-
     # ── FVG LOOP ─────────────────────────────────────────
     for fvg_type, fvg_low, fvg_high, fvg_idx, ob, fvg_50 in fvgs:
         if check_panic_candle(df, atr):
@@ -1391,21 +1401,18 @@ def evaluate_ingwe(df, fvgs, sweep, sweep_level, price, atr, lot_size, session):
                 continue
             if not check_pre_trade_spread():
                 continue
-            if price <= fvg_50:
-                log(f"Price at/below FVG 50% ({fvg_50:.5f}) — BUY LIMIT would not fire. Skip.", "GUARD")
-                continue
-            stop  = atr * ATR_MULTIPLIER
-            entry = round(fvg_50, 5)
+            stop  = max(atr * ATR_MULTIPLIER, min_sl)
+            entry = round(price, 5)
             sl    = round(entry - stop, 5)
             tp    = round(entry + stop * RISK_REWARD_RATIO, 5)
-            res   = place_limit_order("BUY", entry, sl, tp, lot_size)
+            res   = place_trade("BUY", entry, sl, tp, lot_size)
             if res and res.retcode == mt5.TRADE_RETCODE_DONE:
-                log(f"BUY LIMIT  Entry={entry}  SL={sl}  TP={tp}  Lot={lot_size}", "TRADE")
+                log(f"BUY MARKET  Entry={entry}  SL={sl}  TP={tp}  Lot={lot_size}", "TRADE")
                 log_trade("BUY", entry, sl, tp, res, lot_size, session)
                 sessions_traded_today.add(session)
                 save_sessions(sessions_traded_today)
             else:
-                log(f"BUY LIMIT FAILED. Code={res.retcode if res else 'N/A'}.", "ERROR")
+                log(f"BUY MARKET FAILED. Code={res.retcode if res else 'N/A'}.", "ERROR")
             return
 
         # ── PATH B: SELL REVERSAL ────────────────────────
@@ -1432,21 +1439,18 @@ def evaluate_ingwe(df, fvgs, sweep, sweep_level, price, atr, lot_size, session):
                 continue
             if not check_pre_trade_spread():
                 continue
-            if price >= fvg_50:
-                log(f"Price at/above FVG 50% ({fvg_50:.5f}) — SELL LIMIT would not fire. Skip.", "GUARD")
-                continue
-            stop  = atr * ATR_MULTIPLIER
-            entry = round(fvg_50, 5)
+            stop  = max(atr * ATR_MULTIPLIER, min_sl)
+            entry = round(price, 5)
             sl    = round(entry + stop, 5)
             tp    = round(entry - stop * RISK_REWARD_RATIO, 5)
-            res   = place_limit_order("SELL", entry, sl, tp, lot_size)
+            res   = place_trade("SELL", entry, sl, tp, lot_size)
             if res and res.retcode == mt5.TRADE_RETCODE_DONE:
-                log(f"SELL LIMIT  Entry={entry}  SL={sl}  TP={tp}  Lot={lot_size}", "TRADE")
+                log(f"SELL MARKET  Entry={entry}  SL={sl}  TP={tp}  Lot={lot_size}", "TRADE")
                 log_trade("SELL", entry, sl, tp, res, lot_size, session)
                 sessions_traded_today.add(session)
                 save_sessions(sessions_traded_today)
             else:
-                log(f"SELL LIMIT FAILED. Code={res.retcode if res else 'N/A'}.", "ERROR")
+                log(f"SELL MARKET FAILED. Code={res.retcode if res else 'N/A'}.", "ERROR")
             return
 
         # ── PATH C: SELL CONTINUATION (v3.9.1) ──────────
@@ -1471,21 +1475,18 @@ def evaluate_ingwe(df, fvgs, sweep, sweep_level, price, atr, lot_size, session):
                 continue
             if not check_pre_trade_spread():
                 continue
-            if price >= fvg_50:
-                log(f"Price at/above FVG 50% ({fvg_50:.5f}) — SELL LIMIT would not fire. Skip.", "GUARD")
-                continue
-            stop  = atr * ATR_MULTIPLIER
-            entry = round(fvg_50, 5)
+            stop  = max(atr * ATR_MULTIPLIER, min_sl)
+            entry = round(price, 5)
             sl    = round(entry + stop, 5)
             tp    = round(entry - stop * RISK_REWARD_RATIO, 5)
-            res   = place_limit_order("SELL", entry, sl, tp, lot_size)
+            res   = place_trade("SELL", entry, sl, tp, lot_size)
             if res and res.retcode == mt5.TRADE_RETCODE_DONE:
-                log(f"SELL LIMIT  Entry={entry}  SL={sl}  TP={tp}  Lot={lot_size}", "TRADE")
+                log(f"SELL MARKET  Entry={entry}  SL={sl}  TP={tp}  Lot={lot_size}", "TRADE")
                 log_trade("SELL", entry, sl, tp, res, lot_size, session)
                 sessions_traded_today.add(session)
                 save_sessions(sessions_traded_today)
             else:
-                log(f"SELL LIMIT FAILED. Code={res.retcode if res else 'N/A'}.", "ERROR")
+                log(f"SELL MARKET FAILED. Code={res.retcode if res else 'N/A'}.", "ERROR")
             return
 
         # ── PATH D: BUY CONTINUATION (v3.9.1) ───────────
@@ -1510,21 +1511,18 @@ def evaluate_ingwe(df, fvgs, sweep, sweep_level, price, atr, lot_size, session):
                 continue
             if not check_pre_trade_spread():
                 continue
-            if price <= fvg_50:
-                log(f"Price at/below FVG 50% ({fvg_50:.5f}) — BUY LIMIT would not fire. Skip.", "GUARD")
-                continue
-            stop  = atr * ATR_MULTIPLIER
-            entry = round(fvg_50, 5)
+            stop  = max(atr * ATR_MULTIPLIER, min_sl)
+            entry = round(price, 5)
             sl    = round(entry - stop, 5)
             tp    = round(entry + stop * RISK_REWARD_RATIO, 5)
-            res   = place_limit_order("BUY", entry, sl, tp, lot_size)
+            res   = place_trade("BUY", entry, sl, tp, lot_size)
             if res and res.retcode == mt5.TRADE_RETCODE_DONE:
-                log(f"BUY LIMIT  Entry={entry}  SL={sl}  TP={tp}  Lot={lot_size}", "TRADE")
+                log(f"BUY MARKET  Entry={entry}  SL={sl}  TP={tp}  Lot={lot_size}", "TRADE")
                 log_trade("BUY", entry, sl, tp, res, lot_size, session)
                 sessions_traded_today.add(session)
                 save_sessions(sessions_traded_today)
             else:
-                log(f"BUY LIMIT FAILED. Code={res.retcode if res else 'N/A'}.", "ERROR")
+                log(f"BUY MARKET FAILED. Code={res.retcode if res else 'N/A'}.", "ERROR")
             return
 
     log("Ingwe conditions not aligned. Waiting...")
@@ -1825,7 +1823,7 @@ if __name__ == "__main__":
 
     summer = is_eu_summer()
     print("=" * 60)
-    print("   PROJECT VUKA — AGENT INGWE  v4.1")
+    print("   PROJECT VUKA — AGENT INGWE  v4.3")
     print("   The leopard does not miss because it does not rush.")
     print("=" * 60)
     print()
@@ -1868,7 +1866,7 @@ if __name__ == "__main__":
     log(f"Scan interval:          {SCAN_INTERVAL_SEC // 60} minutes")
     log(f"Daily P&L tracking:     {_instance_tag} only (magic: {_instance_magic})")
     log(f"Trailing SL:            1:1 -> BE  |  1:2 -> 1:1  (v3.9.5)")
-    log(f"Limit orders:           FVG 50% midpoint  |  Expiry: {LIMIT_ORDER_EXPIRY_CANDLES * SCAN_INTERVAL_SEC // 60}min  (v4.0)")
+    log(f"Entry mode:            MARKET orders  (v4.2 — reverted from limit)")
     log(f"Ingwe is awake. [{_instance_tag}] hunting begins.\n")
 
     try:
