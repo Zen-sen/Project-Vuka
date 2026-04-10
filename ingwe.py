@@ -9,11 +9,32 @@ import os
 import sys
 import hashlib
 
+try:
+    from kronos_guardian import KronosVetoGate
+    KRONOS_VETO_GATE = KronosVetoGate()
+except ImportError:
+    KRONOS_VETO_GATE = None
+
 # =======================================================
-#    PROJECT VUKA — AGENT INGWE  v4.2
+#    PROJECT VUKA — AGENT INGWE  v4.4
 #    The leopard does not miss because it does not rush.
 #    "Ingwe ayidlozi ngoba ayiphuthi isikhathi."
 # =======================================================
+# CHANGELOG v4.4 — PERFORMANCE IMPROVEMENTS:
+#
+#   FIX-1: Duplicate entry prevention via has_open_position().
+#     Prevents placing duplicate market orders when position exists.
+#
+#   FIX-2: Persistent consecutive loss tracking.
+#     Loss counter now persists across days via sessions file.
+#     Bot pauses after 2 consecutive losses.
+#
+#   FIX-3: GBPUSD London Open disabled.
+#     0% win rate historically — now skipped for GBPUSD_INGWE.
+#
+#   FIX-4: SL movement tracking added.
+#     All trailing SL moves logged to sl_moves_{symbol}_{strategy}.json
+#
 # CHANGELOG v4.2 — MARKET ORDERS REINSTATED:
 #
 #   v4.0 limit orders (FVG 50% midpoint) produced 0% win rate
@@ -416,15 +437,72 @@ def get_daily_pnl() -> float:
 
 
 def check_consecutive_losses() -> bool:
-    """v3.9.4 FIX-3: uses server-offset-aware datetimes."""
-    midnight  = _server_midnight()
-    deals     = mt5_fetch_with_retry(mt5.history_deals_get, midnight, _server_now())
-    if deals is None or len(deals) < 2:
-        return False
-    own_deals = [d for d in deals if d.magic == _instance_magic]
-    if len(own_deals) < 2:
-        return False
-    return all(d.profit < 0 for d in own_deals[-2:])
+    """
+    v4.4 FIX-2: Persistent consecutive loss tracking across days.
+    Loads saved loss count from sessions file, checks against threshold.
+    """
+    loss_count = load_consecutive_losses()
+    if loss_count >= 2:
+        log(f"Consecutive loss limit reached ({loss_count} losses) — Ingwe pauses.", "GUARD")
+        return True
+    return False
+
+
+def load_consecutive_losses() -> int:
+    """
+    v4.4 FIX-2: Load consecutive loss count from sessions file.
+    Persists across days for multi-day drawdown protection.
+    """
+    if os.path.exists(SESSIONS_FILE):
+        try:
+            with open(SESSIONS_FILE, "r") as f:
+                data = json.load(f)
+            if data.get("date") == datetime.now().strftime("%Y-%m-%d"):
+                return data.get("consecutive_losses", 0)
+        except (json.JSONDecodeError, KeyError):
+            pass
+    return 0
+
+
+def save_consecutive_losses(count: int):
+    """
+    v4.4 FIX-2: Save consecutive loss count to sessions file.
+    Used to track multi-day losing streaks.
+    """
+    payload = {
+        "date": datetime.now().strftime("%Y-%m-%d"),
+        "sessions": list(sessions_traded_today),
+        "consecutive_losses": count
+    }
+    tmp = SESSIONS_FILE + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(payload, f, indent=2)
+    os.replace(tmp, SESSIONS_FILE)
+
+
+def update_consecutive_losses():
+    """
+    v4.4 FIX-2: Update consecutive loss counter based on today's closed trades.
+    Call this at start of each scan cycle.
+    """
+    midnight = _server_midnight()
+    deals = mt5_fetch_with_retry(mt5.history_deals_get, midnight, _server_now())
+    if deals is None:
+        return
+    
+    own_deals = [d for d in deals if d.magic == _instance_magic and d.profit != 0]
+    if not own_deals:
+        return
+    
+    last_deal = own_deals[-1]
+    if last_deal.profit < 0:
+        new_count = load_consecutive_losses() + 1
+        save_consecutive_losses(new_count)
+        log(f"Loss recorded — consecutive losses: {new_count}", "INFO")
+    else:
+        if load_consecutive_losses() > 0:
+            save_consecutive_losses(0)
+            log("Win recorded — consecutive loss counter reset.", "INFO")
 
 
 def get_spread() -> float | None:
@@ -1043,6 +1121,8 @@ def log_trade(direction, entry, sl, tp, result, lot_size, session):
 
 def place_trade(direction, entry, sl, tp, lot_size):
     """
+    v4.4 FIX-1: duplicate position check added.
+      Prevents placing duplicate market orders when a position already exists.
     v3.9.5 FIX-1: comment truncated to 18 chars max.
       Exness enforces a 31-char hard cap. The previous string
       "Ingwe v3.9.4 EURUSD_SILVER_BULLET" = 34 chars caused
@@ -1051,6 +1131,10 @@ def place_trade(direction, entry, sl, tp, lot_size):
     v3.9: filling fallback chain — RETURN → IOC → FOK.
     Used by Silver Bullet paths only from v4.0 onward.
     """
+    if has_open_position():
+        log(f"Position already open for {_instance_tag} — skipping duplicate entry.", "GUARD")
+        return None
+    
     order_type = mt5.ORDER_TYPE_BUY if direction == "BUY" else mt5.ORDER_TYPE_SELL
 
     base_order = {
@@ -1114,6 +1198,20 @@ def has_pending_order() -> bool:
     return any(o.magic == _instance_magic for o in orders)
 
 
+def has_open_position() -> bool:
+    """
+    v4.4 FIX-1: Returns True if this instance has an open position.
+    Guards against placing duplicate market orders on consecutive scan cycles.
+    """
+    if BACKTEST_MODE:
+        return False
+    
+    positions = mt5.positions_get(symbol=SYMBOL)
+    if not positions:
+        return False
+    return any(p.magic == _instance_magic for p in positions)
+
+
 def place_limit_order(direction: str, entry: float, sl: float,
                       tp: float, lot_size: float):
     """
@@ -1170,6 +1268,7 @@ def place_limit_order(direction: str, entry: float, sl: float,
 
 def _modify_sl(pos, new_sl: float, label: str):
     """
+    v4.4 FIX-3: SL movement tracking added.
     v3.9.5: Sends TRADE_ACTION_SLTP to move stop loss on open position.
     Preserves existing TP. Logs result with ticket and new SL level.
     """
@@ -1180,10 +1279,40 @@ def _modify_sl(pos, new_sl: float, label: str):
         "tp":       pos.tp,
     })
     if result and result.retcode == mt5.TRADE_RETCODE_DONE:
-        log(f"TRAIL [{label}]  Ticket={pos.ticket}  SL → {new_sl:.5f}", "TRADE")
+        log(f"TRAIL [{label}]  Ticket={pos.ticket}  SL -> {new_sl:.5f}", "TRADE")
+        log_sl_move(pos.ticket, pos.price_open, pos.sl, new_sl, label)
     else:
         log(f"SL modify failed. Ticket={pos.ticket}  "
             f"Code={result.retcode if result else 'N/A'}", "ERROR")
+
+
+def log_sl_move(ticket: int, entry: float, old_sl: float, new_sl: float, label: str):
+    """
+    v4.4 FIX-3: Log SL moves to file for tracking and analysis.
+    """
+    log_file = Path(f"sl_moves_{_instance_tag}.json")
+    moves = []
+    if log_file.exists():
+        try:
+            with open(log_file, "r") as f:
+                moves = json.load(f)
+        except:
+            moves = []
+    
+    moves.append({
+        "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "ticket": ticket,
+        "entry": entry,
+        "old_sl": old_sl,
+        "new_sl": new_sl,
+        "movement": round(new_sl - old_sl, 5),
+        "label": label,
+        "symbol": _arg_symbol,
+        "strategy": STRATEGY
+    })
+    
+    with open(log_file, "w") as f:
+        json.dump(moves, f, indent=2)
 
 
 def manage_open_positions():
@@ -1401,6 +1530,15 @@ def evaluate_ingwe(df, fvgs, sweep, sweep_level, price, atr, lot_size, session):
                 continue
             if not check_pre_trade_spread():
                 continue
+            
+            # --- KRONOS VETO GATE (BUY) ---
+            if KRONOS_VETO_GATE is not None:
+                allowed, reason = KRONOS_VETO_GATE.validate("BUY", df, SYMBOL)
+                log(f"[KRONOS] BUY signal: {reason}", "GUARD")
+                if not allowed:
+                    log(f"Kronos vetoed BUY. Skipping trade.", "GUARD")
+                    return
+            
             stop  = max(atr * ATR_MULTIPLIER, min_sl)
             entry = round(price, 5)
             sl    = round(entry - stop, 5)
@@ -1475,6 +1613,15 @@ def evaluate_ingwe(df, fvgs, sweep, sweep_level, price, atr, lot_size, session):
                 continue
             if not check_pre_trade_spread():
                 continue
+            
+            # --- KRONOS VETO GATE (SELL CONTINUATION) ---
+            if KRONOS_VETO_GATE is not None:
+                allowed, reason = KRONOS_VETO_GATE.validate("SELL", df, SYMBOL)
+                log(f"[KRONOS] SELL signal: {reason}", "GUARD")
+                if not allowed:
+                    log(f"Kronos vetoed SELL. Skipping trade.", "GUARD")
+                    return
+            
             stop  = max(atr * ATR_MULTIPLIER, min_sl)
             entry = round(price, 5)
             sl    = round(entry + stop, 5)
@@ -1511,6 +1658,15 @@ def evaluate_ingwe(df, fvgs, sweep, sweep_level, price, atr, lot_size, session):
                 continue
             if not check_pre_trade_spread():
                 continue
+            
+            # --- KRONOS VETO GATE (BUY CONTINUATION) ---
+            if KRONOS_VETO_GATE is not None:
+                allowed, reason = KRONOS_VETO_GATE.validate("BUY", df, SYMBOL)
+                log(f"[KRONOS] BUY signal: {reason}", "GUARD")
+                if not allowed:
+                    log(f"Kronos vetoed BUY. Skipping trade.", "GUARD")
+                    return
+            
             stop  = max(atr * ATR_MULTIPLIER, min_sl)
             entry = round(price, 5)
             sl    = round(entry - stop, 5)
@@ -1570,6 +1726,15 @@ def evaluate_silver_bullet(df, fvgs, sweep, sweep_level, price, atr,
                     continue
                 if not check_pre_trade_spread():
                     continue
+                
+                # --- KRONOS VETO GATE (UNICORN BUY) ---
+                if KRONOS_VETO_GATE is not None:
+                    allowed, reason = KRONOS_VETO_GATE.validate("BUY", df, SYMBOL)
+                    log(f"[KRONOS] BUY signal: {reason}", "GUARD")
+                    if not allowed:
+                        log(f"Kronos vetoed BUY. Skipping trade.", "GUARD")
+                        return
+                
                 entry   = round(price, 5)
                 sl      = round(bb_low - atr * ATR_MULTIPLIER, 5)
                 sl_dist = abs(entry - sl)
@@ -1599,6 +1764,15 @@ def evaluate_silver_bullet(df, fvgs, sweep, sweep_level, price, atr,
                     continue
                 if not check_pre_trade_spread():
                     continue
+                
+                # --- KRONOS VETO GATE (UNICORN SELL) ---
+                if KRONOS_VETO_GATE is not None:
+                    allowed, reason = KRONOS_VETO_GATE.validate("SELL", df, SYMBOL)
+                    log(f"[KRONOS] SELL signal: {reason}", "GUARD")
+                    if not allowed:
+                        log(f"Kronos vetoed SELL. Skipping trade.", "GUARD")
+                        return
+                
                 entry   = round(price, 5)
                 sl      = round(bb_high + atr * ATR_MULTIPLIER, 5)
                 sl_dist = abs(sl - entry)
@@ -1633,6 +1807,15 @@ def evaluate_silver_bullet(df, fvgs, sweep, sweep_level, price, atr,
                 continue
             if not check_pre_trade_spread():
                 continue
+            
+            # --- KRONOS VETO GATE (SB BUY) ---
+            if KRONOS_VETO_GATE is not None:
+                allowed, reason = KRONOS_VETO_GATE.validate("BUY", df, SYMBOL)
+                log(f"[KRONOS] BUY signal: {reason}", "GUARD")
+                if not allowed:
+                    log(f"Kronos vetoed BUY. Skipping trade.", "GUARD")
+                    return
+            
             entry   = round(price, 5)
             sl      = round(sweep_level - atr * ATR_MULTIPLIER, 5)
             sl_dist = abs(entry - sl)
@@ -1658,6 +1841,15 @@ def evaluate_silver_bullet(df, fvgs, sweep, sweep_level, price, atr,
                 continue
             if not check_pre_trade_spread():
                 continue
+            
+            # --- KRONOS VETO GATE (SB SELL) ---
+            if KRONOS_VETO_GATE is not None:
+                allowed, reason = KRONOS_VETO_GATE.validate("SELL", df, SYMBOL)
+                log(f"[KRONOS] SELL signal: {reason}", "GUARD")
+                if not allowed:
+                    log(f"Kronos vetoed SELL. Skipping trade.", "GUARD")
+                    return
+            
             entry   = round(price, 5)
             sl      = round(sweep_level + atr * ATR_MULTIPLIER, 5)
             sl_dist = abs(sl - entry)
@@ -1695,8 +1887,10 @@ def run_agent():
         return
     if check_equity_drawdown():
         return
+    
+    update_consecutive_losses()
     if check_consecutive_losses():
-        log("2 consecutive losses — Ingwe pauses.", "GUARD")
+        log("Consecutive loss limit reached — Ingwe pauses.", "GUARD")
         return
 
     # ── v3.9.5: Manage open positions every cycle ────────
@@ -1729,6 +1923,11 @@ def run_agent():
         if not active:
             log("No killzone active. Ingwe watches...")
             return
+        
+        if _arg_symbol == "GBPUSD" and active == "London Open":
+            log("GBPUSD London Open disabled (0% win rate historically). Ingwe waits.", "GUARD")
+            return
+        
         s, e = get_active_killzones()[active]
         log(f"KILLZONE: {active} ({s:02d}:00–{e:02d}:00 SAST)")
 
@@ -1823,7 +2022,7 @@ if __name__ == "__main__":
 
     summer = is_eu_summer()
     print("=" * 60)
-    print("   PROJECT VUKA — AGENT INGWE  v4.3")
+    print("   PROJECT VUKA — AGENT INGWE  v4.4")
     print("   The leopard does not miss because it does not rush.")
     print("=" * 60)
     print()

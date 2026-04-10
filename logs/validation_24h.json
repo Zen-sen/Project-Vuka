@@ -1,0 +1,16 @@
+{
+  "validation_start": "2026-04-09T22:30:00Z",
+  "duration_hours": 24,
+  "validation_end": "2026-04-10T22:30:00Z",
+  "initial_stats": {
+    "total_entries": 10,
+    "allow_count": 2,
+    "veto_count": 3,
+    "veto_rate_pct": 60.0
+  },
+  "checkpoints": {
+    "12h": null,
+    "24h": null
+  },
+  "notes": "Advisory mode - all trades still execute, decisions logged for correlation analysis"
+}
