@@ -95,17 +95,17 @@ except ImportError:
 # -------------------------------------------------------
 # ── STRATEGY & SYMBOL SELECTOR ──────────────────────────
 _valid_strategies = ("INGWE", "SILVER_BULLET")
-_valid_symbols    = ("EURUSD", "GBPUSD", "USDJPY")
+_valid_symbols    = ("EURUSD", "GBPUSD", "USDJPY", "BTCUSD")
 
 _arg_symbol   = sys.argv[1].upper() if len(sys.argv) > 1 else "EURUSD"
 _arg_strategy = sys.argv[2].upper() if len(sys.argv) > 2 else "INGWE"
 _arg_check    = "--check" in sys.argv
 
 if _arg_symbol not in _valid_symbols:
-    print(f"❌ Unknown symbol '{_arg_symbol}'. Use: {', '.join(_valid_symbols)}")
+    print(f"X Unknown symbol '{_arg_symbol}'. Use: {', '.join(_valid_symbols)}")
     sys.exit(1)
 if _arg_strategy not in _valid_strategies:
-    print(f"❌ Unknown strategy '{_arg_strategy}'. Use: {', '.join(_valid_strategies)}")
+    print(f"X Unknown strategy '{_arg_strategy}'. Use: {', '.join(_valid_strategies)}")
     sys.exit(1)
 
 # ── v3.9.4 FIX-5: USDJPY lot sizing guard ───────────────
@@ -124,6 +124,7 @@ _SYMBOL_MAP = {
     "EURUSD": "EURUSDc",
     "GBPUSD": "GBPUSDc",
     "USDJPY": "USDJPYc",
+    "BTCUSD": "BTCUSDc",
 }
 SYMBOL = _SYMBOL_MAP[_arg_symbol]
 
@@ -146,24 +147,45 @@ _instance_magic = _derive_magic(_instance_tag)
 # -------------------------------------------------------
 # CONFIGURATION
 # -------------------------------------------------------
-TIMEFRAME                = mt5.TIMEFRAME_M15
-RISK_PERCENT             = 1.0
-RISK_REWARD_RATIO        = 3.5
-ATR_PERIOD               = 14
-ATR_MULTIPLIER           = 1.5
-MIN_SL_ATR_MULTIPLIER    = 0.5
-LIMIT_ORDER_EXPIRY_CANDLES = 4   # v4.0: Pending limit TTL = 4 × M15 = 1hr
-ADX_PERIOD               = 14
-ADX_MIN_THRESHOLD        = 20
-MIN_SPREAD_PIPS          = 0.0002
-MAX_DAILY_LOSS           = 50.0
-MAX_DRAWDOWN_PCT         = 10.0
-HARD_LOT_CAP             = 0.20
-SCAN_INTERVAL_SEC        = 900
-DATA_STALE_MINUTES       = 30
-DATA_STALE_MINUTES_ASIAN = 90   # v4.0 FIX: More lenient for Asian low-liquidity hours
-MT5_RETRY_ATTEMPTS       = 3
-MT5_RETRY_DELAY_SEC      = 30
+
+if _arg_symbol == "BTCUSD":
+    TIMEFRAME                = mt5.TIMEFRAME_M1
+    RISK_PERCENT             = 1.0
+    RISK_REWARD_RATIO        = 3.5
+    ATR_PERIOD               = 14
+    ATR_MULTIPLIER           = 1.5
+    MIN_SL_ATR_MULTIPLIER    = 0.5
+    LIMIT_ORDER_EXPIRY_CANDLES = 4
+    ADX_PERIOD               = 14
+    ADX_MIN_THRESHOLD        = 25
+    MIN_SPREAD_PIPS          = 1.0
+    MAX_DAILY_LOSS           = 50.0
+    MAX_DRAWDOWN_PCT         = 10.0
+    HARD_LOT_CAP             = 0.60
+    SCAN_INTERVAL_SEC        = 60
+    DATA_STALE_MINUTES       = 5
+    DATA_STALE_MINUTES_ASIAN = 10
+    MT5_RETRY_ATTEMPTS       = 3
+    MT5_RETRY_DELAY_SEC      = 10
+else:
+    TIMEFRAME                = mt5.TIMEFRAME_M15
+    RISK_PERCENT             = 1.0
+    RISK_REWARD_RATIO        = 3.5
+    ATR_PERIOD               = 14
+    ATR_MULTIPLIER           = 1.5
+    MIN_SL_ATR_MULTIPLIER    = 0.5
+    LIMIT_ORDER_EXPIRY_CANDLES = 4
+    ADX_PERIOD               = 14
+    ADX_MIN_THRESHOLD        = 20
+    MIN_SPREAD_PIPS          = 0.0002
+    MAX_DAILY_LOSS           = 50.0
+    MAX_DRAWDOWN_PCT         = 10.0
+    HARD_LOT_CAP             = 0.60
+    SCAN_INTERVAL_SEC        = 900
+    DATA_STALE_MINUTES       = 30
+    DATA_STALE_MINUTES_ASIAN = 90
+    MT5_RETRY_ATTEMPTS       = 3
+    MT5_RETRY_DELAY_SEC      = 30
 
 # -------------------------------------------------------
 # BACKTEST MODE (Option B) — CSV Replay
@@ -229,6 +251,17 @@ SB_BLACKOUTS_SUMMER = [
 ]
 
 # -------------------------------------------------------
+# BTCUSD SCALPING KILLZONES (M1) - 24/7 active
+# -------------------------------------------------------
+BTC_KILLZONES = {
+    "Asian":     (2,  6),
+    "London":   (9,  12),
+    "NY_Open":  (15, 18),
+    "NY_Session": (18, 22),
+    "Late_NY":  (22, 2),
+}
+
+# -------------------------------------------------------
 # GLOBALS
 # -------------------------------------------------------
 initial_equity        = None
@@ -275,6 +308,8 @@ def now_sast() -> datetime:
 
 
 def get_active_killzones() -> dict:
+    if _arg_symbol == "BTCUSD":
+        return BTC_KILLZONES
     return KILLZONES_SUMMER if is_eu_summer() else KILLZONES_WINTER
 
 
@@ -289,6 +324,8 @@ def get_active_blackouts() -> list:
 
 
 def is_market_open() -> bool:
+    if _arg_symbol == "BTCUSD":
+        return True  # Crypto trades 24/7 including weekends
     return now_sast().weekday() not in (5, 6)
 
 
@@ -1028,9 +1065,16 @@ def check_pre_trade_spread() -> bool:
     if spread is None:
         log("Spread unavailable.", "WARN")
         return False
-    if spread > MIN_SPREAD_PIPS * 2:
-        log(f"Spread too wide: {spread*10000:.1f}p.", "GUARD")
-        return False
+    
+    if _arg_symbol == "BTCUSD":
+        max_spread = 2.0
+        if spread > max_spread:
+            log(f"Spread too wide: ${spread:.2f} (max: ${max_spread})", "GUARD")
+            return False
+    else:
+        if spread > MIN_SPREAD_PIPS * 2:
+            log(f"Spread too wide: {spread*10000:.1f}p.", "GUARD")
+            return False
     return True
 
 
@@ -1039,16 +1083,7 @@ def check_pre_trade_spread() -> bool:
 # =======================================================
 
 def calculate_lot_size(atr: float | None = None) -> float:
-    account     = mt5.account_info()
-    symbol_info = mt5.symbol_info(SYMBOL)
-    if account is None or symbol_info is None:
-        return 0.01
-    if not atr:
-        atr = 0.0005
-    risk    = account.equity * (RISK_PERCENT / 100)
-    stop    = atr * ATR_MULTIPLIER
-    lot     = risk / (stop * 100000)
-    return round(min(max(lot, 0.01), HARD_LOT_CAP), 2)
+    return 0.08
 
 
 def get_overlap_multiplier() -> float:
