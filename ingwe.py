@@ -8,6 +8,11 @@ import json
 import os
 import sys
 import hashlib
+import codecs
+
+if sys.platform == "win32":
+    sys.stdout = codecs.getwriter('utf-8')(sys.stdout.buffer, 'strict')
+    sys.stderr = codecs.getwriter('utf-8')(sys.stderr.buffer, 'strict')
 
 try:
     from kronos_guardian import KronosVetoGate
@@ -69,8 +74,8 @@ except ImportError:
 #   FIX-2: manage_open_positions() — trailing SL manager.
 #     New function added to Section 10. Runs every scan
 #     cycle before session logic, filtered by magic number.
-#     At 1:1 profit → SL moves to breakeven (entry).
-#     At 1:2 profit → SL moves to 1:1 (half target locked).
+#     At 1:1 profit -> SL moves to breakeven (entry).
+#     At 1:2 profit -> SL moves to 1:1 (half target locked).
 #     Worst case on any mature trade: secured half the RRR
 #     minimum. Helper _modify_sl() handles MT5 SLTP modify
 #     with full retcode logging.
@@ -94,7 +99,7 @@ except ImportError:
 
 # -------------------------------------------------------
 # ── STRATEGY & SYMBOL SELECTOR ──────────────────────────
-_valid_strategies = ("INGWE", "SILVER_BULLET")
+_valid_strategies = ("INGWE", "SILVER_BULLET", "ICT_M1")
 _valid_symbols    = ("EURUSD", "GBPUSD", "USDJPY", "BTCUSD")
 
 _arg_symbol   = sys.argv[1].upper() if len(sys.argv) > 1 else "EURUSD"
@@ -129,7 +134,7 @@ _SYMBOL_MAP = {
 SYMBOL = _SYMBOL_MAP[_arg_symbol]
 
 _instance_tag   = f"{_arg_symbol}_{STRATEGY}"
-_instance_short = f"{_arg_symbol[:3]}{'SB' if STRATEGY == 'SILVER_BULLET' else 'IW'}"
+_instance_short = f"{_arg_symbol[:3]}{'SB' if STRATEGY == 'SILVER_BULLET' else ('M1' if STRATEGY == 'ICT_M1' else 'IW')}"
 LOG_FILE        = f"trades_{_instance_tag}.json"
 SESSIONS_FILE   = f"sessions_{_instance_tag}.json"
 
@@ -161,10 +166,29 @@ if _arg_symbol == "BTCUSD":
     MIN_SPREAD_PIPS          = 1.0
     MAX_DAILY_LOSS           = 50.0
     MAX_DRAWDOWN_PCT         = 10.0
-    HARD_LOT_CAP             = 0.60
+    HARD_LOT_CAP             = 0.20
     SCAN_INTERVAL_SEC        = 60
     DATA_STALE_MINUTES       = 5
     DATA_STALE_MINUTES_ASIAN = 10
+    MT5_RETRY_ATTEMPTS       = 3
+    MT5_RETRY_DELAY_SEC      = 10
+elif STRATEGY == "ICT_M1":
+    TIMEFRAME                = mt5.TIMEFRAME_M1
+    RISK_PERCENT             = 1.0
+    RISK_REWARD_RATIO        = 2.0
+    ATR_PERIOD               = 14
+    ATR_MULTIPLIER           = 1.0
+    MIN_SL_ATR_MULTIPLIER    = 0.5
+    LIMIT_ORDER_EXPIRY_CANDLES = 4
+    ADX_PERIOD               = 14
+    ADX_MIN_THRESHOLD        = 25
+    MIN_SPREAD_PIPS          = 0.0002
+    MAX_DAILY_LOSS           = 50.0
+    MAX_DRAWDOWN_PCT         = 10.0
+    HARD_LOT_CAP             = 0.20
+    SCAN_INTERVAL_SEC        = 15
+    DATA_STALE_MINUTES       = 2
+    DATA_STALE_MINUTES_ASIAN = 5
     MT5_RETRY_ATTEMPTS       = 3
     MT5_RETRY_DELAY_SEC      = 10
 else:
@@ -180,7 +204,7 @@ else:
     MIN_SPREAD_PIPS          = 0.0002
     MAX_DAILY_LOSS           = 50.0
     MAX_DRAWDOWN_PCT         = 10.0
-    HARD_LOT_CAP             = 0.60
+    HARD_LOT_CAP             = 0.20
     SCAN_INTERVAL_SEC        = 900
     DATA_STALE_MINUTES       = 30
     DATA_STALE_MINUTES_ASIAN = 90
@@ -261,6 +285,14 @@ BTC_KILLZONES = {
     "Late_NY":  (22, 2),
 }
 
+ICT_M1_SESSIONS = {
+    "Asian":     (2,  6),
+    "London":    (9, 12),
+    "NY_Open":  (15, 18),
+    "NY_Session": (18, 22),
+    "Late_NY":  (22, 2),
+}
+
 # -------------------------------------------------------
 # GLOBALS
 # -------------------------------------------------------
@@ -308,6 +340,8 @@ def now_sast() -> datetime:
 
 
 def get_active_killzones() -> dict:
+    if STRATEGY == "ICT_M1":
+        return ICT_M1_SESSIONS
     if _arg_symbol == "BTCUSD":
         return BTC_KILLZONES
     return KILLZONES_SUMMER if is_eu_summer() else KILLZONES_WINTER
@@ -324,8 +358,8 @@ def get_active_blackouts() -> list:
 
 
 def is_market_open() -> bool:
-    if _arg_symbol == "BTCUSD":
-        return True  # Crypto trades 24/7 including weekends
+    if STRATEGY == "ICT_M1" or _arg_symbol == "BTCUSD":
+        return True  # M1 scalping + Crypto trade 24/7
     return now_sast().weekday() not in (5, 6)
 
 
@@ -911,7 +945,7 @@ def detect_m15_bos(df: pd.DataFrame, lookback: int = 20) -> str | None:
 
 def calculate_adx_wilder(df: pd.DataFrame, period: int = 14):
     """
-    v3.9.3: True Wilder smoothing for TR, +DM, -DM, and DX → ADX.
+    v3.9.3: True Wilder smoothing for TR, +DM, -DM, and DX -> ADX.
     Minimum data: period*2+1 bars. Output matches MT5's native ADX indicator.
     """
     if df is None or len(df) < period * 2 + 1:
@@ -1151,7 +1185,7 @@ def log_trade(direction, entry, sl, tp, result, lot_size, session):
     with open(tmp, "w") as f:
         json.dump(trade_log, f, indent=2)
     os.replace(tmp, LOG_FILE)
-    log(f"Trade logged → {LOG_FILE}", "TRADE")
+    log(f"Trade logged -> {LOG_FILE}", "TRADE")
 
 
 def place_trade(direction, entry, sl, tp, lot_size):
@@ -1163,7 +1197,7 @@ def place_trade(direction, entry, sl, tp, lot_size):
       "Ingwe v3.9.4 EURUSD_SILVER_BULLET" = 34 chars caused
       MT5 error -2 on every order_send — both SB instances
       were unable to execute any trade.
-    v3.9: filling fallback chain — RETURN → IOC → FOK.
+    v3.9: filling fallback chain -- RETURN -> IOC -> FOK.
     Used by Silver Bullet paths only from v4.0 onward.
     """
     if has_open_position():
@@ -1357,8 +1391,8 @@ def manage_open_positions():
     Filtered by _instance_magic — each instance manages only its own trades.
 
     Rules:
-      1:1 profit hit → SL moves to breakeven (entry). Worst case: 0.
-      1:2 profit hit → SL moves to 1:1. Worst case: secured half RRR minimum.
+      1:1 profit hit -> SL moves to breakeven (entry). Worst case: 0.
+      1:2 profit hit -> SL moves to 1:1. Worst case: secured half RRR minimum.
 
     The leopard does not give back what it has already taken.
     """
@@ -1387,11 +1421,11 @@ def manage_open_positions():
             if at_2r and sl_below_1r:
                 new_sl = round(entry + sl_dist, 5)
                 if new_sl > sl:
-                    _modify_sl(pos, new_sl, "1:2 → SL to 1:1")
+                    _modify_sl(pos, new_sl, "1:2 -> SL to 1:1")
             elif at_1r and sl_below_be:
                 new_sl = round(entry, 5)
                 if new_sl > sl:
-                    _modify_sl(pos, new_sl, "1:1 → SL to BE")
+                    _modify_sl(pos, new_sl, "1:1 -> SL to BE")
 
         elif pos.type == mt5.ORDER_TYPE_SELL:
             at_2r = current <= entry - sl_dist * 2
@@ -1402,11 +1436,11 @@ def manage_open_positions():
             if at_2r and sl_above_1r:
                 new_sl = round(entry - sl_dist, 5)
                 if new_sl < sl:
-                    _modify_sl(pos, new_sl, "1:2 → SL to 1:1")
+                    _modify_sl(pos, new_sl, "1:2 -> SL to 1:1")
             elif at_1r and sl_above_be:
                 new_sl = round(entry, 5)
                 if new_sl < sl:
-                    _modify_sl(pos, new_sl, "1:1 → SL to BE")
+                    _modify_sl(pos, new_sl, "1:1 -> SL to BE")
 
 
 # =======================================================
@@ -1460,7 +1494,7 @@ def evaluate_ingwe(df, fvgs, sweep, sweep_level, price, atr, lot_size, session):
     multiplier  = get_overlap_multiplier()
     if multiplier > 1.0:
         lot_size = min(round(lot_size * multiplier, 2), HARD_LOT_CAP)
-        log(f"London/NY Overlap → Lot: {lot_size} (1.2x)")
+        log(f"London/NY Overlap -> Lot: {lot_size} (1.2x)")
 
     threshold = get_confluence_threshold(adx)
     log(f"Price: {price:.5f}  |  ATR: {atr:.5f}  |  "
@@ -1985,7 +2019,12 @@ def run_agent():
     log(f"SWEEP: {sweep} at {sweep_level:.5f}")
 
     # ── FVG ──────────────────────────────────────────────
-    fvg_lookback = 4 if STRATEGY == "SILVER_BULLET" else 20
+    if STRATEGY == "SILVER_BULLET":
+        fvg_lookback = 4
+    elif STRATEGY == "ICT_M1":
+        fvg_lookback = 40
+    else:
+        fvg_lookback = 20
     fvgs = detect_fvg(df, max_age=fvg_lookback)
     if not fvgs:
         fvgs = detect_immediate_fvg(df)
@@ -2040,8 +2079,9 @@ if __name__ == "__main__":
         _errors.append(f"MAX_DAILY_LOSS {MAX_DAILY_LOSS} must be positive")
     if MAX_DRAWDOWN_PCT <= 0 or MAX_DRAWDOWN_PCT > 50:
         _errors.append(f"MAX_DRAWDOWN_PCT {MAX_DRAWDOWN_PCT} out of range (0-50%)")
-    if SCAN_INTERVAL_SEC < 60:
-        _errors.append(f"SCAN_INTERVAL_SEC {SCAN_INTERVAL_SEC} dangerously low (min 60s)")
+    min_scan = 15 if STRATEGY == "ICT_M1" else 60
+    if SCAN_INTERVAL_SEC < min_scan:
+        _errors.append(f"SCAN_INTERVAL_SEC {SCAN_INTERVAL_SEC} dangerously low (min {min_scan}s)")
     if ATR_PERIOD < 5:
         _errors.append(f"ATR_PERIOD {ATR_PERIOD} too low — minimum 5 for meaningful ATR")
     if DATA_STALE_MINUTES < SCAN_INTERVAL_SEC / 60:
@@ -2108,11 +2148,12 @@ if __name__ == "__main__":
             log("CHECK MODE: Running single scan and exiting.")
             print()
             run_agent()
-            print()
+            print(); import sys; sys.stdout.flush()
             log("Check complete. Ingwe stands down.")
         else:
             while True:
                 run_agent()
+                print(); import sys; sys.stdout.flush()
                 time.sleep(SCAN_INTERVAL_SEC)
     except KeyboardInterrupt:
         log("Keyboard interrupt. Ingwe stands down gracefully.")
