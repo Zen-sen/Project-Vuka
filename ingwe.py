@@ -16,7 +16,11 @@ if sys.platform == "win32":
 
 try:
     from kronos_guardian import KronosVetoGate
-    KRONOS_VETO_GATE = KronosVetoGate()
+    KRONOS_VETO_GATE = KronosVetoGate(
+        threshold=0.75,
+        enabled=True,
+        mode="enforced"
+    )
 except ImportError:
     KRONOS_VETO_GATE = None
 
@@ -1160,6 +1164,12 @@ def calculate_confluence_score(trend, fvg_ok, zone_ok, spread_ok, adx_ok,
 # =======================================================
 
 def log_trade(direction, entry, sl, tp, result, lot_size, session):
+    """
+    v4.5: Added fill tracking for slippage analysis.
+      - actual_fill: real execution price from MT5 result
+      - slippage_pips: deviation from requested entry
+      - effective_rr: RR based on actual fill vs SL/TP
+    """
     trade_log = []
     if os.path.exists(LOG_FILE):
         try:
@@ -1167,20 +1177,42 @@ def log_trade(direction, entry, sl, tp, result, lot_size, session):
                 trade_log = json.load(f)
         except json.JSONDecodeError:
             pass
-    trade_log.append({
+    
+    actual_fill = getattr(result, "price", entry)
+    slippage = abs(actual_fill - entry)
+    slippage_pips = slippage * 10000
+    
+    if direction == "BUY":
+        sl_dist_actual = actual_fill - sl
+        tp_dist_actual = tp - actual_fill
+    else:
+        sl_dist_actual = sl - actual_fill
+        tp_dist_actual = actual_fill - tp
+    
+    effective_rr = tp_dist_actual / sl_dist_actual if sl_dist_actual > 0 else 0
+    
+    trade_entry = {
         "time":        datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "sast":        now_sast().strftime("%Y-%m-%d %H:%M:%S"),
         "strategy":    STRATEGY,
         "market_mode": "summer" if is_eu_summer() else "winter",
         "session":     session,
         "direction":   direction,
-        "entry":       entry,
+        "entry_req":   entry,
+        "entry_fill":  actual_fill,
+        "slippage":    round(slippage_pips, 1),
         "sl":          sl,
         "tp":          tp,
         "lot_size":    lot_size,
+        "effective_rr": round(effective_rr, 2),
         "retcode":     result.retcode,
         "comment":     getattr(result, "comment", "")
-    })
+    }
+    
+    trade_log.append(trade_entry)
+    
+    log(f"[FILL] req={entry} fill={actual_fill} slip={slippage_pips:.1f}p eff_RR={effective_rr:.2f}", "TRADE")
+    
     tmp = LOG_FILE + ".tmp"
     with open(tmp, "w") as f:
         json.dump(trade_log, f, indent=2)
@@ -1600,9 +1632,26 @@ def evaluate_ingwe(df, fvgs, sweep, sweep_level, price, atr, lot_size, session):
             if not check_pre_trade_spread():
                 continue
             
-            # --- KRONOS VETO GATE (BUY) ---
+            def _build_context(dir, setup_type, fvg_t, fvg_50_val):
+                return {
+                    "direction": dir,
+                    "setup_type": setup_type,
+                    "sweep": sweep,
+                    "fvg_type": fvg_t,
+                    "fvg_position": "below_50" if price <= fvg_50_val else ("50%" if abs(price - fvg_50_val) < atr * 0.1 else "above_50"),
+                    "bos_aligned": bos_aligned,
+                    "htf_bias_ok": htf_bias_ok,
+                    "confluence_score": score,
+                    "session": session,
+                    "atr": atr,
+                    "spread_ok": spread_ok,
+                    "trend": trend,
+                    "level_sweep": level_sweep
+                }
+            
             if KRONOS_VETO_GATE is not None:
-                allowed, reason = KRONOS_VETO_GATE.validate("BUY", df, SYMBOL)
+                ctx = _build_context("BUY", "REVERSAL", fvg_type, fvg_50)
+                allowed, reason = KRONOS_VETO_GATE.validate(ctx, df, SYMBOL)
                 log(f"[KRONOS] BUY signal: {reason}", "GUARD")
                 if not allowed:
                     log(f"Kronos vetoed BUY. Skipping trade.", "GUARD")
@@ -1646,6 +1695,27 @@ def evaluate_ingwe(df, fvgs, sweep, sweep_level, price, atr, lot_size, session):
                 continue
             if not check_pre_trade_spread():
                 continue
+            if KRONOS_VETO_GATE is not None:
+                ctx = {
+                    "direction": "SELL",
+                    "setup_type": "REVERSAL",
+                    "sweep": sweep,
+                    "fvg_type": fvg_type,
+                    "fvg_position": "above_50" if price >= fvg_50 else ("50%" if abs(price - fvg_50) < atr * 0.1 else "below_50"),
+                    "bos_aligned": bos_aligned,
+                    "htf_bias_ok": htf_bias_ok,
+                    "confluence_score": score,
+                    "session": session,
+                    "atr": atr,
+                    "spread_ok": spread_ok,
+                    "trend": trend,
+                    "level_sweep": level_sweep
+                }
+                allowed, reason = KRONOS_VETO_GATE.validate(ctx, df, SYMBOL)
+                log(f"[KRONOS] SELL signal: {reason}", "GUARD")
+                if not allowed:
+                    log(f"Kronos vetoed SELL. Skipping trade.", "GUARD")
+                    return
             stop  = max(atr * ATR_MULTIPLIER, min_sl)
             entry = round(price, 5)
             sl    = round(entry + stop, 5)
@@ -1683,9 +1753,23 @@ def evaluate_ingwe(df, fvgs, sweep, sweep_level, price, atr, lot_size, session):
             if not check_pre_trade_spread():
                 continue
             
-            # --- KRONOS VETO GATE (SELL CONTINUATION) ---
             if KRONOS_VETO_GATE is not None:
-                allowed, reason = KRONOS_VETO_GATE.validate("SELL", df, SYMBOL)
+                ctx = {
+                    "direction": "SELL",
+                    "setup_type": "CONTINUATION",
+                    "sweep": sweep,
+                    "fvg_type": fvg_type,
+                    "fvg_position": "above_50" if price >= fvg_50 else ("50%" if abs(price - fvg_50) < atr * 0.1 else "below_50"),
+                    "bos_aligned": bos_aligned,
+                    "htf_bias_ok": htf_bias_ok,
+                    "confluence_score": score,
+                    "session": session,
+                    "atr": atr,
+                    "spread_ok": spread_ok,
+                    "trend": trend,
+                    "level_sweep": level_sweep
+                }
+                allowed, reason = KRONOS_VETO_GATE.validate(ctx, df, SYMBOL)
                 log(f"[KRONOS] SELL signal: {reason}", "GUARD")
                 if not allowed:
                     log(f"Kronos vetoed SELL. Skipping trade.", "GUARD")
@@ -1728,9 +1812,23 @@ def evaluate_ingwe(df, fvgs, sweep, sweep_level, price, atr, lot_size, session):
             if not check_pre_trade_spread():
                 continue
             
-            # --- KRONOS VETO GATE (BUY CONTINUATION) ---
             if KRONOS_VETO_GATE is not None:
-                allowed, reason = KRONOS_VETO_GATE.validate("BUY", df, SYMBOL)
+                ctx = {
+                    "direction": "BUY",
+                    "setup_type": "CONTINUATION",
+                    "sweep": sweep,
+                    "fvg_type": fvg_type,
+                    "fvg_position": "below_50" if price <= fvg_50 else ("50%" if abs(price - fvg_50) < atr * 0.1 else "above_50"),
+                    "bos_aligned": bos_aligned,
+                    "htf_bias_ok": htf_bias_ok,
+                    "confluence_score": score,
+                    "session": session,
+                    "atr": atr,
+                    "spread_ok": spread_ok,
+                    "trend": trend,
+                    "level_sweep": level_sweep
+                }
+                allowed, reason = KRONOS_VETO_GATE.validate(ctx, df, SYMBOL)
                 log(f"[KRONOS] BUY signal: {reason}", "GUARD")
                 if not allowed:
                     log(f"Kronos vetoed BUY. Skipping trade.", "GUARD")
@@ -1796,9 +1894,23 @@ def evaluate_silver_bullet(df, fvgs, sweep, sweep_level, price, atr,
                 if not check_pre_trade_spread():
                     continue
                 
-                # --- KRONOS VETO GATE (UNICORN BUY) ---
                 if KRONOS_VETO_GATE is not None:
-                    allowed, reason = KRONOS_VETO_GATE.validate("BUY", df, SYMBOL)
+                    ctx = {
+                        "direction": "BUY",
+                        "setup_type": "UNICORN",
+                        "sweep": sweep,
+                        "fvg_type": u_type,
+                        "fvg_position": "in_zone",
+                        "bos_aligned": False,
+                        "htf_bias_ok": False,
+                        "confluence_score": 80,
+                        "session": window,
+                        "atr": atr,
+                        "spread_ok": check_pre_trade_spread(),
+                        "trend": "BULLISH",
+                        "level_sweep": True
+                    }
+                    allowed, reason = KRONOS_VETO_GATE.validate(ctx, df, SYMBOL)
                     log(f"[KRONOS] BUY signal: {reason}", "GUARD")
                     if not allowed:
                         log(f"Kronos vetoed BUY. Skipping trade.", "GUARD")
@@ -1834,9 +1946,23 @@ def evaluate_silver_bullet(df, fvgs, sweep, sweep_level, price, atr,
                 if not check_pre_trade_spread():
                     continue
                 
-                # --- KRONOS VETO GATE (UNICORN SELL) ---
                 if KRONOS_VETO_GATE is not None:
-                    allowed, reason = KRONOS_VETO_GATE.validate("SELL", df, SYMBOL)
+                    ctx = {
+                        "direction": "SELL",
+                        "setup_type": "UNICORN",
+                        "sweep": sweep,
+                        "fvg_type": u_type,
+                        "fvg_position": "in_zone",
+                        "bos_aligned": False,
+                        "htf_bias_ok": False,
+                        "confluence_score": 80,
+                        "session": window,
+                        "atr": atr,
+                        "spread_ok": check_pre_trade_spread(),
+                        "trend": "BEARISH",
+                        "level_sweep": True
+                    }
+                    allowed, reason = KRONOS_VETO_GATE.validate(ctx, df, SYMBOL)
                     log(f"[KRONOS] SELL signal: {reason}", "GUARD")
                     if not allowed:
                         log(f"Kronos vetoed SELL. Skipping trade.", "GUARD")
@@ -1877,9 +2003,23 @@ def evaluate_silver_bullet(df, fvgs, sweep, sweep_level, price, atr,
             if not check_pre_trade_spread():
                 continue
             
-            # --- KRONOS VETO GATE (SB BUY) ---
             if KRONOS_VETO_GATE is not None:
-                allowed, reason = KRONOS_VETO_GATE.validate("BUY", df, SYMBOL)
+                ctx = {
+                    "direction": "BUY",
+                    "setup_type": "SILVER_BULLET",
+                    "sweep": sweep,
+                    "fvg_type": fvg_type,
+                    "fvg_position": "below_50" if price <= fvg_50 else ("50%" if abs(price - fvg_50) < atr * 0.1 else "above_50"),
+                    "bos_aligned": False,
+                    "htf_bias_ok": False,
+                    "confluence_score": 70,
+                    "session": window,
+                    "atr": atr,
+                    "spread_ok": check_pre_trade_spread(),
+                    "trend": "BULLISH",
+                    "level_sweep": True
+                }
+                allowed, reason = KRONOS_VETO_GATE.validate(ctx, df, SYMBOL)
                 log(f"[KRONOS] BUY signal: {reason}", "GUARD")
                 if not allowed:
                     log(f"Kronos vetoed BUY. Skipping trade.", "GUARD")
@@ -1911,9 +2051,23 @@ def evaluate_silver_bullet(df, fvgs, sweep, sweep_level, price, atr,
             if not check_pre_trade_spread():
                 continue
             
-            # --- KRONOS VETO GATE (SB SELL) ---
             if KRONOS_VETO_GATE is not None:
-                allowed, reason = KRONOS_VETO_GATE.validate("SELL", df, SYMBOL)
+                ctx = {
+                    "direction": "SELL",
+                    "setup_type": "SILVER_BULLET",
+                    "sweep": sweep,
+                    "fvg_type": fvg_type,
+                    "fvg_position": "above_50" if price >= fvg_50 else ("50%" if abs(price - fvg_50) < atr * 0.1 else "below_50"),
+                    "bos_aligned": False,
+                    "htf_bias_ok": False,
+                    "confluence_score": 70,
+                    "session": window,
+                    "atr": atr,
+                    "spread_ok": check_pre_trade_spread(),
+                    "trend": "BEARISH",
+                    "level_sweep": True
+                }
+                allowed, reason = KRONOS_VETO_GATE.validate(ctx, df, SYMBOL)
                 log(f"[KRONOS] SELL signal: {reason}", "GUARD")
                 if not allowed:
                     log(f"Kronos vetoed SELL. Skipping trade.", "GUARD")

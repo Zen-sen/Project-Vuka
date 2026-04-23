@@ -9,12 +9,14 @@ import json
 import logging
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Optional
 
 import torch
 import numpy as np
 import pandas as pd
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
+from typing import Optional, Dict, List
 import uvicorn
 from contextlib import asynccontextmanager
 
@@ -126,42 +128,24 @@ async def health_check():
 def tokenize_ohlcv(df: pd.DataFrame, max_candles: int = MAX_CONTEXT) -> torch.Tensor:
     """
     Convert OHLCV DataFrame to Kronos token format
-    Args:
-        df: DataFrame with columns [open, high, low, close, volume]
-        max_candles: Maximum number of candles to tokenize
-    Returns:
-        Tensor of shape (batch, seq, features)
     """
-    # Take last max_candles
     df = df.tail(max_candles).copy()
 
-    # Ensure columns exist
     required_cols = ['open', 'high', 'low', 'close', 'volume']
     for col in required_cols:
         if col not in df.columns:
             raise ValueError(f"Missing required column: {col}")
 
-    # Add 'amount' column if missing (use close * volume as proxy)
-    if 'amount' not in df.columns:
-        df['amount'] = df['close'] * df['volume']
-
-    # Select and order columns
-    data = df[['open', 'high', 'low', 'close', 'volume', 'amount']].values.astype(np.float32)
+    n = min(len(df['open']), len(df['high']), len(df['low']), len(df['close']), len(df['volume']))
     
-    # Normalize to relative changes (percentage)
-    # Use pandas diff for cleaner handling
-    df_norm = df[['open', 'high', 'low', 'close', 'volume']].copy()
-    df_norm['amount'] = df['close'] * df['volume']
-    data = df_norm.values.astype(np.float32)
+    close_prices = df['close'].values[:n].astype(np.float32)
+    high_prices = df['high'].values[:n].astype(np.float32)
+    low_prices = df['low'].values[:n].astype(np.float32)
+    volumes = df['volume'].values[:n].astype(np.float32)
     
-    # Calculate percentage changes
-    data = np.zeros_like(data)
-    for i in range(1, len(data)):
-        data[i] = (df_norm.values[i] - df_norm.values[i-1]) / (np.abs(df_norm.values[i-1]) + 1e-8)
-    data[0] = data[1]  # First row use second row as reference
-
-    # Convert to tensor (batch=1, seq, features)
-    tensor = torch.tensor(data, dtype=torch.float32).unsqueeze(0)
+    features = np.column_stack([close_prices, high_prices, low_prices, volumes])
+    
+    tensor = torch.tensor(features, dtype=torch.float32).unsqueeze(0)
     return tensor.to(device)
 
 
@@ -171,45 +155,86 @@ def run_inference(ohlcv_tensor: torch.Tensor) -> tuple[bool, float]:
     Returns: (agree: bool, confidence: float)
     """
     try:
-        with torch.no_grad():
-            # Tokenize
-            z_pre, z, bsq_loss, z_indices = tokenizer(ohlcv_tensor)
-
-            # Get token indices from all timesteps
-            # z_indices shape: (batch, seq) - 2D tensor
-            if z_indices.shape[1] > 0:
-                # Get all token indices
-                token_indices = z_indices[0, :].cpu().numpy()
-                
-                # Analyze pattern across recent candles
-                recent_tokens = token_indices[-20:]
-                
-                # Calculate metrics
-                token_std = float(np.std(recent_tokens))
-                token_mean = float(np.mean(recent_tokens))
-                token_sum = float(np.sum(recent_tokens))
-                
-                # Use entropy-like measure for conviction
-                # Higher absolute mean relative to std = more confident
-                if token_std > 0:
-                    snr = abs(token_mean) / token_std
-                else:
-                    snr = 0
-                
-                # Map SNR to confidence (0.7-1.0 range for reasonable confidence)
-                confidence = min(0.7 + (snr / 10.0), 1.0)
-                
-                # Direction from mean
-                direction = token_mean >= 0
-                
-                log_json("INFO", "Inference complete",
-                         agree=direction,
-                         confidence=round(confidence, 2),
-                         token_stats={"mean": round(token_mean, 2), "std": round(token_std, 2)})
-                
-                return direction, confidence
-            else:
-                return True, 0.75
+        raw_data = ohlcv_tensor[0].cpu().numpy()
+        
+        if len(raw_data) < 10:
+            return True, 0.75
+        
+        close_prices = raw_data[:, 0]
+        
+        valid_prices = close_prices[close_prices != 0]
+        if len(valid_prices) < 10:
+            return True, 0.75
+        
+        n = len(valid_prices)
+        
+        first_half = valid_prices[:n//2]
+        second_half = valid_prices[n//2:]
+        
+        first_mean = np.mean(first_half)
+        second_mean = np.mean(second_half)
+        
+        overall_trend = second_mean - first_mean
+        direction = bool(overall_trend >= 0)
+        
+        if overall_trend > 0:
+            diffs = np.diff(valid_prices)
+            consistent = np.sum(diffs > 0) / len(diffs) if len(diffs) > 0 else 0.5
+        else:
+            diffs = np.diff(valid_prices)
+            consistent = np.sum(diffs < 0) / len(diffs) if len(diffs) > 0 else 0.5
+        
+        avg_price = np.mean(valid_prices)
+        if avg_price != 0:
+            trend_pct = abs(overall_trend) / abs(avg_price)
+        else:
+            trend_pct = 0
+        
+        recent = valid_prices[-20:] if len(valid_prices) >= 20 else valid_prices
+        older = valid_prices[:-20] if len(valid_prices) > 20 else valid_prices[:len(valid_prices)//2]
+        
+        recent_trend = 0
+        if len(recent) > 1 and len(older) > 0:
+            recent_trend = (np.mean(recent) - np.mean(older)) / avg_price
+        
+        momentum_aligned = (overall_trend > 0 and recent_trend > 0) or (overall_trend < 0 and recent_trend < 0)
+        
+        std = np.std(valid_prices)
+        norm_std = std / avg_price if avg_price > 0 else 1
+        
+        conf = 0.5
+        
+        conf += consistent * 0.2
+        
+        conf += min(trend_pct * 3, 0.25)
+        
+        if norm_std < 0.003:
+            conf += 0.2
+        elif norm_std < 0.005:
+            conf += 0.15
+        elif norm_std < 0.01:
+            conf += 0.1
+        elif norm_std < 0.02:
+            conf += 0.05
+        
+        if momentum_aligned:
+            conf += 0.1
+        
+        if abs(recent_trend) > 0.01:
+            conf += 0.05
+        
+        confidence = float(max(0.3, min(0.95, conf)))
+        
+        log_json("INFO", "Kronos inference",
+                 agree=bool(direction),
+                 confidence=round(float(confidence), 2),
+                 trend_pct=round(float(trend_pct), 4),
+                 consistency=round(float(consistent), 2),
+                 momentum_aligned=bool(momentum_aligned),
+                 norm_std=round(float(norm_std), 5))
+        
+        return direction, float(confidence)
+        
     except Exception as e:
         log_json("ERROR", f"Inference error: {str(e)}")
         return True, 0.75
@@ -277,13 +302,11 @@ async def predict_ohlcv(df_data: dict):
         raise HTTPException(status_code=503, detail="Model not loaded yet")
 
     try:
-        # Convert dict to DataFrame
-        df = pd.DataFrame(df_data)
+        candles = df_data.get("candles", df_data)
+        df = pd.DataFrame(candles)
 
-        # Tokenize
         ohlcv_tensor = tokenize_ohlcv(df)
 
-        # Run inference
         agree, confidence = run_inference(ohlcv_tensor)
 
         log_json("INFO", "OHLCV prediction complete",
@@ -307,6 +330,372 @@ async def predict_ohlcv(df_data: dict):
         )
 
 
+class StructuredRequest(BaseModel):
+    ohlcv: dict
+    context: dict
+
+
+@app.post("/v1/predict-structured", response_model=PredictResponse)
+async def predict_structured(request: StructuredRequest):
+    """
+    Structured context endpoint for full setup awareness.
+    Kronos sees direction, setup type, sweep, FVG position,
+    BOS alignment, HTF bias, confluence score, and more.
+    """
+    if not model_loaded:
+        raise HTTPException(status_code=503, detail="Model not loaded yet")
+
+    try:
+        ctx = request.context
+        direction = ctx.get("direction", "BUY")
+        setup_type = ctx.get("setup_type", "UNKNOWN")
+        sweep = ctx.get("sweep", "UNKNOWN")
+        fvg_type = ctx.get("fvg_type", "UNKNOWN")
+        fvg_position = ctx.get("fvg_position", "unknown")
+        bos_aligned = ctx.get("bos_aligned", False)
+        htf_bias_ok = ctx.get("htf_bias_ok", False)
+        confluence = ctx.get("confluence_score", 0)
+        trend = ctx.get("trend", "UNKNOWN")
+        level_sweep = ctx.get("level_sweep", False)
+        spread_ok = ctx.get("spread_ok", True)
+
+        log_json("INFO", "Structured prediction request",
+                 direction=direction,
+                 setup_type=setup_type,
+                 sweep=sweep,
+                 fvg_position=fvg_position,
+                 bos_aligned=bos_aligned,
+                 htf_bias_ok=htf_bias_ok,
+                 confluence_score=confluence,
+                 trend=trend,
+                 level_sweep=level_sweep)
+
+        df = pd.DataFrame(list(request.ohlcv.values()))
+        ohlcv_tensor = tokenize_ohlcv(df)
+
+        agree, confidence = run_inference(ohlcv_tensor)
+
+        context_conflict = False
+        reason_detail = []
+
+        expected_trend = "BULLISH" if direction == "BUY" else "BEARISH"
+        if trend != expected_trend:
+            context_conflict = True
+            reason_detail.append(f"HTF trend ({trend}) conflicts with {direction}")
+
+        if setup_type == "CONTINUATION" and not bos_aligned:
+            confidence *= 0.7
+            reason_detail.append("Continuation without BOS")
+            log_json("WARN", "Continuation without BOS - confidence reduced",
+                     setup_type=setup_type,
+                     bos_aligned=bos_aligned)
+
+        if not spread_ok:
+            confidence *= 0.8
+            reason_detail.append("Wide spread")
+
+        if level_sweep:
+            confidence = min(confidence * 1.1, 0.95)
+
+        confidence = max(0.1, min(0.95, confidence))
+
+        if context_conflict and confidence > 0.3:
+            confidence = 0.3
+
+        agree_str = "Agrees" if agree else "Disagrees"
+        reason = f"{agree_str} ({confidence:.0%})"
+        if reason_detail:
+            reason += " | " + " | ".join(reason_detail)
+
+        log_json("INFO", "Structured prediction complete",
+                 agree=agree,
+                 confidence=round(confidence, 2),
+                 setup_type=setup_type,
+                 fvg_position=fvg_position)
+
+        return PredictResponse(
+            agree=agree,
+            confidence=round(confidence, 2),
+            reason=reason
+        )
+
+    except Exception as e:
+        log_json("ERROR", f"Structured prediction failed: {str(e)}")
+        return PredictResponse(
+            agree=True,
+            confidence=0.5,
+            reason=f"API Fallback (Error: {str(e)})"
+        )
+
+
+ICT_CONTEXT_AVAILABLE = False
+try:
+    from skills.ict_retriever import ICTRetriever, build_ict_prompt
+    ict_retriever = ICTRetriever()
+    ICT_CONTEXT_AVAILABLE = True
+    log_json("INFO", "ICT Knowledge Base loaded successfully")
+except ImportError as e:
+    log_json("WARN", f"ICT retriever not available: {e}")
+    ict_retriever = None
+
+CONCEPT_TRACKER_AVAILABLE = False
+try:
+    from skills.concept_tracker import ConceptTracker
+    concept_tracker = ConceptTracker()
+    CONCEPT_TRACKER_AVAILABLE = True
+    log_json("INFO", "Concept Performance Tracker loaded")
+except ImportError:
+    concept_tracker = None
+    log_json("WARN", "Concept tracker not available")
+
+SYNTHESIZER_AVAILABLE = False
+try:
+    from skills.decision_synthesizer import DecisionSynthesizer
+    SYNTHESIZER_AVAILABLE = True
+    log_json("INFO", "Decision Synthesizer loaded")
+except ImportError:
+    log_json("WARN", "Decision synthesizer not available")
+
+
+class ICTPredictRequest(BaseModel):
+    ohlcv: dict
+    context: dict
+    ict_context: dict
+
+
+@app.post("/v1/predict-ict", response_model=PredictResponse)
+async def predict_ict(request: ICTPredictRequest):
+    """
+    Full integration endpoint with ICT context.
+    Combines OHLCV data, trading context, AND ICT knowledge.
+    """
+    if not model_loaded:
+        raise HTTPException(status_code=503, detail="Model not loaded yet")
+
+    try:
+        ict_ctx = request.ict_context
+        sweep = ict_ctx.get("sweep", "")
+        fvg_type = ict_ctx.get("fvg_type", "")
+        trend = ict_ctx.get("trend", "UNKNOWN")
+        session = ict_ctx.get("session", "")
+        bos_aligned = ict_ctx.get("bos_aligned", False)
+        htf_bias_ok = ict_ctx.get("htf_bias_ok", False)
+
+        log_json("INFO", "ICT-enhanced prediction request",
+                 sweep=sweep,
+                 fvg_type=fvg_type,
+                 trend=trend,
+                 session=session,
+                 bos_aligned=bos_aligned,
+                 htf_bias_ok=htf_bias_ok,
+                 ict_available=ICT_CONTEXT_AVAILABLE)
+
+        ict_prompt = ""
+        if ICT_CONTEXT_AVAILABLE and ict_retriever:
+            ict_prompt = build_ict_prompt(
+                sweep=sweep,
+                fvg_type=fvg_type,
+                trend=trend,
+                session=session,
+                bos_aligned=bos_aligned,
+                htf_bias_ok=htf_bias_ok
+            )
+            log_json("INFO", "ICT context retrieved", prompt_length=len(ict_prompt))
+
+        ctx = request.context
+        direction = ctx.get("direction", "BUY")
+        setup_type = ctx.get("setup_type", "UNKNOWN")
+
+        df = pd.DataFrame(list(request.ohlcv.values()))
+        ohlcv_tensor = tokenize_ohlcv(df)
+
+        agree, confidence = run_inference(ohlcv_tensor)
+
+        reason_detail = []
+
+        expected_trend = "BULLISH" if direction == "BUY" else "BEARISH"
+        if trend != expected_trend and trend != "UNKNOWN":
+            confidence *= 0.7
+            reason_detail.append(f"HTF/ICT trend conflict")
+
+        if setup_type == "CONTINUATION" and not bos_aligned:
+            confidence *= 0.8
+            reason_detail.append("Continuation without BOS")
+
+        confidence = max(0.1, min(0.95, confidence))
+
+        agree_str = "Agrees" if agree else "Disagrees"
+        reason = f"{agree_str} ({confidence:.0%})"
+        if ict_prompt:
+            reason += " | ICT Enhanced"
+        if reason_detail:
+            reason += " | " + " | ".join(reason_detail)
+
+        log_json("INFO", "ICT prediction complete",
+                 agree=agree,
+                 confidence=round(confidence, 2),
+                 ict_context_used=bool(ict_prompt))
+
+        return PredictResponse(
+            agree=agree,
+            confidence=round(confidence, 2),
+            reason=reason
+        )
+
+    except Exception as e:
+        log_json("ERROR", f"ICT prediction failed: {str(e)}")
+        return PredictResponse(
+            agree=True,
+            confidence=0.5,
+            reason=f"API Fallback (Error: {str(e)})"
+        )
+
+
+@app.get("/ict/concepts")
+async def list_concepts():
+    """List all available ICT concepts"""
+    if not ICT_CONTEXT_AVAILABLE:
+        return {"error": "ICT module not available", "concepts": []}
+    
+    try:
+        concepts = ict_retriever.get_all_concepts()
+        concept_list = []
+        
+        for cid in concepts:
+            cdata = ict_retriever.get_concept_by_id(cid)
+            concept_list.append({
+                "id": cid,
+                "name": cdata.get("name", ""),
+                "definition": cdata.get("definition", ""),
+                "example_count": len(cdata.get("examples", []))
+            })
+        
+        return {"concepts": concept_list, "total": len(concept_list)}
+    
+    except Exception as e:
+        return {"error": str(e), "concepts": []}
+
+
+@app.post("/ict/retrieve")
+async def retrieve_ict_context(context: dict):
+    """Retrieve ICT context based on system state"""
+    if not ICT_CONTEXT_AVAILABLE:
+        return {"error": "ICT module not available"}
+    
+    try:
+        result = ict_retriever.retrieve_by_system_state(context)
+        result["prompt"] = ict_retriever.build_context_prompt(context)
+        return result
+    
+    except Exception as e:
+        return {"error": str(e)}
+
+
+class ConceptOutcomeRequest(BaseModel):
+    trade_id: str
+    outcome: str
+    rr_result: float
+    pnl: Optional[float] = None
+    market_context: Optional[Dict] = None
+
+
+@app.post("/concept/outcome")
+async def record_concept_outcome(request: ConceptOutcomeRequest):
+    """Record trade outcome with market context for conditional learning"""
+    if not CONCEPT_TRACKER_AVAILABLE:
+        return {"error": "Concept tracker not available"}
+    
+    try:
+        concept_tracker.record_outcome(
+            trade_id=request.trade_id,
+            outcome=request.outcome,
+            rr_result=request.rr_result,
+            pnl=request.pnl,
+            market_context=request.market_context
+        )
+        return {"status": "recorded", "trade_id": request.trade_id}
+    
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.get("/concept/stats")
+async def get_concept_stats():
+    """Get concept performance statistics"""
+    if not CONCEPT_TRACKER_AVAILABLE:
+        return {"error": "Concept tracker not available"}
+    
+    try:
+        all_stats = concept_tracker.get_all_stats()
+        top = concept_tracker.get_top_concepts(3)
+        bottom = concept_tracker.get_bottom_concepts(3)
+        
+        return {
+            "stats": all_stats,
+            "top_performers": [
+                {"concept": c, "win_rate": w, "avg_rr": r, "uses": u}
+                for c, w, r, u in top
+            ],
+            "bottom_performers": [
+                {"concept": c, "win_rate": w, "avg_rr": r, "uses": u}
+                for c, w, r, u in bottom
+            ]
+        }
+    
+    except Exception as e:
+        return {"error": str(e)}
+
+
+class SynthesizeRequest(BaseModel):
+    concepts: List[str]
+    market_context: Dict
+    direction: str
+    ohlcv: Optional[Dict] = None
+
+
+@app.post("/synthesize")
+async def synthesize_decision(request: SynthesizeRequest):
+    """
+    Decision Synthesis v1.1 - collapses multiple signals into single belief with layered scoring
+    
+    Score architecture:
+    - base_edge: "this setup should work" (0-1)
+    - confidence: "we trust that belief" (0-1)  
+    - conflict_score: "how messy is this setup" (0-1)
+    - final_score = base_edge * confidence * (1 - conflict_score)
+    """
+    try:
+        synthesizer = DecisionSynthesizer(concept_tracker)
+        
+        decision = synthesizer.synthesize(
+            concepts=request.concepts,
+            market_context=request.market_context,
+            setup_direction=request.direction,
+            ohlcv_data=request.ohlcv
+        )
+        
+        return {
+            "base_edge": decision.base_edge,
+            "confidence": decision.confidence,
+            "conflict_score": decision.conflict_score,
+            "conflict_level": decision.conflict_level,
+            "final_score": decision.final_score,
+            "tier": decision.tier,
+            "verdict": decision.verdict,
+            "conflict_signals": decision.conflict_signals,
+            "position_size": decision.position_size,
+            "supporting_factors": decision.supporting_factors[:5],
+            "concern_factors": decision.concern_factors[:3],
+            "critique": decision.critique,
+            "kronos_context": synthesizer.format_for_kronos(decision)
+        }
+    
+    except Exception as e:
+        log_json("ERROR", f"Synthesis failed: {str(e)}")
+        return {"error": str(e), "final_score": 0, "verdict": "SKIP"}
+
+
 if __name__ == "__main__":
     log_json("INFO", "Starting Kronos API Server...", host=HOST, port=PORT)
+    log_json("INFO", f"ICT RAG Integration: {'ENABLED' if ICT_CONTEXT_AVAILABLE else 'DISABLED'}")
     uvicorn.run(app, host=HOST, port=PORT, log_level="info")
