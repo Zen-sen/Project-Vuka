@@ -17,7 +17,7 @@ if sys.platform == "win32":
 try:
     from kronos_guardian import KronosVetoGate
     KRONOS_VETO_GATE = KronosVetoGate(
-        threshold=0.75,
+        threshold=0.40,
         enabled=True,
         mode="enforced"
     )
@@ -119,7 +119,7 @@ if _arg_strategy not in _valid_strategies:
 
 # ── v3.9.4 FIX-5: USDJPY lot sizing guard ───────────────
 if _arg_symbol == "USDJPY":
-    print("❌ USDJPY is not yet supported.")
+    print("[X] USDJPY is not yet supported.")
     print("   calculate_lot_size() uses a hardcoded 100,000-unit forex")
     print("   contract assumption. USDJPY pip value (~0.01) makes this")
     print("   produce lot sizes ~100× too small, misrepresenting risk.")
@@ -198,13 +198,13 @@ elif STRATEGY == "ICT_M1":
 else:
     TIMEFRAME                = mt5.TIMEFRAME_M15
     RISK_PERCENT             = 1.0
-    RISK_REWARD_RATIO        = 3.5
+    RISK_REWARD_RATIO        = 3.0   # v5.0: Reduced from 3.5 for better win rate
     ATR_PERIOD               = 14
     ATR_MULTIPLIER           = 1.5
-    MIN_SL_ATR_MULTIPLIER    = 0.5
+    MIN_SL_ATR_MULTIPLIER    = 0.8   # v5.0: Increased from 0.5 for more breathing room
     LIMIT_ORDER_EXPIRY_CANDLES = 4
     ADX_PERIOD               = 14
-    ADX_MIN_THRESHOLD        = 20
+    ADX_MIN_THRESHOLD        = 15    # Reduced from 20 to allow more trades in ranging markets
     MIN_SPREAD_PIPS          = 0.0002
     MAX_DAILY_LOSS           = 50.0
     MAX_DRAWDOWN_PCT         = 10.0
@@ -214,6 +214,20 @@ else:
     DATA_STALE_MINUTES_ASIAN = 90
     MT5_RETRY_ATTEMPTS       = 3
     MT5_RETRY_DELAY_SEC      = 30
+
+# =======================================================
+# PATTERN BLACKLIST (Based on Backtest Analysis)
+# =======================================================
+# Win rate <35% patterns - auto-blocked to prevent losses
+PATTERN_BLACKLIST = [
+    ("Asian", "BUY", "SWEEP_LOW"),       # 28% WR
+    ("Asian", "SELL", "SWEEP_HIGH"),     # 100% WR - keep enabled
+]
+
+# =======================================================
+# MARKET REGIME THRESHOLD
+# =======================================================
+MIN_ADX_FOR_TRADING = 25  # Above 25 = trending, below = ranging
 
 # -------------------------------------------------------
 # BACKTEST MODE (Option B) — CSV Replay
@@ -1133,10 +1147,40 @@ def get_overlap_multiplier() -> float:
 #  SECTION 9 — CONFLUENCE SCORING (INGWE MODE)
 # =======================================================
 
-def get_confluence_threshold(adx: float) -> int:
+# v5.0: Session performance multipliers (apply stricter thresholds for weak sessions)
+SESSION_PERFORMANCE = {
+    "Asian": {"buy": 0.29, "sell": 1.00},    # SELL excellent, BUY weak
+    "London": {"buy": 0.14, "sell": 0.00},   # Both weak - need high confirmation
+    "New York": {"buy": 0.00, "sell": 0.58}, # BUY needs HTF, SELL good
+}
+
+def get_session_multiplier(session: str, direction: str) -> float:
+    """v5.0: Return threshold multiplier based on historical session performance."""
+    key = session.lower()
+    if key not in SESSION_PERFORMANCE:
+        return 1.0
+    dir_key = direction.lower()
+    wr = SESSION_PERFORMANCE.get(key, {}).get(dir_key, 0.5)
+    if wr >= 0.60:
+        return 0.9   # Easy entry for good sessions
+    elif wr >= 0.40:
+        return 1.0   # Normal
+    elif wr >= 0.25:
+        return 1.15  # Stricter for moderate sessions
+    else:
+        return 1.30  # Much stricter for weak sessions
+
+
+def get_confluence_threshold(adx: float, session: str = "", direction: str = "") -> int:
     if adx is None or adx < ADX_MIN_THRESHOLD:  return 80
-    if adx > 40:                                 return 60
-    return 70
+    
+    base = 70
+    if adx > 40:
+        base = 60
+    
+    # v5.0: Apply session-specific multiplier
+    multiplier = get_session_multiplier(session, direction)
+    return int(base * multiplier)
 
 
 def calculate_confluence_score(trend, fvg_ok, zone_ok, spread_ok, adx_ok,
@@ -1520,6 +1564,42 @@ def evaluate_ingwe(df, fvgs, sweep, sweep_level, price, atr, lot_size, session):
             f"range-bound. Ingwe does not hunt in the chop.", "GUARD")
         return
 
+    # ── PATTERN BLACKLIST CHECK ────────────────────────────
+    # Block toxic patterns identified in backtest (win rate <35%)
+    # Check if current pattern is in blacklist
+    blacklist_blocked = False
+    for pattern in PATTERN_BLACKLIST:
+        blk_session, blk_direction, blk_sweep = pattern
+        if session == blk_session and sweep == blk_sweep:
+            # Determine direction from setup
+            for fvg_type, _, _, _, _, _ in fvgs:
+                if sweep == "SWEEP_LOW" and fvg_type == "BULLISH_FVG":
+                    current_direction = "BUY"
+                elif sweep == "SWEEP_HIGH" and fvg_type == "BEARISH_FVG":
+                    current_direction = "SELL"
+                elif sweep == "SWEEP_LOW" and fvg_type == "BEARISH_FVG":
+                    current_direction = "SELL"
+                elif sweep == "SWEEP_HIGH" and fvg_type == "BULLISH_FVG":
+                    current_direction = "BUY"
+                else:
+                    continue
+                if current_direction == blk_direction:
+                    log(f"PATTERN BLACKLIST: {session} {current_direction} {sweep} — "
+                        f"historically <35% win rate. Standing down.", "GUARD")
+                    blacklist_blocked = True
+                    break
+            if blacklist_blocked:
+                break
+    
+    if blacklist_blocked:
+        return
+    
+    # ── MIN_ADX_FOR_TRADING GATE (v5.0) ──────────────────
+    if MIN_ADX_FOR_TRADING and adx < MIN_ADX_FOR_TRADING:
+        log(f"ADX {adx} below trading threshold ({MIN_ADX_FOR_TRADING}) — "
+            f"market not trending enough.", "GUARD")
+        return
+
     spread      = get_spread()
     spread_pips = spread * 10000 if spread else 0
     spread_ok   = spread is not None and spread < MIN_SPREAD_PIPS
@@ -1528,7 +1608,8 @@ def evaluate_ingwe(df, fvgs, sweep, sweep_level, price, atr, lot_size, session):
         lot_size = min(round(lot_size * multiplier, 2), HARD_LOT_CAP)
         log(f"London/NY Overlap -> Lot: {lot_size} (1.2x)")
 
-    threshold = get_confluence_threshold(adx)
+    # v5.0: Get session-aware threshold
+    threshold = get_confluence_threshold(adx, session, "BUY" if sweep == "SWEEP_LOW" else "SELL")
     log(f"Price: {price:.5f}  |  ATR: {atr:.5f}  |  "
         f"Lot: {lot_size}  |  Spread: {spread_pips:.1f}p  |  Threshold: {threshold}/120")
 
@@ -1556,8 +1637,9 @@ def evaluate_ingwe(df, fvgs, sweep, sweep_level, price, atr, lot_size, session):
 
     # ── FIX-3: SL MINIMUM DISTANCE (v4.3) ───────────────
     # v4.3: SL must be at least MIN_SL_ATR_MULTIPLIER × ATR.
-    # Prevents sub-pip SLs that get swept in low-vol conditions.
-    min_sl = atr * MIN_SL_ATR_MULTIPLIER
+    # v5.0: Increase for weak sessions (more breathing room)
+    sl_multi = MIN_SL_ATR_MULTIPLIER * get_session_multiplier(session, "BUY" if sweep == "SWEEP_LOW" else "SELL")
+    min_sl = atr * sl_multi
 
     # ── KEY LEVEL CONTEXT ────────────────────────────────
     pdh, pdl = get_pdh_pdl()
@@ -1614,6 +1696,13 @@ def evaluate_ingwe(df, fvgs, sweep, sweep_level, price, atr, lot_size, session):
                 continue
             if not check_premium_discount_zone(df, price, "BUY"):
                 log("Not in discount zone. Skip.", "GUARD")
+                continue
+            # v5.0 FIX: Require strong HTF bias for BUY signals
+            if not htf_bias_ok:
+                log("HTF bias required for BUY. No D1/H4 confirmation. Skip.", "GUARD")
+                continue
+            if htf_bias != "BULLISH":
+                log(f"HTF bias ({htf_bias}) not bullish. Skip BUY.", "GUARD")
                 continue
             bos_aligned = (m15_bos == "BULLISH_BOS")
             score = calculate_confluence_score(
@@ -1793,6 +1882,13 @@ def evaluate_ingwe(df, fvgs, sweep, sweep_level, price, atr, lot_size, session):
         if sweep == "SWEEP_HIGH" and fvg_type == "BULLISH_FVG" and trend == "BULLISH":
             if plus_di <= minus_di:
                 log(f"DI filter: +DI({plus_di}) <= -DI({minus_di}). Skip.", "GUARD")
+                continue
+            # v5.0 FIX: Require strong HTF bias for BUY signals
+            if not htf_bias_ok:
+                log("HTF bias required for BUY. No D1/H4 confirmation. Skip.", "GUARD")
+                continue
+            if htf_bias != "BULLISH":
+                log(f"HTF bias ({htf_bias}) not bullish. Skip BUY.", "GUARD")
                 continue
             log(f"Zone context: {_zone_context(df, price)}")
             bos_aligned = (m15_bos == "BULLISH_BOS")
