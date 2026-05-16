@@ -418,17 +418,17 @@ async def predict_structured(request: StructuredRequest):
         spread_ok = ctx.get("spread_ok", True)
 
         log_json("INFO", "Structured prediction request",
-                 direction=direction,
-                 setup_type=setup_type,
-                 sweep=sweep,
-                 fvg_position=fvg_position,
-                 bos_aligned=bos_aligned,
-                 htf_bias_ok=htf_bias_ok,
-                 confluence_score=confluence,
-                 trend=trend,
-                 level_sweep=level_sweep)
+                  direction=direction,
+                  setup_type=setup_type,
+                  sweep=sweep,
+                  fvg_position=fvg_position,
+                  bos_aligned=bos_aligned,
+                  htf_bias_ok=htf_bias_ok,
+                  confluence_score=confluence,
+                  trend=trend,
+                  level_sweep=level_sweep)
 
-        df = pd.DataFrame(list(request.ohlcv.values()))
+        df = pd.DataFrame(request.ohlcv)
         ohlcv_tensor = tokenize_ohlcv(df)
 
         agree, confidence = run_inference(ohlcv_tensor, direction)
@@ -564,7 +564,40 @@ async def predict_ict(request: ICTPredictRequest):
         direction = ctx.get("direction", "BUY")
         setup_type = ctx.get("setup_type", "UNKNOWN")
 
-        df = pd.DataFrame(list(request.ohlcv.values()))
+        # v4.5 FIX-2: Data format normalization with validation
+        if isinstance(request.ohlcv, dict) and "candles" in request.ohlcv:
+            df = pd.DataFrame(request.ohlcv["candles"])
+        elif isinstance(request.ohlcv, dict):
+            # Handle dict-of-dicts by converting to list-of-dicts (transposed format)
+            if request.ohlcv:
+                first_key = next(iter(request.ohlcv.keys()))
+                if isinstance(request.ohlcv[first_key], dict):
+                    # Dict of dicts — transpose to list format via DataFrame
+                    df = pd.DataFrame(request.ohlcv).T
+                    df = df.reset_index(drop=True)
+                else:
+                    # Already list format
+                    df = pd.DataFrame(request.ohlcv)
+            else:
+                df = pd.DataFrame()
+        else:
+            df = pd.DataFrame(request.ohlcv)
+
+        # v4.5: Validate required columns before tokenization
+        required_cols = ['open', 'high', 'low', 'close', 'volume']
+        if df.empty or not all(col in df.columns for col in required_cols):
+            log_json("WARN", "OHLCV validation failed - missing columns",
+                     columns=list(df.columns),
+                     required=required_cols,
+                     df_empty=df.empty,
+                     df_shape=df.shape if not df.empty else (0, 0))
+            # Return safe default prediction
+            return PredictResponse(
+                agree=True,
+                confidence=0.5,
+                reason="Data validation failed - default allow (v4.5)"
+            )
+
         ohlcv_tensor = tokenize_ohlcv(df)
 
         agree, confidence = run_inference(ohlcv_tensor, direction)

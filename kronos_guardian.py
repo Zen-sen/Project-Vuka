@@ -42,7 +42,7 @@ class KronosVetoGate:
     def __init__(
         self,
         endpoint: str = "http://127.0.0.1:8000/v1/predict",
-        threshold: float = 0.50,
+        threshold: float = 0.40,
         enabled: bool = True,
         mode: str = "advisory"
     ):
@@ -83,7 +83,11 @@ class KronosVetoGate:
         logger.info(json.dumps(entry))
 
     def _prepare_ohlcv_payload(self, df: pd.DataFrame) -> dict:
-        """Prepare OHLCV data for Kronos API"""
+        """
+        v4.5 FIX-1: Prepare OHLCV data for Kronos API as list-of-dicts (correct Pandas format).
+        Previous dict-of-dicts format caused transposition in pd.DataFrame() constructor.
+        Returns: {"candles": [{"open": ..., "high": ..., ...}, ...]}
+        """
         df = df.tail(512).copy()
 
         required_cols = ['open', 'high', 'low', 'close', 'volume']
@@ -92,12 +96,14 @@ class KronosVetoGate:
             if col not in df.columns:
                 df[col] = 1000.0
         
-        data = {}
+        # v4.5: Return dict with 'candles' key containing list of records
+        # This ensures pd.DataFrame(request.ohlcv["candles"]) creates correct structure
+        # with columns=['open', 'high', 'low', 'close', 'volume']
+        candles = []
         for idx, row in df.iterrows():
-            row_dict = {col: float(row[col]) for col in required_cols}
-            data[str(idx)] = row_dict
-
-        return data
+            candles.append({col: float(row[col]) for col in required_cols})
+        
+        return {"candles": candles}
 
     def _extract_concepts_from_context(self, context: dict) -> List[str]:
         """Extract ICT concepts from trade context"""
@@ -224,11 +230,22 @@ class KronosVetoGate:
                     "spread_ok": context.get("spread_ok", True),
                     "trend": context.get("trend", "UNKNOWN"),
                     "level_sweep": context.get("level_sweep", False)
+                },
+                "ict_context": {
+                    "sweep": context.get("sweep", ""),
+                    "fvg_type": context.get("fvg_type", ""),
+                    "trend": context.get("trend", "UNKNOWN"),
+                    "session": context.get("session", ""),
+                    "bos_aligned": context.get("bos_aligned", False),
+                    "htf_bias_ok": context.get("htf_bias_ok", False),
+                    "setup_type": context.get("setup_type", ""),
+                    "fvg_position": context.get("fvg_position", ""),
+                    "confluence_score": context.get("confluence_score", 0)
                 }
             }
 
             response = requests.post(
-                "http://127.0.0.1:8000/v1/predict-structured",
+                "http://127.0.0.1:8000/v1/predict-ict",
                 json=payload,
                 timeout=self.request_timeout
             )
