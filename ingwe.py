@@ -14,15 +14,37 @@ if sys.platform == "win32":
     sys.stdout = codecs.getwriter('utf-8')(sys.stdout.buffer, 'strict')
     sys.stderr = codecs.getwriter('utf-8')(sys.stderr.buffer, 'strict')
 
+# v4.6: Global managers (initialized in main if available)
+state_mgr = None
+health_monitor = None
+session_data = {"trades": [], "metadata": {}}
+
+# v4.6: Check for hardening modules
+V4_6_MODULES_AVAILABLE = False
 try:
-    from kronos_guardian import KronosVetoGate
-    KRONOS_VETO_GATE = KronosVetoGate(
-        threshold=0.40,
-        enabled=True,
-        mode="enforced"
-    )
-except ImportError:
-    KRONOS_VETO_GATE = None
+    from state_manager_v4_6 import StateManager
+    from health_monitor_v4_6 import HealthMonitor
+    from kronos_guardian_v4_6 import KronosVetoGate, create_veto_gate
+    V4_6_MODULES_AVAILABLE = True
+except ImportError as e:
+    print(f"v4.6 Hardening modules not available: {e}")
+    print("Falling back to v4.5 kronos_guardian")
+
+# v4.5: Kronos veto gate (used if v4.6 not available)
+if not V4_6_MODULES_AVAILABLE:
+    try:
+        from kronos_guardian import KronosVetoGate
+        KRONOS_VETO_GATE = KronosVetoGate(
+            threshold=0.40,
+            enabled=True,
+            mode="enforced"
+        )
+    except ImportError:
+        KRONOS_VETO_GATE = None
+else:
+    # If v4.6 modules are available, we will set KRONOS_VETO_GATE in main after configuring it
+    KRONOS_VETO_GATE = None   # placeholder, will be set in main
+    V4_6_HARDENING_AVAILABLE = False
 
 # =======================================================
 #    PROJECT VUKA — AGENT INGWE  v4.4
@@ -1394,7 +1416,8 @@ def place_limit_order(direction: str, entry: float, sl: float,
         "deviation":       10,
         "magic":           _instance_magic,
         "comment":         _instance_short,
-        "type_time":       mt5.ORDER_TIME_GTC,
+        "type_time":       mt5.ORDER_TIME_SPECIFIED,
+        "expiration":      expiry_ts,
     }
 
     result = mt5.order_send(order)
@@ -1404,7 +1427,7 @@ def place_limit_order(direction: str, entry: float, sl: float,
         log(f"Order details: price={entry}, sl={sl}, tp={tp}, type={order_type}", "ERROR")
         return None
     if result.retcode == mt5.TRADE_RETCODE_DONE:
-        log(f"Limit order placed (GTC).", "TRADE")
+        log(f"Limit order placed (expires {expiry_dt.isoformat()}).", "TRADE")
     else:
         log(f"Limit order failed. Retcode: {result.retcode}  "
             f"Comment: {getattr(result, 'comment', 'N/A')}", "ERROR")
