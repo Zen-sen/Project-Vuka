@@ -61,11 +61,63 @@ def log_json(level: str, message: str, **kwargs):
 
 
 # === GLOBAL STATE ===
-app = FastAPI(title="Kronos API", version="1.0.0")
 tokenizer = None
 model = None
 device = None
 model_loaded = False
+
+# Lifespan context manager for model loading/unloading
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup: Load Kronos model and tokenizer
+    global tokenizer, model, device, model_loaded
+    
+    log_json("INFO", "Starting Kronos API Server...")
+    
+    # Detect device
+    if torch.cuda.is_available():
+        device = torch.device("cuda:0")
+        log_json("INFO", "Using GPU for inference", device=str(device))
+    else:
+        device = torch.device("cpu")
+        log_json("INFO", "Using CPU for inference", device=str(device))
+    
+    try:
+        log_json("INFO", "Loading KronosTokenizer...", model=TOKENIZER_MODEL)
+        tokenizer = KronosTokenizer.from_pretrained(TOKENIZER_MODEL)
+        tokenizer.to(device)
+        tokenizer.eval()
+        log_json("INFO", "Tokenizer loaded successfully")
+        
+        log_json("INFO", "Loading Kronos model...", model=KRONOS_MODEL)
+        model = Kronos.from_pretrained(KRONOS_MODEL)
+        model.to(device)
+        model.eval()
+        log_json("INFO", "Model loaded successfully")
+        
+        model_loaded = True
+        log_json("INFO", "Kronos API Server ready", port=PORT)
+        
+    except Exception as e:
+        log_json("ERROR", f"Failed to load models: {str(e)}")
+        model_loaded = False
+    
+    yield  # Server runs during this context
+    
+    # Shutdown: Cleanup
+    log_json("INFO", "Shutting down Kronos API Server...")
+    # Clear GPU cache if using CUDA
+    if device and str(device).startswith("cuda"):
+        torch.cuda.empty_cache()
+        log_json("INFO", "GPU cache cleared")
+    tokenizer = None
+    model = None
+    model_loaded = False
+    log_json("INFO", "Kronos API Server shutdown complete")
+
+
+# === GLOBAL STATE ===
+app = FastAPI(title="Kronos API", version="1.0.0", lifespan=lifespan)
 
 
 class PredictRequest(BaseModel):
@@ -77,42 +129,6 @@ class PredictResponse(BaseModel):
     agree: bool
     confidence: float
     reason: str
-
-
-@app.on_event("startup")
-async def startup_event():
-    """Load Kronos model and tokenizer on startup"""
-    global tokenizer, model, device, model_loaded
-
-    log_json("INFO", "Starting Kronos API Server...")
-
-    # Detect device
-    if torch.cuda.is_available():
-        device = torch.device("cuda:0")
-        log_json("INFO", "Using GPU for inference", device=str(device))
-    else:
-        device = torch.device("cpu")
-        log_json("INFO", "Using CPU for inference", device=str(device))
-
-    try:
-        log_json("INFO", "Loading KronosTokenizer...", model=TOKENIZER_MODEL)
-        tokenizer = KronosTokenizer.from_pretrained(TOKENIZER_MODEL)
-        tokenizer.to(device)
-        tokenizer.eval()
-        log_json("INFO", "Tokenizer loaded successfully")
-
-        log_json("INFO", "Loading Kronos model...", model=KRONOS_MODEL)
-        model = Kronos.from_pretrained(KRONOS_MODEL)
-        model.to(device)
-        model.eval()
-        log_json("INFO", "Model loaded successfully")
-
-        model_loaded = True
-        log_json("INFO", "Kronos API Server ready", port=PORT)
-
-    except Exception as e:
-        log_json("ERROR", f"Failed to load models: {str(e)}")
-        model_loaded = False
 
 
 @app.get("/health")
@@ -257,6 +273,10 @@ def run_inference(ohlcv_tensor: torch.Tensor, direction_hint: str = None) -> tup
             # Model inference failed - use REALISTIC fallback (not fake 90%)
             log_json("WARN", f"Model inference failed, using realistic fallback: {model_error}")
             
+            # Clear GPU cache on inference failure
+            if device and str(device).startswith("cuda"):
+                torch.cuda.empty_cache()
+            
             # Simple but REALISTIC confidence calculation
             n = len(valid_prices)
             first_half = valid_prices[:n//2]
@@ -295,6 +315,8 @@ def run_inference(ohlcv_tensor: torch.Tensor, direction_hint: str = None) -> tup
     
     except Exception as e:
         log_json("ERROR", f"Inference error: {str(e)}")
+        if device and str(device).startswith("cuda"):
+            torch.cuda.empty_cache()
         return True, 0.60  # Conservative default
 
 

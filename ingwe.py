@@ -9,6 +9,7 @@ import os
 import sys
 import hashlib
 import codecs
+import importlib
 
 if sys.platform == "win32":
     sys.stdout = codecs.getwriter('utf-8')(sys.stdout.buffer, 'strict')
@@ -19,16 +20,27 @@ state_mgr = None
 health_monitor = None
 session_data = {"trades": [], "metadata": {}}
 
-# v4.6: Check for hardening modules
+# v4.6: Check for hardening modules with robust import fallback
 V4_6_MODULES_AVAILABLE = False
 try:
+    # Try direct import first (module name without hyphens)
     from state_manager_v4_6 import StateManager
     from health_monitor_v4_6 import HealthMonitor
     from kronos_guardian_v4_6 import KronosVetoGate, create_veto_gate
     V4_6_MODULES_AVAILABLE = True
-except ImportError as e:
-    print(f"v4.6 Hardening modules not available: {e}")
-    print("Falling back to v4.5 kronos_guardian")
+except ImportError:
+    # Fallback: Try importlib in case module names have hyphens or other variations
+    try:
+        # Try hyphenated names via importlib
+        StateManager = importlib.import_module("state-manager-v4-6").StateManager
+        HealthMonitor = importlib.import_module("health-monitor-v4-6").HealthMonitor
+        KronosVetoGate = importlib.import_module("kronos-guardian-v4-6").KronosVetoGate
+        create_veto_gate = importlib.import_module("kronos-guardian-v4-6").create_veto_gate
+        V4_6_MODULES_AVAILABLE = True
+        print("v4.6 Hardening modules loaded via importlib fallback (hyphenated names)")
+    except ImportError as e:
+        print(f"v4.6 Hardening modules not available: {e}")
+        print("Falling back to v4.5 kronos_guardian")
 
 # v4.5: Kronos veto gate (used if v4.6 not available)
 if not V4_6_MODULES_AVAILABLE:
