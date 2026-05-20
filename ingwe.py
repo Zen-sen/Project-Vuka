@@ -11,6 +11,14 @@ import hashlib
 import codecs
 import importlib
 
+# Phase 1: Event-driven tick engine (replaces polling)
+try:
+    from tick_engine_v5 import TickEngine
+    TICK_ENGINE_AVAILABLE = True
+except ImportError:
+    TICK_ENGINE_AVAILABLE = False
+    print("[Ingwe] Warning: tick_engine_v5 not available, will fall back to polling mode")
+
 # v4.6: Check for hardening modules with robust import fallback
 V4_6_MODULES_AVAILABLE = False
 try:
@@ -2411,7 +2419,23 @@ def run_agent():
 
 
 # =======================================================
-#  SECTION 13 — BOOT SEQUENCE
+#  SECTION 13 — EXECUTION MODES
+# =======================================================
+
+def fallback_polling_loop():
+    """Legacy polling loop fallback if tick engine unavailable"""
+    log("Running in polling fallback mode (fixed interval scanning)")
+    try:
+        while True:
+            run_agent()
+            print(); import sys; sys.stdout.flush()
+            time.sleep(SCAN_INTERVAL_SEC)
+    except KeyboardInterrupt:
+        log("Polling loop interrupted by user. Ingwe stands down gracefully.")
+
+
+# =======================================================
+#  SECTION 14 — BOOT SEQUENCE
 # =======================================================
 
 if __name__ == "__main__":
@@ -2499,10 +2523,30 @@ if __name__ == "__main__":
             print(); import sys; sys.stdout.flush()
             log("Check complete. Ingwe stands down.")
         else:
-            while True:
-                run_agent()
-                print(); import sys; sys.stdout.flush()
-                time.sleep(SCAN_INTERVAL_SEC)
+            # Phase 1: Event-driven tick engine (production)
+            if TICK_ENGINE_AVAILABLE:
+                try:
+                    def on_candle_open(candle_time):
+                        """Callback triggered on new candle from MT5 tick stream"""
+                        run_agent()
+                    
+                    engine = TickEngine(
+                        symbol=SYMBOL,
+                        timeframe=TIMEFRAME,
+                        callback=on_candle_open,
+                        verbose=False  # Set to True for debug output
+                    )
+                    log(f"Starting event-driven loop: {SYMBOL} @ {TIMEFRAME}")
+                    engine.run()  # Blocks forever, executes on candle events
+                except KeyboardInterrupt:
+                    log("Tick engine interrupted by user. Ingwe stands down gracefully.")
+                except Exception as e:
+                    log(f"Tick engine error: {e}. Falling back to polling mode.", "ERROR")
+                    fallback_polling_loop()
+            else:
+                # Fallback: Polling mode (no tick engine available)
+                log("Tick engine unavailable. Using polling fallback.")
+                fallback_polling_loop()
     except KeyboardInterrupt:
         log("Keyboard interrupt. Ingwe stands down gracefully.")
     finally:
