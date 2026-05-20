@@ -11,15 +11,6 @@ import hashlib
 import codecs
 import importlib
 
-if sys.platform == "win32":
-    sys.stdout = codecs.getwriter('utf-8')(sys.stdout.buffer, 'strict')
-    sys.stderr = codecs.getwriter('utf-8')(sys.stderr.buffer, 'strict')
-
-# v4.6: Global managers (initialized in main if available)
-state_mgr = None
-health_monitor = None
-session_data = {"trades": [], "metadata": {}}
-
 # v4.6: Check for hardening modules with robust import fallback
 V4_6_MODULES_AVAILABLE = False
 try:
@@ -57,6 +48,16 @@ else:
     # If v4.6 modules are available, we will set KRONOS_VETO_GATE in main after configuring it
     KRONOS_VETO_GATE = None   # placeholder, will be set in main
     V4_6_HARDENING_AVAILABLE = False
+
+# Database manager for SQLite consolidation (v5.0)
+try:
+    from database_manager_v5 import get_db
+    DB = get_db()
+    DB_AVAILABLE = True
+except ImportError:
+    DB = None
+    DB_AVAILABLE = False
+    print("⚠️  database_manager_v5 not available — falling back to JSON files")
 
 # =======================================================
 #    PROJECT VUKA — AGENT INGWE  v4.4
@@ -470,6 +471,20 @@ def validate_candles(df: pd.DataFrame, session: str = None) -> bool:
 # =======================================================
 
 def load_sessions() -> set:
+    """Load sessions traded today from database or JSON fallback."""
+    if DB_AVAILABLE:
+        try:
+            today = datetime.now().strftime("%Y-%m-%d")
+            conn = DB._get_connection()
+            cursor = conn.execute("""
+                SELECT session_name FROM sessions
+                WHERE date = ? AND symbol = ? AND strategy = ? AND traded = TRUE
+            """, (today, _arg_symbol, STRATEGY))
+            return {row[0] for row in cursor.fetchall()}
+        except Exception as e:
+            log(f"Database read error: {e}. Falling back to JSON.", "WARN")
+    
+    # JSON fallback
     if os.path.exists(SESSIONS_FILE):
         try:
             with open(SESSIONS_FILE, "r") as f:
@@ -483,11 +498,22 @@ def load_sessions() -> set:
 
 def save_sessions(sessions: set):
     """
-    Atomic write — write to temp file then rename.
-    Prevents partial reads if two instances write simultaneously.
+    Save sessions traded today to database (primary) or JSON fallback.
+    Atomic writes prevent corruption under concurrent access.
     """
+    today = datetime.now().strftime("%Y-%m-%d")
+    
+    if DB_AVAILABLE:
+        try:
+            for session_name in sessions:
+                DB.mark_session_traded(today, _arg_symbol, STRATEGY, session_name)
+            return
+        except Exception as e:
+            log(f"Database write error: {e}. Falling back to JSON.", "WARN")
+    
+    # JSON fallback (dual-write for safety during transition)
     payload = json.dumps({
-        "date":     datetime.now().strftime("%Y-%m-%d"),
+        "date":     today,
         "sessions": list(sessions)
     }, indent=2)
     tmp = SESSIONS_FILE + ".tmp"
@@ -573,14 +599,23 @@ def check_consecutive_losses() -> bool:
 
 def load_consecutive_losses() -> int:
     """
-    v4.4 FIX-2: Load consecutive loss count from sessions file.
+    Load consecutive loss count from database or JSON fallback.
     Persists across days for multi-day drawdown protection.
     """
+    today = datetime.now().strftime("%Y-%m-%d")
+    
+    if DB_AVAILABLE:
+        try:
+            return DB.get_consecutive_losses(today, _arg_symbol, STRATEGY)
+        except Exception as e:
+            log(f"Database read error: {e}. Falling back to JSON.", "WARN")
+    
+    # JSON fallback
     if os.path.exists(SESSIONS_FILE):
         try:
             with open(SESSIONS_FILE, "r") as f:
                 data = json.load(f)
-            if data.get("date") == datetime.now().strftime("%Y-%m-%d"):
+            if data.get("date") == today:
                 return data.get("consecutive_losses", 0)
         except (json.JSONDecodeError, KeyError):
             pass
@@ -589,11 +624,21 @@ def load_consecutive_losses() -> int:
 
 def save_consecutive_losses(count: int):
     """
-    v4.4 FIX-2: Save consecutive loss count to sessions file.
+    Save consecutive loss count to database (primary) or JSON fallback.
     Used to track multi-day losing streaks.
     """
+    today = datetime.now().strftime("%Y-%m-%d")
+    
+    if DB_AVAILABLE:
+        try:
+            DB.update_loss_tracking(today, _arg_symbol, STRATEGY, count)
+            return
+        except Exception as e:
+            log(f"Database write error: {e}. Falling back to JSON.", "WARN")
+    
+    # JSON fallback (dual-write for safety during transition)
     payload = {
-        "date": datetime.now().strftime("%Y-%m-%d"),
+        "date": today,
         "sessions": list(sessions_traded_today),
         "consecutive_losses": count
     }
@@ -1243,19 +1288,9 @@ def calculate_confluence_score(trend, fvg_ok, zone_ok, spread_ok, adx_ok,
 
 def log_trade(direction, entry, sl, tp, result, lot_size, session):
     """
-    v4.5: Added fill tracking for slippage analysis.
-      - actual_fill: real execution price from MT5 result
-      - slippage_pips: deviation from requested entry
-      - effective_rr: RR based on actual fill vs SL/TP
+    Log trade to database (primary) or JSON fallback.
+    Tracks: fill price, slippage, effective RR based on actual execution.
     """
-    trade_log = []
-    if os.path.exists(LOG_FILE):
-        try:
-            with open(LOG_FILE, "r") as f:
-                trade_log = json.load(f)
-        except json.JSONDecodeError:
-            pass
-    
     actual_fill = getattr(result, "price", entry)
     slippage = abs(actual_fill - entry)
     slippage_pips = slippage * 10000
@@ -1270,8 +1305,8 @@ def log_trade(direction, entry, sl, tp, result, lot_size, session):
     effective_rr = tp_dist_actual / sl_dist_actual if sl_dist_actual > 0 else 0
     
     trade_entry = {
+        "symbol":      SYMBOL,
         "time":        datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "sast":        now_sast().strftime("%Y-%m-%d %H:%M:%S"),
         "strategy":    STRATEGY,
         "market_mode": "summer" if is_eu_summer() else "winter",
         "session":     session,
@@ -1287,9 +1322,26 @@ def log_trade(direction, entry, sl, tp, result, lot_size, session):
         "comment":     getattr(result, "comment", "")
     }
     
-    trade_log.append(trade_entry)
-    
     log(f"[FILL] req={entry} fill={actual_fill} slip={slippage_pips:.1f}p eff_RR={effective_rr:.2f}", "TRADE")
+    
+    if DB_AVAILABLE:
+        try:
+            DB.insert_trade(trade_entry)
+            log(f"Trade logged -> vuka_trading.db", "TRADE")
+            return
+        except Exception as e:
+            log(f"Database write error: {e}. Falling back to JSON.", "WARN")
+    
+    # JSON fallback (dual-write for safety during transition)
+    trade_log = []
+    if os.path.exists(LOG_FILE):
+        try:
+            with open(LOG_FILE, "r") as f:
+                trade_log = json.load(f)
+        except json.JSONDecodeError:
+            pass
+    
+    trade_log.append(trade_entry)
     
     tmp = LOG_FILE + ".tmp"
     with open(tmp, "w") as f:
@@ -1468,8 +1520,29 @@ def _modify_sl(pos, new_sl: float, label: str):
 
 def log_sl_move(ticket: int, entry: float, old_sl: float, new_sl: float, label: str):
     """
-    v4.4 FIX-3: Log SL moves to file for tracking and analysis.
+    Log SL movements to database (primary) or JSON fallback.
+    Tracks stop loss adjustments for risk management analysis.
     """
+    sl_move_entry = {
+        "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "ticket": ticket,
+        "symbol": _arg_symbol,
+        "strategy": STRATEGY,
+        "entry": entry,
+        "old_sl": old_sl,
+        "new_sl": new_sl,
+        "movement": round(new_sl - old_sl, 5),
+        "label": label
+    }
+    
+    if DB_AVAILABLE:
+        try:
+            DB.insert_sl_movement(sl_move_entry)
+            return
+        except Exception as e:
+            log(f"Database write error: {e}. Falling back to JSON.", "WARN")
+    
+    # JSON fallback (dual-write for safety during transition)
     log_file = Path(f"sl_moves_{_instance_tag}.json")
     moves = []
     if log_file.exists():
@@ -1479,17 +1552,7 @@ def log_sl_move(ticket: int, entry: float, old_sl: float, new_sl: float, label: 
         except:
             moves = []
     
-    moves.append({
-        "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "ticket": ticket,
-        "entry": entry,
-        "old_sl": old_sl,
-        "new_sl": new_sl,
-        "movement": round(new_sl - old_sl, 5),
-        "label": label,
-        "symbol": _arg_symbol,
-        "strategy": STRATEGY
-    })
+    moves.append(sl_move_entry)
     
     with open(log_file, "w") as f:
         json.dump(moves, f, indent=2)
