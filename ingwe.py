@@ -11,61 +11,54 @@ import hashlib
 import codecs
 import importlib
 
+# ── ARGUMENT PARSING (Moved to top for Logger) ────────────────
+_valid_symbols    = ("EURUSD", "GBPUSD", "USDJPY", "BTCUSD")
+_valid_strategies = ("INGWE", "SILVER_BULLET", "ICT_M1")
+
+_arg_symbol   = sys.argv[1].upper() if len(sys.argv) > 1 else "EURUSD"
+_arg_strategy = sys.argv[2].upper() if len(sys.argv) > 2 else "INGWE"
+
+if _arg_symbol not in _valid_symbols:
+    print(f"X Unknown symbol '{_arg_symbol}'. Use: {', '.join(_valid_symbols)}")
+    sys.exit(1)
+if _arg_strategy not in _valid_strategies:
+    print(f"X Unknown strategy '{_arg_strategy}'. Use: {', '.join(_valid_strategies)}")
+    sys.exit(1)
+
+_instance_tag = f"{_arg_symbol}_{_arg_strategy}"
+
+# Core infrastructure
+from state_manager import StateManager
+from health_monitor import HealthMonitor
+from kronos_guardian import KronosVetoGate, create_veto_gate
+from database_manager import get_db
+from unified_logger import get_logger
+from memory_manager import MemoryManager
+
+# Initialize Unified Logger
+logger = get_logger(_instance_tag)
+
+# Initialize Memory Manager
+MEM_MGR = MemoryManager()
+
 # Phase 1: Event-driven tick engine (replaces polling)
 try:
     from tick_engine_v5 import TickEngine
     TICK_ENGINE_AVAILABLE = True
 except ImportError:
     TICK_ENGINE_AVAILABLE = False
-    print("[Ingwe] Warning: tick_engine_v5 not available, will fall back to polling mode")
 
-# v4.6: Check for hardening modules with robust import fallback
-V4_6_MODULES_AVAILABLE = False
+# Initialize Veto Gate
+KRONOS_VETO_GATE = create_veto_gate({"enabled": True, "mode": "enforced", "threshold": 0.40})
+
+# Database manager for SQLite consolidation
 try:
-    # Try direct import first (module name without hyphens)
-    from state_manager_v4_6 import StateManager
-    from health_monitor_v4_6 import HealthMonitor
-    from kronos_guardian_v4_6 import KronosVetoGate, create_veto_gate
-    V4_6_MODULES_AVAILABLE = True
-except ImportError:
-    # Fallback: Try importlib in case module names have hyphens or other variations
-    try:
-        # Try hyphenated names via importlib
-        StateManager = importlib.import_module("state-manager-v4-6").StateManager
-        HealthMonitor = importlib.import_module("health-monitor-v4-6").HealthMonitor
-        KronosVetoGate = importlib.import_module("kronos-guardian-v4-6").KronosVetoGate
-        create_veto_gate = importlib.import_module("kronos-guardian-v4-6").create_veto_gate
-        V4_6_MODULES_AVAILABLE = True
-        print("v4.6 Hardening modules loaded via importlib fallback (hyphenated names)")
-    except ImportError as e:
-        print(f"v4.6 Hardening modules not available: {e}")
-        print("Falling back to v4.5 kronos_guardian")
-
-# v4.5: Kronos veto gate (used if v4.6 not available)
-if not V4_6_MODULES_AVAILABLE:
-    try:
-        from kronos_guardian import KronosVetoGate
-        KRONOS_VETO_GATE = KronosVetoGate(
-            threshold=0.40,
-            enabled=True,
-            mode="enforced"
-        )
-    except ImportError:
-        KRONOS_VETO_GATE = None
-else:
-    # If v4.6 modules are available, we will set KRONOS_VETO_GATE in main after configuring it
-    KRONOS_VETO_GATE = None   # placeholder, will be set in main
-    V4_6_HARDENING_AVAILABLE = False
-
-# Database manager for SQLite consolidation (v5.0)
-try:
-    from database_manager_v5 import get_db
     DB = get_db()
     DB_AVAILABLE = True
 except ImportError:
     DB = None
     DB_AVAILABLE = False
-    print("⚠️  database_manager_v5 not available — falling back to JSON files")
+    logger.warn("database_manager not available — falling back to JSON files")
 
 # =======================================================
 #    PROJECT VUKA — AGENT INGWE  v4.4
@@ -146,31 +139,9 @@ except ImportError:
 
 # -------------------------------------------------------
 # ── STRATEGY & SYMBOL SELECTOR ──────────────────────────
-_valid_strategies = ("INGWE", "SILVER_BULLET", "ICT_M1")
-_valid_symbols    = ("EURUSD", "GBPUSD", "USDJPY", "BTCUSD")
-
-_arg_symbol   = sys.argv[1].upper() if len(sys.argv) > 1 else "EURUSD"
-_arg_strategy = sys.argv[2].upper() if len(sys.argv) > 2 else "INGWE"
-_arg_check    = "--check" in sys.argv
-
-if _arg_symbol not in _valid_symbols:
-    print(f"X Unknown symbol '{_arg_symbol}'. Use: {', '.join(_valid_symbols)}")
-    sys.exit(1)
-if _arg_strategy not in _valid_strategies:
-    print(f"X Unknown strategy '{_arg_strategy}'. Use: {', '.join(_valid_strategies)}")
-    sys.exit(1)
-
-# ── v3.9.4 FIX-5: USDJPY lot sizing guard ───────────────
-if _arg_symbol == "USDJPY":
-    print("[X] USDJPY is not yet supported.")
-    print("   calculate_lot_size() uses a hardcoded 100,000-unit forex")
-    print("   contract assumption. USDJPY pip value (~0.01) makes this")
-    print("   produce lot sizes ~100× too small, misrepresenting risk.")
-    print("   Deferred to v4.0 (symbol-aware contract size via")
-    print("   mt5.symbol_info(SYMBOL).trade_contract_size).")
-    sys.exit(1)
-
+# (Arguments parsed at top for Logger initialization)
 STRATEGY = _arg_strategy
+_arg_check = "--check" in sys.argv
 
 _SYMBOL_MAP = {
     "EURUSD": "EURUSDc",
@@ -182,6 +153,10 @@ SYMBOL = _SYMBOL_MAP[_arg_symbol]
 
 _instance_tag   = f"{_arg_symbol}_{STRATEGY}"
 _instance_short = f"{_arg_symbol[:3]}{'SB' if STRATEGY == 'SILVER_BULLET' else ('M1' if STRATEGY == 'ICT_M1' else 'IW')}"
+
+# Initialize Unified Logger
+logger = get_logger(_instance_tag)
+
 LOG_FILE        = f"trades_{_instance_tag}.json"
 SESSIONS_FILE   = f"sessions_{_instance_tag}.json"
 
@@ -367,14 +342,8 @@ sessions_traded_today = set()
 # =======================================================
 
 def log(msg: str, level: str = "INFO"):
-    prefix = {
-        "INFO":  "   ",
-        "WARN":  "[W] ",
-        "ERROR": "[E] ",
-        "TRADE": "[T] ",
-        "GUARD": "[G] ",
-    }.get(level, "   ")
-    print(f"{prefix}{msg}")
+    """Wrapper for UnifiedLogger to maintain compatibility with existing calls."""
+    logger.log(level=level, message=msg, symbol=_arg_symbol, strategy=STRATEGY)
 
 
 def get_last_sunday(year: int, month: int) -> datetime:
@@ -400,7 +369,56 @@ def now_sast() -> datetime:
     return datetime.now(timezone.utc) + timedelta(hours=SA_OFFSET)
 
 
+def update_memory():
+    """
+    Synchronizes current bot state to Memory.md and handover.json.
+    """
+    try:
+        account = mt5.account_info()
+        equity = account.equity if account else 0.0
+        
+        now = now_sast()
+        today = now.strftime("%Y-%m-%d")
+        
+        # 1. Update Memory.md
+        state_data = {
+            "Current State": {
+                "last_updated": now.isoformat(),
+                "active_instances": [_instance_tag],
+                "current_equity": equity,
+                "bot_status": "RUNNING",
+                "environment": "LIVE"
+            },
+            "Today's Stats": {
+                "date": today,
+                "daily_pnl": get_daily_pnl(),
+                "sessions_traded": list(sessions_traded_today)
+            },
+            "Recent Activity": {
+                "last_scan": now.strftime("%Y-%m-%d %H:%M:%S")
+            }
+        }
+        MEM_MGR.update_state(state_data)
+        
+        # 2. Update handover.json
+        handover = {
+            "bot": "Ingwe",
+            "instance": _instance_tag,
+            "last_updated": now.isoformat(),
+            "equity": equity,
+            "daily_pnl": get_daily_pnl(),
+            "active_sessions": list(sessions_traded_today),
+            "status": "HEALTHY"
+        }
+        with open("handover.json", "w") as f:
+            json.dump(handover, f, indent=2)
+            
+    except Exception as e:
+        log(f"Memory sync failed: {e}", "WARN")
+
+
 def get_active_killzones() -> dict:
+
     if STRATEGY == "ICT_M1":
         return ICT_M1_SESSIONS
     if _arg_symbol == "BTCUSD":
@@ -471,6 +489,19 @@ def validate_candles(df: pd.DataFrame, session: str = None) -> bool:
     if df is None or len(df) < 50:
         log("Insufficient candle data (need 50+).", "WARN")
         return False
+    
+    # v5.1: Gap Detection
+    # Detect if there's a gap larger than 2*ATR between consecutive candles
+    atr = calculate_atr(df)
+    if atr:
+        # Check last 5 candles for abnormal gaps
+        recent = df.tail(5)
+        for i in range(1, len(recent)):
+            gap = abs(recent.iloc[i]["open"] - recent.iloc[i-1]["close"])
+            if gap > atr * 2:
+                log(f"Abnormal price gap detected ({gap:.5f} > {atr*2:.5f}).", "GUARD")
+                return False
+
     return is_data_fresh(df, session) and not has_frozen_prices(df)
 
 
@@ -719,30 +750,56 @@ def get_htf_bias() -> str | None:
     h4_rates = mt5_fetch_with_retry(
         mt5.copy_rates_from_pos, SYMBOL, mt5.TIMEFRAME_H4, 0, 50
     )
-
+    
     if d1_rates is None or len(d1_rates) < 30:
         log("D1 data unavailable for HTF bias.", "WARN")
         return None
     if h4_rates is None or len(h4_rates) < 30:
         log("H4 data unavailable for HTF bias.", "WARN")
         return None
-
+    
     d1 = pd.DataFrame(d1_rates)
     h4 = pd.DataFrame(h4_rates)
-
+    
     d1_ema10 = d1["close"].ewm(span=10, adjust=False).mean().iloc[-1]
     d1_ema30 = d1["close"].ewm(span=30, adjust=False).mean().iloc[-1]
     h4_ema10 = h4["close"].ewm(span=10, adjust=False).mean().iloc[-1]
     h4_ema30 = h4["close"].ewm(span=30, adjust=False).mean().iloc[-1]
-
+    
     d1_bias = "BULLISH" if d1_ema10 > d1_ema30 else ("BEARISH" if d1_ema10 < d1_ema30 else None)
     h4_bias = "BULLISH" if h4_ema10 > h4_ema30 else ("BEARISH" if h4_ema10 < h4_ema30 else None)
-
+    
     if d1_bias and h4_bias and d1_bias == h4_bias:
         return d1_bias
-
+    
     log(f"HTF bias split — D1: {d1_bias}  H4: {h4_bias}. No HTF confirmation.")
     return None
+
+def get_draw_on_liquidity(direction: str) -> tuple[str, float] | tuple[None, None]:
+    """
+    v5.2: Identifies the most likely target (Draw on Liquidity).
+    Checks PDH/PDL, Asian Range, and Session Extremes.
+    """
+    pdh, pdl = get_pdh_pdl()
+    asian_h, asian_l = get_asian_range(get_candles())
+    
+    if direction == "BUY":
+        targets = []
+        if pdh: targets.append(("PDH", pdh))
+        if asian_h: targets.append(("Asian High", asian_h))
+        # Sort targets by proximity (nearest high is the immediate DOL)
+        if not targets: return None, None
+        return min(targets, key=lambda x: x[1])
+    
+    elif direction == "SELL":
+        targets = []
+        if pdl: targets.append(("PDL", pdl))
+        if asian_l: targets.append("Asian Low", asian_l)
+        if not targets: return None, None
+        return min(targets, key=lambda x: x[1])
+    
+    return None, None
+
 
 
 def get_candles() -> pd.DataFrame | None:
@@ -1221,8 +1278,50 @@ def check_pre_trade_spread() -> bool:
 #  SECTION 8 — POSITION SIZING
 # =======================================================
 
-def calculate_lot_size(atr: float | None = None) -> float:
-    return 0.08
+def calculate_lot_size(sl_distance: float | None = None) -> float:
+    """
+    v5.1: Dynamic lot sizing based on risk per trade.
+    Formula: LotSize = (Equity * Risk%) / (SL_distance * TickValue)
+    """
+    if sl_distance is None or sl_distance <= 0:
+        # Default fallback: use ATR-based distance if no specific SL provided
+        try:
+            df = get_candles()
+            atr = calculate_atr(df)
+            if atr:
+                sl_distance = atr * ATR_MULTIPLIER
+            else:
+                return 0.01
+        except:
+            return 0.01
+    
+    account = mt5.account_info()
+    symbol_info = mt5.symbol_info(SYMBOL)
+    
+    if not account or not symbol_info:
+        log("Account or symbol info unavailable for lot calculation.", "ERROR")
+        return 0.01
+
+    equity = account.equity
+    risk_amount = equity * (RISK_PERCENT / 100.0)
+    
+    tick_value = symbol_info.trade_tick_value
+    tick_size = symbol_info.trade_tick_size
+    
+    if tick_value == 0 or tick_size == 0:
+        return 0.01
+
+    sl_ticks = sl_distance / tick_size
+    lot_size = risk_amount / (sl_ticks * tick_value)
+    
+    min_lot = symbol_info.volume_min
+    max_lot = symbol_info.volume_max
+    final_lot = max(min_lot, min(lot_size, max_lot, HARD_LOT_CAP))
+    
+    lot_step = symbol_info.volume_step
+    final_lot = round(final_lot / lot_step) * lot_step
+    
+    return float(final_lot)
 
 
 def get_overlap_multiplier() -> float:
@@ -1662,13 +1761,48 @@ def evaluate_ingwe(df, fvgs, sweep, sweep_level, price, atr, lot_size, session):
         return
     log(f"ADX: {adx:.1f}  |  +DI: {plus_di:.1f}  |  -DI: {minus_di:.1f}")
 
-    # ── FIX-1: HARD ADX GATE (v4.3) ───────────────────────
-    # v4.3: ADX < 20 blocks ALL entries regardless of score.
-    # The trade that lost had ADX 12.6 — range-bound, choppy.
+    # ── FIX-1: ADX GATE (v5.2 - Weighted Context) ──────────────────────
+    # Instead of blocking, we flag low ADX for Kronos to decide.
+    adx_ok = True
     if adx < ADX_MIN_THRESHOLD:
-        log(f"ADX {adx} below minimum ({ADX_MIN_THRESHOLD}) — "
-            f"range-bound. Ingwe does not hunt in the chop.", "GUARD")
+        log(f"ADX {adx} below minimum ({ADX_MIN_THRESHOLD}) — Range-bound risk.", "WARN")
+        adx_ok = False
+    
+    # ── PATTERN BLACKLIST CHECK (STILL A HARD GATE) ────────────────────────────
+    # Block toxic patterns identified in backtest (win rate <35%)
+    blacklist_blocked = False
+    for pattern in PATTERN_BLACKLIST:
+        blk_session, blk_direction, blk_sweep = pattern
+        if session == blk_session and sweep == blk_sweep:
+            for fvg_type, _, _, _, _, _ in fvgs:
+                if sweep == "SWEEP_LOW" and fvg_type == "BULLISH_FVG":
+                    current_direction = "BUY"
+                elif sweep == "SWEEP_HIGH" and fvg_type == "BEARISH_FVG":
+                    current_direction = "SELL"
+                elif sweep == "SWEEP_LOW" and fvg_type == "BEARISH_FVG":
+                    current_direction = "SELL"
+                elif sweep == "SWEEP_HIGH" and fvg_type == "BULLISH_FVG":
+                    current_direction = "BUY"
+                else:
+                    continue
+                if current_direction == blk_direction:
+                    log(f"PATTERN BLACKLIST: {session} {current_direction} {sweep} — "
+                        f"historically <35% win rate. Standing down.", "GUARD")
+                    blacklist_blocked = True
+                    break
+            if blacklist_blocked:
+                break
+    
+    if blacklist_blocked:
         return
+    
+    # ── MIN_ADX_FOR_TRADING GATE (v5.2 - Weighted Context) ──────────────────
+    # Only extreme lows remain hard blocks to prevent total chaos.
+    min_adx_hard_limit = 10 
+    if adx < min_adx_hard_limit:
+        log(f"ADX {adx} below hard limit ({min_adx_hard_limit}) — Extreme chop. Standing down.", "GUARD")
+        return
+
 
     # ── PATTERN BLACKLIST CHECK ────────────────────────────
     # Block toxic patterns identified in backtest (win rate <35%)
@@ -1725,21 +1859,19 @@ def evaluate_ingwe(df, fvgs, sweep, sweep_level, price, atr, lot_size, session):
         return
     log(f"H1 Trend: {trend}")
 
-    # ── FIX-2: HARD HTF BIAS GATE (v4.3) ────────────────
-    # v4.3: D1+H4 bias is a hard requirement — not optional.
-    # If HTF is unavailable or conflicts with H1 trend, no trade.
+    # ── FIX-2: HTF BIAS (v5.2 - Weighted Context) ────────────────
+    # Instead of blocking, we flag bias conflicts for Kronos to decide.
     htf_bias = get_htf_bias()
-    if not htf_bias:
-        log("HTF bias unavailable — Ingwe requires top-down confirmation. Standing down.", "GUARD")
-        return
-    log(f"HTF Bias (D1+H4): {htf_bias}")
-    if htf_bias != trend:
-        log(f"HTF bias ({htf_bias}) conflicts with H1 trend ({trend}). "
-            f"Ingwe does not trade against the higher timeframe.", "GUARD")
-        return
-    log(f"HTF bias confirms H1 trend — full top-down alignment.  [+10]")
-
     htf_bias_ok = True
+    if not htf_bias:
+        log("HTF bias unavailable — flagged for Kronos review.", "WARN")
+        htf_bias_ok = False
+    elif htf_bias != trend:
+        log(f"HTF bias ({htf_bias}) conflicts with H1 trend ({trend}) — flagged for Kronos review.", "WARN")
+        htf_bias_ok = False
+    else:
+        log(f"HTF bias confirms H1 trend — full top-down alignment.  [+10]")
+
 
     # ── FIX-3: SL MINIMUM DISTANCE (v4.3) ───────────────
     # v4.3: SL must be at least MIN_SL_ATR_MULTIPLIER × ATR.
@@ -1822,8 +1954,10 @@ def evaluate_ingwe(df, fvgs, sweep, sweep_level, price, atr, lot_size, session):
             )
             log(f"Confluence [BUY REVERSAL]: {score}/120{bonus_label}")
             if score < threshold:
-                log(f"Score {score} < {threshold}. Waiting.", "GUARD")
-                continue
+                log(f"Score {score} < {threshold}. Flagging for Kronos review.", "WARN")
+                score_ok = False
+            else:
+                score_ok = True
             if not check_pre_trade_spread():
                 continue
             
@@ -1836,6 +1970,8 @@ def evaluate_ingwe(df, fvgs, sweep, sweep_level, price, atr, lot_size, session):
                     "fvg_position": "below_50" if price <= fvg_50_val else ("50%" if abs(price - fvg_50_val) < atr * 0.1 else "above_50"),
                     "bos_aligned": bos_aligned,
                     "htf_bias_ok": htf_bias_ok,
+                    "adx_ok": adx_ok,
+                    "score_ok": score_ok,
                     "confluence_score": score,
                     "session": session,
                     "atr": atr,
@@ -2205,27 +2341,33 @@ def evaluate_silver_bullet(df, fvgs, sweep, sweep_level, price, atr,
             if not check_pre_trade_spread():
                 continue
             
-            if KRONOS_VETO_GATE is not None:
-                ctx = {
-                    "direction": "BUY",
-                    "setup_type": "SILVER_BULLET",
-                    "sweep": sweep,
-                    "fvg_type": fvg_type,
-                    "fvg_position": "below_50" if price <= fvg_50 else ("50%" if abs(price - fvg_50) < atr * 0.1 else "above_50"),
-                    "bos_aligned": False,
-                    "htf_bias_ok": False,
-                    "confluence_score": 70,
-                    "session": window,
-                    "atr": atr,
-                    "spread_ok": check_pre_trade_spread(),
-                    "trend": "BULLISH",
-                    "level_sweep": True
-                }
-                allowed, reason = KRONOS_VETO_GATE.validate(ctx, df, SYMBOL)
-                log(f"[KRONOS] BUY signal: {reason}", "GUARD")
-                if not allowed:
-                    log(f"Kronos vetoed BUY. Skipping trade.", "GUARD")
-                    return
+                if KRONOS_VETO_GATE is not None:
+                    dol_name, dol_price = get_draw_on_liquidity("BUY")
+                    ctx = {
+                        "direction": "BUY",
+                        "setup_type": "SILVER_BULLET",
+                        "sweep": sweep,
+                        "fvg_type": fvg_type,
+                        "fvg_position": "below_50" if price <= fvg_50 else ("50%" if abs(price - fvg_50) < atr * 0.1 else "above_50"),
+                        "bos_aligned": False,
+                        "htf_bias_ok": False,
+                        "confluence_score": 70,
+                        "session": window,
+                        "atr": atr,
+                        "spread_ok": check_pre_trade_spread(),
+                        "trend": "BULLISH",
+                        "level_sweep": True,
+                        "draw_on_liquidity": dol_name,
+                        "dol_price": dol_price,
+                        "distance_to_dol": abs(dol_price - price) if dol_price else None,
+                        "sb_window": window
+                    }
+                    allowed, reason = KRONOS_VETO_GATE.validate(ctx, df, SYMBOL)
+                    log(f"[KRONOS] BUY signal: {reason}", "GUARD")
+                    if not allowed:
+                        log(f"Kronos vetoed BUY. Skipping trade.", "GUARD")
+                        return
+
             
             entry   = round(price, 5)
             sl      = round(sweep_level - atr * ATR_MULTIPLIER, 5)
@@ -2253,27 +2395,33 @@ def evaluate_silver_bullet(df, fvgs, sweep, sweep_level, price, atr,
             if not check_pre_trade_spread():
                 continue
             
-            if KRONOS_VETO_GATE is not None:
-                ctx = {
-                    "direction": "SELL",
-                    "setup_type": "SILVER_BULLET",
-                    "sweep": sweep,
-                    "fvg_type": fvg_type,
-                    "fvg_position": "above_50" if price >= fvg_50 else ("50%" if abs(price - fvg_50) < atr * 0.1 else "below_50"),
-                    "bos_aligned": False,
-                    "htf_bias_ok": False,
-                    "confluence_score": 70,
-                    "session": window,
-                    "atr": atr,
-                    "spread_ok": check_pre_trade_spread(),
-                    "trend": "BEARISH",
-                    "level_sweep": True
-                }
-                allowed, reason = KRONOS_VETO_GATE.validate(ctx, df, SYMBOL)
-                log(f"[KRONOS] SELL signal: {reason}", "GUARD")
-                if not allowed:
-                    log(f"Kronos vetoed SELL. Skipping trade.", "GUARD")
-                    return
+                if KRONOS_VETO_GATE is not None:
+                    dol_name, dol_price = get_draw_on_liquidity("SELL")
+                    ctx = {
+                        "direction": "SELL",
+                        "setup_type": "SILVER_BULLET",
+                        "sweep": sweep,
+                        "fvg_type": fvg_type,
+                        "fvg_position": "above_50" if price >= fvg_50 else ("50%" if abs(price - fvg_50) < atr * 0.1 else "below_50"),
+                        "bos_aligned": False,
+                        "htf_bias_ok": False,
+                        "confluence_score": 70,
+                        "session": window,
+                        "atr": atr,
+                        "spread_ok": check_pre_trade_spread(),
+                        "trend": "BEARISH",
+                        "level_sweep": True,
+                        "draw_on_liquidity": dol_name,
+                        "dol_price": dol_price,
+                        "distance_to_dol": abs(dol_price - price) if dol_price else None,
+                        "sb_window": window
+                    }
+                    allowed, reason = KRONOS_VETO_GATE.validate(ctx, df, SYMBOL)
+                    log(f"[KRONOS] SELL signal: {reason}", "GUARD")
+                    if not allowed:
+                        log(f"Kronos vetoed SELL. Skipping trade.", "GUARD")
+                        return
+
             
             entry   = round(price, 5)
             sl      = round(sweep_level + atr * ATR_MULTIPLIER, 5)
@@ -2297,6 +2445,7 @@ def evaluate_silver_bullet(df, fvgs, sweep, sweep_level, price, atr,
 # =======================================================
 
 def run_agent():
+    update_memory()
     sast_now = now_sast()
     mkt_mode = "SUMMER" if is_eu_summer() else "WINTER"
 

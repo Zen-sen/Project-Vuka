@@ -8,11 +8,11 @@
 ## Current State
 
 ```yaml
-last_updated       : ""          # ISO timestamp — set by session_manager.py
-active_instances   : []          # e.g. ["EURUSDc-INGWE", "GBPUSDc-SB"]
-current_equity     : 0.00        # Live account equity (USD)
-bot_status         : "IDLE"      # RUNNING | IDLE | PAUSED | CIRCUIT_BREAK
-environment        : "LIVE"      # LIVE | PAPER | BACKTEST
+last_updated       :  2026-05-24T19:18:38.813901+00:00
+active_instances   :  ["EURUSD_INGWE"]
+current_equity     :  4170.51
+bot_status         :  RUNNING
+environment        :  LIVE
 ```
 
 ---
@@ -20,10 +20,10 @@ environment        : "LIVE"      # LIVE | PAPER | BACKTEST
 ## Today's Stats
 
 ```yaml
-date               : ""
-daily_pnl          : 0.00
+date               :  2026-05-24
+daily_pnl          :  0
 daily_pnl_pct      : 0.00
-sessions_traded    : []          # e.g. ["london", "ny"]
+sessions_traded    :  []
 active_positions   : []          # list of open trade IDs
 trades_today       : 0
 wins_today         : 0
@@ -46,6 +46,7 @@ rrr_minimum          : 3.0
 trailing_sl          : true
 adx_threshold        : 20
 news_blackout_min    : 30
+kronos_threshold      : 0.40       # Maintained after audit; 0.70 too strict (missed winners)
 ```
 
 ---
@@ -53,12 +54,12 @@ news_blackout_min    : 30
 ## Recent Activity
 
 ```yaml
-last_scan        : ""            # Last time bot scanned for setups
+last_scan        :  2026-05-24 19:18:38
 last_trade       : ""            # Timestamp of last executed trade
 last_trade_id    : ""
 last_report_run  : ""
 errors           : []            # Format: ["YYYY-MM-DD HH:MM | error_message"]
-manual_overrides : []            # Format: ["YYYY-MM-DD | reason | authorized_by"]
+manual_overrides : ["2026-05-24 | Keep Kronos threshold at 0.40 | Audit Result: Precision 50%, FP=9, TP=9"]
 ```
 
 ---
