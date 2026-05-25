@@ -9,7 +9,7 @@ import os
 import sys
 import hashlib
 import codecs
-import importlib
+
 
 # ── ARGUMENT PARSING (Moved to top for Logger) ────────────────
 _valid_symbols    = ("EURUSD", "GBPUSD", "USDJPY", "BTCUSD")
@@ -28,7 +28,6 @@ if _arg_strategy not in _valid_strategies:
 _instance_tag = f"{_arg_symbol}_{_arg_strategy}"
 
 # Core infrastructure
-from state_manager import StateManager
 from health_monitor import HealthMonitor
 from kronos_guardian import KronosVetoGate, create_veto_gate
 from database_manager import get_db
@@ -48,8 +47,23 @@ try:
 except ImportError:
     TICK_ENGINE_AVAILABLE = False
 
+# Load config from file if available
+CONFIG = {}
+_config_path = Path("config_v4.6.json")
+if _config_path.exists():
+    try:
+        with open(_config_path) as _f:
+            CONFIG = json.load(_f)
+    except Exception:
+        pass
+
 # Initialize Veto Gate
-KRONOS_VETO_GATE = create_veto_gate({"enabled": True, "mode": "enforced", "threshold": 0.40})
+_veto_cfg = CONFIG.get("veto_gate", {})
+KRONOS_VETO_GATE = create_veto_gate({
+    "enabled": _veto_cfg.get("enabled", True),
+    "mode": _veto_cfg.get("mode", "enforced"),
+    "threshold": _veto_cfg.get("threshold", 0.40),
+})
 
 # Database manager for SQLite consolidation
 try:
@@ -141,7 +155,9 @@ except ImportError:
 # ── STRATEGY & SYMBOL SELECTOR ──────────────────────────
 # (Arguments parsed at top for Logger initialization)
 STRATEGY = _arg_strategy
-_arg_check = "--check" in sys.argv
+_arg_check    = "--check" in sys.argv
+_arg_backtest = "--backtest" in sys.argv
+_arg_test     = "--test" in sys.argv
 
 _SYMBOL_MAP = {
     "EURUSD": "EURUSDc",
@@ -1105,66 +1121,14 @@ def detect_m15_bos(df: pd.DataFrame, lookback: int = 20) -> str | None:
 #  SECTION 6 — INDICATORS
 # =======================================================
 
+from indicators import calculate_adx_wilder as _calculate_adx_wilder
+
 def calculate_adx_wilder(df: pd.DataFrame, period: int = 14):
-    """
-    v3.9.3: True Wilder smoothing for TR, +DM, -DM, and DX -> ADX.
-    Minimum data: period*2+1 bars. Output matches MT5's native ADX indicator.
-    """
     if df is None or len(df) < period * 2 + 1:
         return None, None, None
-
-    high  = df["high"].values
-    low   = df["low"].values
-    close = df["close"].values
-    n     = len(df)
-
-    tr_arr       = np.zeros(n)
-    plus_dm_arr  = np.zeros(n)
-    minus_dm_arr = np.zeros(n)
-
-    for i in range(1, n):
-        up   = high[i]    - high[i - 1]
-        down = low[i - 1] - low[i]
-        tr_arr[i]       = max(
-            high[i] - low[i],
-            abs(high[i]  - close[i - 1]),
-            abs(low[i]   - close[i - 1])
-        )
-        plus_dm_arr[i]  = up   if (up   > down and up   > 0) else 0.0
-        minus_dm_arr[i] = down if (down > up   and down > 0) else 0.0
-
-    atr_s = float(np.sum(tr_arr[1:period + 1]))
-    pdm_s = float(np.sum(plus_dm_arr[1:period + 1]))
-    mdm_s = float(np.sum(minus_dm_arr[1:period + 1]))
-
-    if atr_s == 0:
-        return 0.0, 0.0, 0.0
-
-    dx_arr = np.zeros(n)
-    pdi    = 100.0 * pdm_s / atr_s
-    mdi    = 100.0 * mdm_s / atr_s
-    di_sum = pdi + mdi
-    dx_arr[period] = 100.0 * abs(pdi - mdi) / di_sum if di_sum else 0.0
-
-    for i in range(period + 1, n):
-        atr_s += -atr_s / period + tr_arr[i]
-        pdm_s += -pdm_s / period + plus_dm_arr[i]
-        mdm_s += -mdm_s / period + minus_dm_arr[i]
-        if atr_s == 0:
-            dx_arr[i] = 0.0
-            continue
-        pdi    = 100.0 * pdm_s / atr_s
-        mdi    = 100.0 * mdm_s / atr_s
-        di_sum = pdi + mdi
-        dx_arr[i] = 100.0 * abs(pdi - mdi) / di_sum if di_sum else 0.0
-
-    adx_seed_end = period * 2 - 1
-    adx = float(np.mean(dx_arr[period:adx_seed_end + 1]))
-
-    for i in range(adx_seed_end + 1, n):
-        adx = (adx * (period - 1) + dx_arr[i]) / period
-
-    return round(adx, 1), round(pdi, 1), round(mdi, 1)
+    return _calculate_adx_wilder(
+        df["high"].values, df["low"].values, df["close"].values, period
+    )
 
 
 def calculate_atr(df: pd.DataFrame, period: int = 14) -> float | None:
@@ -1803,42 +1767,6 @@ def evaluate_ingwe(df, fvgs, sweep, sweep_level, price, atr, lot_size, session):
         log(f"ADX {adx} below hard limit ({min_adx_hard_limit}) — Extreme chop. Standing down.", "GUARD")
         return
 
-
-    # ── PATTERN BLACKLIST CHECK ────────────────────────────
-    # Block toxic patterns identified in backtest (win rate <35%)
-    # Check if current pattern is in blacklist
-    blacklist_blocked = False
-    for pattern in PATTERN_BLACKLIST:
-        blk_session, blk_direction, blk_sweep = pattern
-        if session == blk_session and sweep == blk_sweep:
-            # Determine direction from setup
-            for fvg_type, _, _, _, _, _ in fvgs:
-                if sweep == "SWEEP_LOW" and fvg_type == "BULLISH_FVG":
-                    current_direction = "BUY"
-                elif sweep == "SWEEP_HIGH" and fvg_type == "BEARISH_FVG":
-                    current_direction = "SELL"
-                elif sweep == "SWEEP_LOW" and fvg_type == "BEARISH_FVG":
-                    current_direction = "SELL"
-                elif sweep == "SWEEP_HIGH" and fvg_type == "BULLISH_FVG":
-                    current_direction = "BUY"
-                else:
-                    continue
-                if current_direction == blk_direction:
-                    log(f"PATTERN BLACKLIST: {session} {current_direction} {sweep} — "
-                        f"historically <35% win rate. Standing down.", "GUARD")
-                    blacklist_blocked = True
-                    break
-            if blacklist_blocked:
-                break
-    
-    if blacklist_blocked:
-        return
-    
-    # ── MIN_ADX_FOR_TRADING GATE (v5.0) ──────────────────
-    if MIN_ADX_FOR_TRADING and adx < MIN_ADX_FOR_TRADING:
-        log(f"ADX {adx} below trading threshold ({MIN_ADX_FOR_TRADING}) — "
-            f"market not trending enough.", "GUARD")
-        return
 
     spread      = get_spread()
     spread_pips = spread * 10000 if spread else 0
@@ -2665,12 +2593,18 @@ if __name__ == "__main__":
     log(f"Ingwe is awake. [{_instance_tag}] hunting begins.\n")
 
     try:
-        if _arg_check:
+        if _arg_check or _arg_test:
             log("CHECK MODE: Running single scan and exiting.")
             print()
             run_agent()
             print(); import sys; sys.stdout.flush()
             log("Check complete. Ingwe stands down.")
+        elif _arg_backtest:
+            log("BACKTEST MODE: Polling loop active.")
+            while True:
+                run_agent()
+                print(); import sys; sys.stdout.flush()
+                time.sleep(SCAN_INTERVAL_SEC)
         else:
             # Phase 1: Event-driven tick engine (production)
             if TICK_ENGINE_AVAILABLE:

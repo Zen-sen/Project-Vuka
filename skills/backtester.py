@@ -20,68 +20,15 @@ if sys.platform == "win32":
     sys.stderr = codecs.getwriter('utf-8')(sys.stderr.buffer, 'strict')
 
 
+from indicators import calculate_adx_wilder as _calculate_adx_wilder
+
 def calculate_adx_wilder(candles: list, period: int = 14):
-    """
-    Calculate ADX from candle list (Wilder smoothing).
-    Returns: (adx, plus_di, minus_di)
-    """
     if len(candles) < period * 2 + 1:
         return None, None, None
-    
-    high  = np.array([c["high"] for c in candles])
-    low   = np.array([c["low"] for c in candles])
+    high = np.array([c["high"] for c in candles])
+    low = np.array([c["low"] for c in candles])
     close = np.array([c["close"] for c in candles])
-    n     = len(candles)
-    
-    tr_arr       = np.zeros(n)
-    plus_dm_arr  = np.zeros(n)
-    minus_dm_arr = np.zeros(n)
-    
-    for i in range(1, n):
-        up   = high[i]    - high[i - 1]
-        down = low[i - 1] - low[i]
-        tr_arr[i]       = max(
-            high[i] - low[i],
-            abs(high[i]  - close[i - 1]),
-            abs(low[i]   - close[i - 1])
-        )
-        plus_dm_arr[i]  = up   if (up   > down and up   > 0) else 0.0
-        minus_dm_arr[i] = down if (down > up   and down > 0) else 0.0
-    
-    atr_s = float(np.sum(tr_arr[1:period + 1]))
-    pdm_s = float(np.sum(plus_dm_arr[1:period + 1]))
-    mdm_s = float(np.sum(minus_dm_arr[1:period + 1]))
-    
-    if atr_s == 0:
-        return 0.0, 0.0, 0.0
-    
-    dx_arr = np.zeros(n)
-    pdi    = 100.0 * pdm_s / atr_s
-    mdi    = 100.0 * mdm_s / atr_s
-    di_sum = pdi + mdi
-    dx_arr[period] = 100.0 * abs(pdi - mdi) / di_sum if di_sum else 0.0
-    
-    for i in range(period + 1, n):
-        atr_s += -atr_s / period + tr_arr[i]
-        pdm_s += -pdm_s / period + plus_dm_arr[i]
-        mdm_s += -mdm_s / period + minus_dm_arr[i]
-        if atr_s == 0:
-            dx_arr[i] = 0.0
-            continue
-        pdi    = 100.0 * pdm_s / atr_s
-        mdi    = 100.0 * mdm_s / atr_s
-        di_sum = pdi + mdi
-        dx_arr[i] = 100.0 * abs(pdi - mdi) / di_sum if di_sum else 0.0
-    
-    adx_arr = np.zeros(n)
-    adx_s = dx_arr[period]
-    adx_arr[period] = adx_s
-    
-    for i in range(period + 1, n):
-        adx_s = (adx_s * (period - 1) + dx_arr[i]) / period
-        adx_arr[i] = adx_s
-    
-    return round(adx_arr[-1], 1), round(pdi, 1), round(mdi, 1)
+    return _calculate_adx_wilder(high, low, close, period)
 
 
 BASE_DIR = Path(__file__).parent.parent

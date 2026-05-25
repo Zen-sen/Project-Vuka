@@ -18,7 +18,7 @@ Performance:
 """
 
 import MetaTrader5 as mt5
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import time
 import sys
 
@@ -109,7 +109,7 @@ class TickEngine:
         candle_open_timestamp = (timestamp // self.candle_duration) * self.candle_duration
         
         # Convert back to datetime
-        return datetime.fromtimestamp(candle_open_timestamp)
+        return datetime.fromtimestamp(candle_open_timestamp, tz=timezone.utc)
     
     def on_tick(self, tick):
         """
