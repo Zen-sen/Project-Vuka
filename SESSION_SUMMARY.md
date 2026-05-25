@@ -1,3 +1,5 @@
+> **⚠️ HISTORICAL — March 29, 2026.** This reflects an older state of the project. See `AGENT.md` and `Memory.md` for current structure and performance.
+
 # Project Vuka - Session Summary
 
 ## Current State (Mar 29, 2026)

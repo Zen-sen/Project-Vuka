@@ -1,3 +1,5 @@
+> **⚠️ SUPERSEDED — v4.6 modules removed.** `state_manager_v4.6.py`, `health_monitor_v4.6.py`, and `kronos_guardian_v4.6.py` no longer exist as standalone files. Their functionality was incorporated into `state_manager.py`, `health_monitor.py`, and `kronos_guardian.py`. See `AGENT.md` for current file structure.
+
 # 🐆 INGWE v4.6 — INTEGRATION GUIDE
 ## Hardening v4.5 Ingwe with Defense-in-Depth Modules
 

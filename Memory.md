@@ -8,8 +8,8 @@
 ## Current State
 
 ```yaml
-last_updated       :  2026-05-24T19:18:38.813901+00:00
-active_instances   :  ["EURUSD_INGWE"]
+last_updated       :  2026-05-25T00:00:00+00:00
+active_instances   :  ["EURUSD_INGWE", "GBPUSD_INGWE", "EURUSD_SILVER_BULLET", "GBPUSD_SILVER_BULLET"]
 current_equity     :  4170.51
 bot_status         :  RUNNING
 environment        :  LIVE
@@ -107,7 +107,7 @@ todo:
   - "[ ] Telegram/Discord webhook alerts"
   - "[ ] GBPUSD performance split vs EURUSD analysis"
   - "[ ] Walk-forward optimizer integration"
-  - "[ ] Stark Oracle dashboard MT5 live feed connection"
+  - "[ ] ICT_M1 strategy optimization and live testing"
 ```
 
 ---
@@ -124,6 +124,10 @@ done:
   - "[x] EMA + ADX + ATR indicator stack"
   - "[x] Stark Oracle dashboard (JARVIS HUD)"
   - "[x] Claude API trade analysis integration"
+  - "[x] Live TUI dashboard with fleet status and command dispatch"
+  - "[x] Bot consolidation — single ingwe.py with --backtest/--test flags"
+  - "[x] Shared indicators module (indicators.py) eliminating ADX duplication"
+  - "[x] Supervisor auto-launch from dashboard"
 ```
 
 ---
