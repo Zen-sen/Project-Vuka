@@ -94,6 +94,25 @@ class CommandCenter:
                 continue
         return "-"
 
+    def get_last_activity(self, tag: str) -> Optional[str]:
+        symbol, strategy = tag.split('_', 1)
+        conn = self.db._get_connection()
+        cursor = conn.execute(
+            "SELECT MAX(timestamp) FROM system_logs WHERE component = ?",
+            (tag,)
+        )
+        row = cursor.fetchone()
+        if row and row[0]:
+            elapsed = datetime.now() - datetime.fromisoformat(row[0])
+            secs = int(elapsed.total_seconds())
+            if secs < 60:
+                return f"{secs}s ago"
+            elif secs < 3600:
+                return f"{secs // 60}m ago"
+            else:
+                return f"{secs // 3600}h {secs % 3600 // 60}m ago"
+        return "-"
+
     def get_bot_statuses(self) -> List[Dict[str, Any]]:
         status_list = []
         for symbol in self.symbols:
@@ -110,6 +129,7 @@ class CommandCenter:
                     "strategy": strategy,
                     "pnl": pnl,
                     "mode": self.get_bot_mode(tag),
+                    "last_seen": self.get_last_activity(tag),
                     "status": "RUNNING" if running else "STOPPED"
                 })
         return status_list
@@ -154,16 +174,28 @@ class CommandCenter:
         table.add_column("Strategy", style="magenta")
         table.add_column("Mode", justify="center", style="yellow")
         table.add_column("P&L/RR", justify="right", style="green")
+        table.add_column("Last Seen", justify="center")
         table.add_column("Status", justify="center")
 
         for bot in self.get_bot_statuses():
             status_style = "bold green" if bot["status"] == "RUNNING" else "bold red"
             mode_style = "green" if bot["mode"] == "LIVE" else ("yellow" if bot["mode"] == "BACKTEST" else "dim")
+            ls = bot["last_seen"]
+            if ls == "-":
+                ls_style = "dim"
+            elif ls.endswith("s ago"):
+                secs = int(ls.split("s")[0])
+                ls_style = "green" if secs < 30 else "yellow" if secs < 120 else "red"
+            elif ls.endswith("m ago"):
+                ls_style = "yellow"
+            else:
+                ls_style = "red"
             table.add_row(
                 bot["tag"],
                 bot["strategy"],
                 Text(bot["mode"], style=mode_style),
                 f"{bot['pnl']:.2f}",
+                Text(ls, style=ls_style),
                 Text(bot["status"], style=status_style)
             )
         
@@ -177,20 +209,25 @@ class CommandCenter:
 
         veto = cfg.get("veto_gate", {})
         text.append("Veto Gate\n", style="bold underline")
-        text.append(f"  Enabled:  {veto.get('enabled', 'N/A')}\n")
-        text.append(f"  Mode:     {veto.get('mode', 'N/A')}\n")
+        text.append(f"  Enabled:   {veto.get('enabled', 'N/A')}\n")
+        text.append(f"  Mode:      {veto.get('mode', 'N/A')}\n")
         text.append(f"  Threshold: {veto.get('threshold', 'N/A')}\n")
-        text.append(f"  Safety:   {veto.get('safety_mode', 'N/A')}\n\n")
+        text.append(f"  Safety:    {veto.get('safety_mode', 'N/A')}\n\n")
+
+        tick_engine = cfg.get("tick_engine", {})
+        text.append("Tick Engine\n", style="bold underline")
+        text.append(f"  Heartbeat: {tick_engine.get('heartbeat_seconds', 180)}s\n")
+        text.append(f"  Mode:      {'Event-driven + fallback' if tick_engine.get('heartbeat_enabled', True) else 'Pure event'}\n\n")
 
         health = cfg.get("health_monitor", {})
         text.append("Health Monitor\n", style="bold underline")
-        text.append(f"  Window:   {health.get('window_size', 'N/A')}\n")
-        text.append(f"  Interval: {health.get('anomaly_check_interval', 'N/A')}s\n\n")
+        text.append(f"  Window:    {health.get('window_size', 'N/A')}\n")
+        text.append(f"  Interval:  {health.get('anomaly_check_interval', 'N/A')}s\n\n")
 
         sm = cfg.get("state_manager", {})
         text.append("State Manager\n", style="bold underline")
-        text.append(f"  Backups:  {sm.get('max_backups', 'N/A')}\n")
-        text.append(f"  Atomic:   {sm.get('atomic_write_enabled', 'N/A')}")
+        text.append(f"  Backups:   {sm.get('max_backups', 'N/A')}\n")
+        text.append(f"  Atomic:    {sm.get('atomic_write_enabled', 'N/A')}")
 
         layout["config"].update(Panel(text, title="System Config", border_style="yellow"))
 

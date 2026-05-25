@@ -23,31 +23,41 @@ import time
 import sys
 
 
+class HeartbeatTick:
+    """Synthetic tick emitted when MT5 goes silent past max_idle_seconds."""
+    def __init__(self):
+        self.time = datetime.now()
+
+
 class TickEngine:
     """Event-driven execution engine for MT5 tick stream
     
     Listens to tick stream and triggers callback on new candle open.
+    Falls back to time-based polling if no ticks arrive (heartbeat watchdog).
     Handles multiple symbols and timeframes with automatic throttling.
     """
     
-    def __init__(self, symbol, timeframe, callback=None, verbose=True):
+    def __init__(self, symbol, timeframe, callback=None, verbose=True, max_idle_seconds=300):
         """
         Args:
             symbol: MT5 symbol (e.g., 'EURUSDc')
             timeframe: MT5 timeframe (e.g., mt5.TIMEFRAME_M1)
             callback: Function to call on new candle: callback(candle_open_time)
             verbose: Print tick debug output
+            max_idle_seconds: Fall back to time-based polling after N seconds without ticks
         """
         self.symbol = symbol
         self.timeframe = timeframe
         self.callback = callback
         self.verbose = verbose
+        self.max_idle_seconds = max_idle_seconds
         
         # State tracking
         self.last_candle_open = None
         self.tick_count = 0
         self.candle_count = 0
         self.start_time = datetime.now()
+        self._last_tick_time = datetime.now()
         
         # Timeframe mapping (MT5 TIMEFRAME constants → seconds)
         self.timeframe_seconds = {
@@ -153,30 +163,38 @@ class TickEngine:
         """
         Fetch latest ticks from MT5 using blocking read.
         
-        Uses mt5.copy_ticks_from() with a small time window (e.g., 1 second)
-        to fetch only recent ticks. This is blocking but efficient.
+        Falls back to time-based heartbeat ticks if MT5 goes silent
+        for longer than max_idle_seconds.
         
         Args:
             timeout_ms: Time window to fetch ticks from (milliseconds)
             
         Yields:
-            Tick objects from MT5
+            Tick objects from MT5, or synthetic heartbeat dummies
         """
         time_from = datetime.now() - timedelta(milliseconds=timeout_ms)
+        idle_start = datetime.now()
         
         while True:
             try:
-                # Fetch ticks since time_from
                 ticks = mt5.copy_ticks_from(self.symbol, time_from, mt5.COPY_TICKS_ALL)
                 
                 if ticks is not None and len(ticks) > 0:
-                    # Yield only new ticks (ones we haven't seen before)
                     for tick in ticks:
                         yield tick
-                        time_from = tick.time  # Update window start
+                        time_from = tick.time
+                        self._last_tick_time = datetime.now()
+                        idle_start = datetime.now()
                 else:
-                    # No new ticks, wait a bit to avoid busy loop
-                    time.sleep(0.01)
+                    idle_secs = (datetime.now() - idle_start).total_seconds()
+                    if idle_secs >= self.max_idle_seconds:
+                        if self.verbose:
+                            print(f"[TickEngine] {idle_secs:.0f}s without ticks — "
+                                  f"heartbeat fallback")
+                        yield HeartbeatTick()
+                        idle_start = datetime.now()
+                    else:
+                        time.sleep(0.01)
                     
             except Exception as e:
                 print(f"[TickEngine] Error fetching ticks: {e}", file=sys.stderr)

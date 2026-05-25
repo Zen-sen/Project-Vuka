@@ -22,5 +22,9 @@
     "alert_on_error": true,
     "alert_on_veto_rate_gt": 0.7,
     "alert_on_no_sweeps": true
+  },
+  "tick_engine": {
+    "heartbeat_enabled": true,
+    "heartbeat_seconds": 180
   }
 }

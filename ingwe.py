@@ -2617,7 +2617,8 @@ if __name__ == "__main__":
                         symbol=SYMBOL,
                         timeframe=TIMEFRAME,
                         callback=on_candle_open,
-                        verbose=False  # Set to True for debug output
+                        verbose=False,
+                        max_idle_seconds=CONFIG.get("tick_engine", {}).get("heartbeat_seconds", 180),
                     )
                     log(f"Starting event-driven loop: {SYMBOL} @ {TIMEFRAME}")
                     engine.run()  # Blocks forever, executes on candle events
