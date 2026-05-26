@@ -1,5 +1,7 @@
 {
-  "date": "2026-05-01",
+  "date": "2026-05-26",
   "sessions": [],
-  "consecutive_losses": 0
+  "consecutive_losses": 0,
+  "symbol": "EURUSDc",
+  "strategy": "INGWE"
 }

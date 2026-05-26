@@ -1,4 +1,7 @@
 {
-  "date": "2026-03-25",
-  "sessions": []
+  "date": "2026-05-26",
+  "sessions": [],
+  "consecutive_losses": 0,
+  "symbol": "EURUSDc",
+  "strategy": "SILVER_BULLET"
 }

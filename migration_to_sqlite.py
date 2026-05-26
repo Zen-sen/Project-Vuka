@@ -9,7 +9,7 @@ import json
 import sys
 from pathlib import Path
 from datetime import datetime
-from database_manager_v5 import DatabaseManager
+from database_manager import DatabaseManager
 
 
 def migrate_trades_to_db(db: DatabaseManager, base_dir: Path = Path(".")):
@@ -19,35 +19,54 @@ def migrate_trades_to_db(db: DatabaseManager, base_dir: Path = Path(".")):
     total_duplicates = 0
     
     for trades_file in trades_files:
-        instance_name = trades_file.stem  # e.g., "trades_EURUSD_INGWE"
+        # Extract symbol and strategy from filename: trades_{SYMBOL}_{STRATEGY}.json
+        stem = trades_file.stem  # e.g., "trades_EURUSD_INGWE"
+        parts = stem.replace("trades_", "", 1).split("_")
+        if len(parts) >= 2:
+            file_symbol = parts[0] + "c"  # EURUSD -> EURUSDc
+            file_strategy = "_".join(parts[1:])
+        else:
+            file_symbol = "UNKNOWN"
+            file_strategy = parts[0] if parts else "UNKNOWN"
         
         try:
             with open(trades_file, "r") as f:
                 trades_list = json.load(f)
             
             if not isinstance(trades_list, list):
-                print(f"❌ {trades_file}: Not a list, skipping")
+                print(f"[-] {trades_file}: Not a list, skipping")
                 continue
             
-            print(f"\n📊 Importing {trades_file}...")
+            print(f"\n[Importing] {trades_file} (symbol={file_symbol}, strategy={file_strategy})...")
             imported = 0
             duplicates = 0
             
             for trade in trades_list:
+                # Inject symbol from filename if missing
+                if not trade.get("symbol") or trade["symbol"] == "UNKNOWN":
+                    trade["symbol"] = file_symbol
+                if not trade.get("strategy") or trade["strategy"] == "UNKNOWN":
+                    trade["strategy"] = file_strategy
+                # Map old JSON 'entry' field to new schema
+                if "entry" in trade and trade["entry"] is not None:
+                    if trade.get("entry_req") is None:
+                        trade["entry_req"] = trade["entry"]
+                    if trade.get("entry_fill") is None:
+                        trade["entry_fill"] = trade["entry"]
                 result = db.insert_trade(trade)
                 if result > 0:
                     imported += 1
                 else:
                     duplicates += 1
             
-            print(f"   ✓ Imported: {imported} | Duplicates: {duplicates}")
+            print(f"   [OK] Imported: {imported} | Duplicates: {duplicates}")
             total_imported += imported
             total_duplicates += duplicates
             
         except json.JSONDecodeError as e:
-            print(f"❌ {trades_file}: JSON decode error - {e}")
+            print(f"[-] {trades_file}: JSON decode error - {e}")
         except Exception as e:
-            print(f"❌ {trades_file}: Error - {e}")
+            print(f"[-] {trades_file}: Error - {e}")
     
     return total_imported, total_duplicates
 
@@ -64,7 +83,7 @@ def migrate_sessions_to_db(db: DatabaseManager, base_dir: Path = Path(".")):
             
             # sessions_*.json files have structure: {date: "YYYY-MM-DD", sessions: [...], consecutive_losses: int}
             if not isinstance(data, dict):
-                print(f"❌ {sessions_file}: Not a dict, skipping")
+                print(f"[-] {sessions_file}: Not a dict, skipping")
                 continue
             
             date = data.get("date", datetime.now().strftime("%Y-%m-%d"))
@@ -80,7 +99,7 @@ def migrate_sessions_to_db(db: DatabaseManager, base_dir: Path = Path(".")):
             else:
                 continue
             
-            print(f"\n📅 Importing {sessions_file}...")
+            print(f"\n[Importing] {sessions_file}...")
             
             # Session list is just session names
             imported = 0
@@ -95,11 +114,11 @@ def migrate_sessions_to_db(db: DatabaseManager, base_dir: Path = Path(".")):
             if consecutive_losses > 0:
                 db.update_loss_tracking(date, symbol, strategy, consecutive_losses)
             
-            print(f"   ✓ Sessions: {imported} | Losses: {consecutive_losses}")
+            print(f"   [OK] Sessions: {imported} | Losses: {consecutive_losses}")
             total_sessions += imported
             
         except Exception as e:
-            print(f"❌ {sessions_file}: Error - {e}")
+            print(f"[-] {sessions_file}: Error - {e}")
     
     return total_sessions
 
@@ -115,10 +134,10 @@ def migrate_sl_moves_to_db(db: DatabaseManager, base_dir: Path = Path(".")):
                 sl_moves_list = json.load(f)
             
             if not isinstance(sl_moves_list, list):
-                print(f"❌ {sl_moves_file}: Not a list, skipping")
+                print(f"[-] {sl_moves_file}: Not a list, skipping")
                 continue
             
-            print(f"\n📍 Importing {sl_moves_file}...")
+            print(f"\n[Importing] {sl_moves_file}...")
             imported = 0
             
             for sl_move in sl_moves_list:
@@ -129,13 +148,13 @@ def migrate_sl_moves_to_db(db: DatabaseManager, base_dir: Path = Path(".")):
                 except:
                     pass  # Ignore duplicates
             
-            print(f"   ✓ Imported: {imported}")
+            print(f"   [OK] Imported: {imported}")
             total_sl_moves += imported
             
         except json.JSONDecodeError as e:
-            print(f"❌ {sl_moves_file}: JSON decode error - {e}")
+            print(f"[-] {sl_moves_file}: JSON decode error - {e}")
         except Exception as e:
-            print(f"❌ {sl_moves_file}: Error - {e}")
+            print(f"[-] {sl_moves_file}: Error - {e}")
     
     return total_sl_moves
 
@@ -166,11 +185,11 @@ def validate_migration(db: DatabaseManager, base_dir: Path = Path(".")):
     # Sample a few trades
     sample_trades = db.get_trades(limit=5)
     if sample_trades:
-        print(f"  ✓ Sample trades found: {len(sample_trades)}")
+        print(f"  [OK] Sample trades found: {len(sample_trades)}")
         for t in sample_trades[:2]:
             print(f"    - {t['symbol']} {t['direction']} @ {t['time']}")
     else:
-        print("  ⚠️  No trades found!")
+        print("  [!] No trades found!")
     
     print("\n" + "="*60)
 
@@ -178,46 +197,46 @@ def validate_migration(db: DatabaseManager, base_dir: Path = Path(".")):
 def main():
     """Run migration."""
     print("\n" + "="*60)
-    print("PROJECT VUKA - JSON → SQLite MIGRATION")
+    print("PROJECT VUKA - JSON -> SQLite MIGRATION")
     print("="*60)
     
     base_dir = Path(".")
     
     # Initialize database
-    print("\n📁 Initializing database...")
+    print("\n[Initializing] database...")
     db = DatabaseManager()
-    print("✓ Database initialized")
+    print("[OK] Database initialized")
     
     # Run migrations
     print("\n" + "-"*60)
     print("PHASE 1: Migrate trades")
     print("-"*60)
     trades_imported, trades_duplicates = migrate_trades_to_db(db, base_dir)
-    print(f"\n✓ Trades migration complete: {trades_imported} imported, {trades_duplicates} duplicates")
+    print(f"\n[OK] Trades migration complete: {trades_imported} imported, {trades_duplicates} duplicates")
     
     print("\n" + "-"*60)
     print("PHASE 2: Migrate sessions & loss tracking")
     print("-"*60)
     sessions_imported = migrate_sessions_to_db(db, base_dir)
-    print(f"\n✓ Sessions migration complete: {sessions_imported} sessions")
+    print(f"\n[OK] Sessions migration complete: {sessions_imported} sessions")
     
     print("\n" + "-"*60)
     print("PHASE 3: Migrate SL movements")
     print("-"*60)
     sl_moves_imported = migrate_sl_moves_to_db(db, base_dir)
-    print(f"\n✓ SL movements migration complete: {sl_moves_imported} movements")
+    print(f"\n[OK] SL movements migration complete: {sl_moves_imported} movements")
     
     # Validate
     validate_migration(db, base_dir)
     
     db.close()
     
-    print(f"\n✅ MIGRATION COMPLETE")
+    print(f"\n[SUCCESS] MIGRATION COMPLETE")
     print(f"   Trades: {trades_imported}")
     print(f"   Sessions: {sessions_imported}")
     print(f"   SL Moves: {sl_moves_imported}")
     print(f"   Database: {DatabaseManager.DB_FILE}")
-    print("\n⚠️  Keep JSON files as backup. Verify data before deleting.")
+    print("\n[!] Keep JSON files as backup. Verify data before deleting.")
     
     return 0
 

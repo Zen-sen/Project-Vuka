@@ -1,7 +1,9 @@
-import os
 import sys
 import time
 import json
+import queue
+import msvcrt
+import threading
 import subprocess
 from pathlib import Path
 import psutil
@@ -10,17 +12,14 @@ from typing import List, Dict, Any, Optional
 from database_manager import get_db
 from unified_logger import get_logger
 
-from rich.console import Console
 from rich.layout import Layout
 from rich.panel import Panel
 from rich.table import Table
-from rich.live import Live
 from rich.text import Text
 from rich.align import Align
-from rich.prompt import Prompt
+from rich.live import Live
 
 logger = get_logger("Dashboard")
-console = Console()
 CONFIG_PATH = Path("config_v4.6.json")
 
 
@@ -40,6 +39,8 @@ class CommandCenter:
         self.symbols = ["EURUSD", "GBPUSD"]
         self.strategies = ["INGWE", "SILVER_BULLET"]
         self._supervisor_proc: Optional[subprocess.Popen] = None
+        self._action_q: queue.Queue = queue.Queue()
+        self._status_msg = ""
 
     def _ensure_supervisor(self):
         for proc in psutil.process_iter(['cmdline']):
@@ -271,78 +272,90 @@ class CommandCenter:
         layout["logs_container"].update(log_layout)
 
     def update_footer(self, layout: Layout):
-        footer_text = Text(" [S]tart Bot | [K]ill Bot | [R]estart Server | [X] Stop All | [Q]uit", 
-                           style="bold white on black", justify="center")
-        layout["footer"].update(Panel(Align.center(footer_text), border_style="dim"))
+        text = Text()
+        text.append("  [S]tart  [K]ill  [R]estart  [X] Stop All  [Q]uit", style="bold white")
+        bots = self._bot_index()
+        text.append(f"\n  Bots: 1={bots[0]}  2={bots[1]}  3={bots[2]}  4={bots[3]}", style="dim")
+        if self._status_msg:
+            text.append(f"\n  {self._status_msg}", style="italic yellow")
+        layout["footer"].update(Panel(Align.center(text), border_style="dim"))
 
-    def select_bot(self, action_name: str) -> Optional[str]:
-        """Displays a numbered list of bots and returns the selected tag."""
-        bots = self.get_bot_statuses()
-        if not bots:
-            console.print("[red]No bots configured.[/red]")
-            return None
-        
-        console.print(f"\n[bold cyan]Select a bot to {action_name}:[/bold cyan]")
-        for i, bot in enumerate(bots, 1):
-            status_color = "green" if bot["status"] == "RUNNING" else "red"
-            console.print(f" {i}. [bold]{bot['tag']}[/bold] ([{status_color}]{bot['status']}[/{status_color}])")
-        
-        try:
-            choice = Prompt.ask("\nChoice", choices=[str(i) for i in range(1, len(bots) + 1)])
-            return bots[int(choice) - 1]["tag"]
-        except Exception:
-            return None
+    def _bot_index(self) -> List[str]:
+        """Return bot tags in display order for 1-4 key mapping."""
+        return [f"{s}_{g}" for s in self.symbols for g in self.strategies]
+
+    def _input_thread(self):
+        """Non-blocking keyboard input using msvcrt (Windows). No console output."""
+        pending_action = None
+        while True:
+            try:
+                if msvcrt.kbhit():
+                    ch = msvcrt.getch().decode('ascii', errors='ignore').upper()
+
+                    if ch in ('R', 'X', 'Q'):
+                        self._action_q.put(ch)
+                    elif ch == 'S':
+                        pending_action = 'START'
+                        self._action_q.put('_STATUS_START')
+                    elif ch == 'K':
+                        pending_action = 'STOP'
+                        self._action_q.put('_STATUS_KILL')
+                    elif ch in ('1', '2', '3', '4') and pending_action:
+                        tag = self._bot_index()[int(ch) - 1]
+                        self._action_q.put((pending_action, tag))
+                        pending_action = None
+                    elif ch:
+                        pending_action = None
+                time.sleep(0.05)
+            except Exception:
+                break
+
+    def _handle_action(self, action):
+        if action == 'Q':
+            if self._supervisor_proc:
+                self._supervisor_proc.terminate()
+            return True
+        elif action == '_STATUS_START':
+            self._status_msg = "Press 1-4 to select bot to START"
+        elif action == '_STATUS_KILL':
+            self._status_msg = "Press 1-4 to select bot to KILL"
+        elif isinstance(action, tuple):
+            cmd, tag = action
+            if cmd == 'START':
+                self.db.push_command("START", target=tag)
+                self._status_msg = f"START sent to {tag}"
+            elif cmd == 'STOP':
+                self.db.push_command("STOP", target=tag)
+                self._status_msg = f"STOP sent to {tag}"
+        elif action == 'R':
+            self.db.push_command("RESTART_SERVER")
+            self._status_msg = "RESTART_SERVER sent"
+        elif action == 'X':
+            self.db.push_command("STOP_ALL")
+            self._status_msg = "STOP_ALL sent"
+        return False
 
     def run(self):
         self._ensure_supervisor()
         layout = self.make_layout()
-        
-        with Live(layout, refresh_per_second=1, screen=True) as live:
+        threading.Thread(target=self._input_thread, daemon=True).start()
+
+        with Live(layout, refresh_per_second=2, screen=True) as live:
             while True:
                 self.update_header(layout)
                 self.update_bots(layout)
                 self.update_config(layout)
                 self.update_logs(layout)
                 self.update_footer(layout)
-                time.sleep(1) 
-                break 
-        
-        while True:
-            os.system('cls' if os.name == 'nt' else 'clear')
-            self.print_static_view()
-            
-            choice = Prompt.ask("\nAction", choices=["S", "K", "R", "X", "Q"], default="Q")
-            
-            if choice == 'Q':
-                if self._supervisor_proc:
-                    self._supervisor_proc.terminate()
-                break
-            elif choice == 'S':
-                tag = self.select_bot("Start")
-                if tag:
-                    self.db.push_command("START", target=tag)
-                    logger.info(f"Command pushed: START {tag}")
-            elif choice == 'K':
-                tag = self.select_bot("Kill")
-                if tag:
-                    self.db.push_command("STOP", target=tag)
-                    logger.info(f"Command pushed: STOP {tag}")
-            elif choice == 'R':
-                self.db.push_command("RESTART_SERVER")
-                logger.info("Command pushed: RESTART_SERVER")
-            elif choice == 'X':
-                self.db.push_command("STOP_ALL")
-                logger.info("Command pushed: STOP_ALL")
 
+                try:
+                    action = self._action_q.get_nowait()
+                    if self._handle_action(action):
+                        break
+                except queue.Empty:
+                    pass
 
-    def print_static_view(self):
-        layout = self.make_layout()
-        self.update_header(layout)
-        self.update_bots(layout)
-        self.update_config(layout)
-        self.update_logs(layout)
-        self.update_footer(layout)
-        console.print(layout)
+                time.sleep(1)
 
 if __name__ == "__main__":
     cmd_center = CommandCenter()

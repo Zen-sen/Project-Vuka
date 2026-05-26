@@ -2,6 +2,6 @@
   "date": "2026-05-26",
   "sessions": [],
   "consecutive_losses": 0,
-  "symbol": "GBPUSDc",
-  "strategy": "INGWE"
+  "symbol": "EURUSDc",
+  "strategy": "ICT_M1"
 }

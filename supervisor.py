@@ -10,6 +10,7 @@ import os
 import sys
 import signal
 import logging
+import psutil
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, Optional
@@ -122,12 +123,39 @@ class Supervisor:
             bot = BotInstance(symbol, strategy)
             self.bots[bot.name] = bot
     
+    @staticmethod
+    def kill_stale_processes():
+        """Kill any orphaned Vuka python processes before starting fresh."""
+        killed = []
+        for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
+            try:
+                cmdline = proc.info.get('cmdline')
+                if not cmdline:
+                    continue
+                cmd = ' '.join(cmdline)
+                if 'python' in proc.info.get('name', '').lower():
+                    if any(tag in cmd for tag in ['ingwe.py', 'kronos_server.py', 'dashboard.py']):
+                        proc.kill()
+                        killed.append((proc.info['pid'], cmd.split('\\')[-1].split('/')[-1]))
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                continue
+        if killed:
+            logger.info(f"Killed {len(killed)} stale process(es):")
+            for pid, name in killed:
+                logger.info(f"  PID {pid} - {name}")
+        else:
+            logger.info("No stale processes found.")
+    
     def start_all(self):
         logger.info("=" * 60)
         logger.info("PROJECT VUKA SUPERVISOR STARTING")
         logger.info(f"Project directory: {PROJECT_DIR}")
         logger.info(f"Monitoring {len(self.bots)} bot instances")
         logger.info("=" * 60)
+        
+        # Clean slate: kill any orphaned Vuka processes
+        self.kill_stale_processes()
+        time.sleep(1)
         
         for name, bot in self.bots.items():
             bot.start()
