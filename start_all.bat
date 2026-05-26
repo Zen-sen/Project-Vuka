@@ -1,14 +1,44 @@
 @echo off
-title Project Vuka — Auto-Start
+title Project Vuka
 cd /d "C:\Users\classic\Desktop\Project Vuka"
 
-echo [%date% %time%] Starting Project Vuka...
+echo ==========================================
+echo    PROJECT VUKA — ONE-CLICK LAUNCH
+echo ==========================================
+echo.
 
-REM Wait for network / MT5 terminal
-timeout /t 10 /nobreak > nul
+REM Kill any stale processes first
+call vuka.bat stop > nul 2>&1
+
+REM Wait for MT5 / network
+timeout /t 5 /nobreak > nul
 
 REM Start supervisor (launches all 4 bot instances)
+echo [1/3] Starting Supervisor (manages all bots)...
 start "Vuka Supervisor" /min "C:\Users\classic\AppData\Local\Python\pythoncore-3.14-64\python.exe" supervisor.py
+timeout /t 3 /nobreak > nul
 
-echo [%date% %time%] Supervisor started. Bots will launch within 30s.
-echo Logs: logs\*.log
+REM Start Kronos AI server
+echo [2/3] Starting Kronos AI Server...
+start "Kronos Server" /min "C:\Users\classic\AppData\Local\Python\pythoncore-3.14-64\python.exe" kronos_server.py
+timeout /t 3 /nobreak > nul
+
+REM Launch the dashboard
+echo [3/3] Opening Dashboard...
+start "Vuka Dashboard" /min "C:\Users\classic\AppData\Local\Python\pythoncore-3.14-64\python.exe" dashboard.py
+
+echo.
+echo ==========================================
+echo  ALL SYSTEMS STARTED
+echo ==========================================
+echo.
+echo  Supervisor  : Manages 4 bots (EURUSD/GBPUSD x INGWE/SB)
+echo  Kronos      : AI trade validation server
+echo  Dashboard   : Live fleet monitor
+echo.
+echo  Commands:
+echo    vuka status    —  Check what's running
+echo    vuka stop      —  Stop everything
+echo    vuka dashboard —  Open dashboard only
+echo.
+pause
