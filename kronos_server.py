@@ -19,6 +19,10 @@ from pydantic import BaseModel
 from typing import Optional, Dict, List
 import uvicorn
 from contextlib import asynccontextmanager
+from unified_logger import get_logger
+
+# Initialize Unified Logger
+logger = get_logger("Kronos_Server")
 
 # Add Kronos and skills to path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "Kronos"))
@@ -32,6 +36,12 @@ TOKENIZER_MODEL = "NeoQuasar/Kronos-Tokenizer-base"
 KRONOS_MODEL = "NeoQuasar/Kronos-small"
 MAX_CONTEXT = 512
 REQUEST_TIMEOUT = 2.5
+
+# HuggingFace Token for authenticated access (prevents rate limiting)
+HF_TOKEN = os.getenv("HF_TOKEN", None)
+if HF_TOKEN:
+    from huggingface_hub import login
+    login(token=HF_TOKEN, add_to_git_credential=False)
 
 # === LOGGING ===
 LOG_DIR = Path("logs")
@@ -51,13 +61,8 @@ logger = logging.getLogger(__name__)
 
 def log_json(level: str, message: str, **kwargs):
     """JSON-structured logging"""
-    entry = {
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-        "level": level,
-        "message": message,
-        **kwargs
-    }
-    logger.info(json.dumps(entry))
+    _lvl = {"INFO": logging.INFO, "ERROR": logging.ERROR, "WARN": logging.WARNING, "WARNING": logging.WARNING}
+    logger.log(_lvl.get(level.upper(), logging.INFO), message)
 
 
 # === GLOBAL STATE ===
@@ -73,6 +78,10 @@ async def lifespan(app: FastAPI):
     global tokenizer, model, device, model_loaded
     
     log_json("INFO", "Starting Kronos API Server...")
+    
+    # Log HuggingFace authentication status
+    hf_status = "authenticated" if HF_TOKEN else "unauthenticated (rate limit risk)"
+    log_json("INFO", f"HuggingFace authentication: {hf_status}")
     
     # Detect device
     if torch.cuda.is_available():
@@ -106,14 +115,22 @@ async def lifespan(app: FastAPI):
     
     # Shutdown: Cleanup
     log_json("INFO", "Shutting down Kronos API Server...")
-    # Clear GPU cache if using CUDA
-    if device and str(device).startswith("cuda"):
-        torch.cuda.empty_cache()
-        log_json("INFO", "GPU cache cleared")
-    tokenizer = None
-    model = None
-    model_loaded = False
-    log_json("INFO", "Kronos API Server shutdown complete")
+    try:
+        # Clear GPU cache if using CUDA
+        if device and str(device).startswith("cuda"):
+            torch.cuda.empty_cache()
+            log_json("INFO", "GPU cache cleared")
+        
+        # Properly unload models from globals
+        tokenizer = None
+        model = None
+        model_loaded = False
+        log_json("INFO", "Kronos API Server shutdown complete")
+    except Exception as e:
+        log_json("ERROR", f"Error during shutdown: {str(e)}")
+        tokenizer = None
+        model = None
+        model_loaded = False
 
 
 # === GLOBAL STATE ===
@@ -278,27 +295,27 @@ def run_inference(ohlcv_tensor: torch.Tensor, direction_hint: str = None) -> tup
                 torch.cuda.empty_cache()
             
             # Simple but REALISTIC confidence calculation
+            # Instead of just means, we use a simple momentum-based trend follow
             n = len(valid_prices)
-            first_half = valid_prices[:n//2]
-            second_half = valid_prices[n//2:]
+            if n < 2:
+                return True, 0.5
+                
+            # Calculate a simple linear trend (slope)
+            x = np.arange(n)
+            y = valid_prices
+            slope = np.polyfit(x, y, 1)[0]
             
-            overall_trend = (np.mean(second_half) - np.mean(first_half)) / np.mean(valid_prices)
+            # Normalize slope by average price movement (ATR-like)
+            avg_move = np.mean(np.abs(np.diff(valid_prices))) if n > 1 else 1e-8
+            normalized_slope = slope / (avg_move + 1e-8)
             
-            # Consistency: what % of recent candles follow the trend?
-            recent = valid_prices[-50:] if len(valid_prices) >= 50 else valid_prices
-            diffs = np.diff(recent)
+            # Direction: slope > 0 is UP
+            direction = slope > 0
             
-            if overall_trend > 0:
-                consistent = np.sum(diffs > 0) / len(diffs) if len(diffs) > 0 else 0.5
-                direction = True  # UP
-            else:
-                consistent = np.sum(diffs < 0) / len(diffs) if len(diffs) > 0 else 0.5
-                direction = False  # DOWN
-            
-            # REALISTIC confidence - no arbitrary bonuses
-            # Model is only slightly better than random (55-65% typical)
-            base_conf = 0.55  # Base accuracy assumption
-            confidence = min(0.75, base_conf + (consistent - 0.5) * 0.2)  # Max 75%
+            # Confidence based on slope strength and consistency
+            # Slope between -1 and 1 is typical; > 1 is strong
+            conf_score = min(1.0, abs(normalized_slope) / 2.0)
+            confidence = 0.5 + (conf_score * 0.2) # Range 0.5 - 0.7
             
             if direction_hint:
                 ingwe_wants_up = direction_hint.upper() == "BUY"
@@ -309,7 +326,8 @@ def run_inference(ohlcv_tensor: torch.Tensor, direction_hint: str = None) -> tup
             log_json("INFO", "Kronos realistic fallback",
                      agree=bool(agree),
                      confidence=round(float(confidence), 2),
-                     method="realistic_fallback")
+                     slope=round(float(slope), 6),
+                     method="linear_trend_fallback")
             
             return agree, float(confidence)
     
