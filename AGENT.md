@@ -165,10 +165,15 @@ python supervisor.py
 - **Added** `dashboard.py` — rich TUI with live bot status, config panel, per-instance logs, and supervisor auto-launch
 - **Added** `indicators.py` — shared ADX/ATR module (eliminated 70 lines of duplication between ingwe.py and backtester)
 - **Added** `skills/__init__.py` — skills/ is now a proper Python package
-- **Removed** `kronos_guardian_v4.5.py`, `database_manager_v5.py`, `health_monitor_v4_6.py`, `state_manager_v4_6.py` — consolidated into main modules
-- **Added** `warning()` alias to `UnifiedLogger` — `logger.warning()` now works in addition to `logger.warn()`
-- **Fixed** dashboard bot detection — `tag.split('_', 1)` correctly matches `SILVER_BULLET` strategy from process cmdline
+- **Removed** old v4.6 modules — consolidated into main files
+- **Added** `warning()` alias to `UnifiedLogger` — `logger.warning()` now works
+- **Fixed** dashboard bot detection — `tag.split('_', 1)` correctly matches `SILVER_BULLET`
+- **Rewrote** dashboard input — replaced `Prompt.ask()` with `msvcrt` non-blocking keyboard, eliminated thread-collision flicker
+- **Added** zombie cleanup — `supervisor.kill_stale_processes()` kills orphaned bots before start_all()
+- **Fixed** migration script — auto-injects symbol from JSON filename, maps old `entry` field to `entry_req`/`entry_fill`
+- **Patched** DB — 40 UNKNOWN trade symbols resolved to EURUSDc/GBPUSDc via `fix_unknown_symbols.py`
+- **Organized** `.gitignore` — suppresses backups, CSVs, data/, archive/, test files, junk
 
 ---
 
-*Last updated: 2026-05-25*
+*Last updated: 2026-05-26*

@@ -8,7 +8,7 @@
 ## Current State
 
 ```yaml
-last_updated       :  2026-05-25T00:00:00+00:00
+last_updated       :  2026-05-26T16:02:01.526716+00:00
 active_instances   :  ["EURUSD_INGWE", "GBPUSD_INGWE", "EURUSD_SILVER_BULLET", "GBPUSD_SILVER_BULLET"]
 current_equity     :  4170.51
 bot_status         :  RUNNING
@@ -20,7 +20,7 @@ environment        :  LIVE
 ## Today's Stats
 
 ```yaml
-date               :  2026-05-24
+date               :  2026-05-26
 daily_pnl          :  0
 daily_pnl_pct      : 0.00
 sessions_traded    :  []
@@ -54,7 +54,7 @@ kronos_threshold      : 0.40       # Maintained after audit; 0.70 too strict (mi
 ## Recent Activity
 
 ```yaml
-last_scan        :  2026-05-24 19:18:38
+last_scan        :  2026-05-26 16:02:01
 last_trade       : ""            # Timestamp of last executed trade
 last_trade_id    : ""
 last_report_run  : ""
@@ -128,6 +128,11 @@ done:
   - "[x] Bot consolidation — single ingwe.py with --backtest/--test flags"
   - "[x] Shared indicators module (indicators.py) eliminating ADX duplication"
   - "[x] Supervisor auto-launch from dashboard"
+  - "[x] Dashboard flicker fix — msvcrt input, no screen clearing, ANSI-only overwrite"
+  - "[x] Zombie cleanup — supervisor kills stale bots on startup"
+  - "[x] DB trade symbol fix — 40 UNKNOWN records patched to EURUSDc/GBPUSDc"
+  - "[x] Session reset — all session files restored to 2026-05-26"
+  - "[x] .gitignore organized — backups, CSVs, data/, junk suppressed"
 ```
 
 ---
