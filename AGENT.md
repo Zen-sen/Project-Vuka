@@ -23,7 +23,7 @@
 | **Structure Analysis** | Identifies FVGs, Order Blocks, Breaker Blocks |
 | **Entry Logic** | Market orders at FVG sweep with confluence stack |
 | **Risk Control** | 1% risk per trade, 1:3 RRR, daily drawdown circuit breaker |
-| **Trailing SL** | Dynamic stop management (1:1 → BE, 1:2 → 1:1) |
+| **Trailing SL** | Dynamic stop management (0.5:1 → BE, 1:2 → 1:1) |
 | **Daily P&L Tracking** | Real-time drawdown and profit monitoring via SQLite |
 | **News Blackout** | Pauses trading during high-impact news events |
 | **Kronos AI Veto** | Transformer-based trade validation gate |
@@ -56,7 +56,7 @@ Daily Loss Limit   : 3% circuit breaker → session lock
 Panic Candle Guard : Detects abnormal volatility, halts entry
 News Blackout      : ±30 min around red-folder events
 Session Lock       : Prevents re-entry after daily limit hit
-Kronos Veto Gate   : AI-powered trade validation (threshold 0.40)
+Kronos Veto Gate   : AI-powered trade validation (threshold 0.30, mode: warn)
 ```
 
 ---
@@ -176,4 +176,4 @@ python supervisor.py
 
 ---
 
-*Last updated: 2026-05-26*
+*Last updated: 2026-05-28*

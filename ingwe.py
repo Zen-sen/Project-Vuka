@@ -61,8 +61,8 @@ if _config_path.exists():
 _veto_cfg = CONFIG.get("veto_gate", {})
 KRONOS_VETO_GATE = create_veto_gate({
     "enabled": _veto_cfg.get("enabled", True),
-    "mode": _veto_cfg.get("mode", "enforced"),
-    "threshold": _veto_cfg.get("threshold", 0.40),
+    "mode": _veto_cfg.get("mode", "warn"),
+    "threshold": _veto_cfg.get("threshold", 0.30),
 })
 
 # Database manager for SQLite consolidation
@@ -285,11 +285,13 @@ KILLZONES_WINTER = {
     "Asian":         (2,  6),
     "London Open":   (10, 13),
     "New York Open": (16, 19),
+    "London Close":  (19, 22),
 }
 KILLZONES_SUMMER = {
     "Asian":         (2,  6),
     "London Open":   (9,  12),
     "New York Open": (15, 18),
+    "London Close":  (18, 21),
 }
 
 INGWE_BLACKOUTS_WINTER = [
@@ -810,7 +812,7 @@ def get_draw_on_liquidity(direction: str) -> tuple[str, float] | tuple[None, Non
     elif direction == "SELL":
         targets = []
         if pdl: targets.append(("PDL", pdl))
-        if asian_l: targets.append("Asian Low", asian_l)
+        if asian_l: targets.append(("Asian Low", asian_l))
         if not targets: return None, None
         return min(targets, key=lambda x: x[1])
     
@@ -1168,7 +1170,7 @@ def calculate_atr(df: pd.DataFrame, period: int = 14) -> float | None:
 def get_current_session() -> str | None:
     hour = now_sast().hour
     for session, (s, e) in get_active_killzones().items():
-        if s <= hour < e:
+        if s <= hour < e if s <= e else (hour >= s or hour < e):
             return session
     return None
 
@@ -1399,7 +1401,6 @@ def log_trade(direction, entry, sl, tp, result, lot_size, session):
         try:
             DB.insert_trade(trade_entry)
             log(f"Trade logged -> vuka_trading.db", "TRADE")
-            return
         except Exception as e:
             log(f"Database write error: {e}. Falling back to JSON.", "WARN")
     
@@ -1422,17 +1423,12 @@ def log_trade(direction, entry, sl, tp, result, lot_size, session):
 
 
 def place_trade(direction, entry, sl, tp, lot_size):
-    """
-    v4.4 FIX-1: duplicate position check added.
-      Prevents placing duplicate market orders when a position already exists.
-    v3.9.5 FIX-1: comment truncated to 18 chars max.
-      Exness enforces a 31-char hard cap. The previous string
-      "Ingwe v3.9.4 EURUSD_SILVER_BULLET" = 34 chars caused
-      MT5 error -2 on every order_send — both SB instances
-      were unable to execute any trade.
-    v3.9: filling fallback chain -- RETURN -> IOC -> FOK.
-    Used by Silver Bullet paths only from v4.0 onward.
-    """
+    if BACKTEST_MODE:
+        class MockResult:
+            retcode = mt5.TRADE_RETCODE_DONE
+            comment = "BACKTEST FILLED"
+        return MockResult()
+
     if has_open_position():
         log(f"Position already open for {_instance_tag} — skipping duplicate entry.", "GUARD")
         return None
@@ -1578,6 +1574,7 @@ def _modify_sl(pos, new_sl: float, label: str):
     result = mt5.order_send({
         "action":   mt5.TRADE_ACTION_SLTP,
         "position": pos.ticket,
+        "symbol":   SYMBOL,
         "sl":       new_sl,
         "tp":       pos.tp,
     })
@@ -1659,9 +1656,11 @@ def manage_open_positions():
 
         if pos.type == mt5.ORDER_TYPE_BUY:
             at_2r = current >= entry + sl_dist * 2
+            at_05r = current >= entry + sl_dist * 0.5
             at_1r = current >= entry + sl_dist
             sl_below_1r = sl < entry + sl_dist
             sl_below_be = sl < entry
+            sl_below_05r = sl < entry + sl_dist * 0.5
 
             if at_2r and sl_below_1r:
                 new_sl = round(entry + sl_dist, 5)
@@ -1671,12 +1670,18 @@ def manage_open_positions():
                 new_sl = round(entry, 5)
                 if new_sl > sl:
                     _modify_sl(pos, new_sl, "1:1 -> SL to BE")
+            elif at_05r and sl_below_be:
+                new_sl = round(entry, 5)
+                if new_sl > sl:
+                    _modify_sl(pos, new_sl, "0.5:1 -> SL to BE")
 
         elif pos.type == mt5.ORDER_TYPE_SELL:
             at_2r = current <= entry - sl_dist * 2
+            at_05r = current <= entry - sl_dist * 0.5
             at_1r = current <= entry - sl_dist
             sl_above_1r = sl > entry - sl_dist
             sl_above_be = sl > entry
+            sl_above_05r = sl > entry + sl_dist * 0.5
 
             if at_2r and sl_above_1r:
                 new_sl = round(entry - sl_dist, 5)
@@ -1686,6 +1691,10 @@ def manage_open_positions():
                 new_sl = round(entry, 5)
                 if new_sl < sl:
                     _modify_sl(pos, new_sl, "1:1 -> SL to BE")
+            elif at_05r and sl_above_be:
+                new_sl = round(entry, 5)
+                if new_sl < sl:
+                    _modify_sl(pos, new_sl, "0.5:1 -> SL to BE")
 
 
 # =======================================================
@@ -1963,6 +1972,8 @@ def evaluate_ingwe(df, fvgs, sweep, sweep_level, price, atr, lot_size, session):
                     "fvg_position": "above_50" if price >= fvg_50 else ("50%" if abs(price - fvg_50) < atr * 0.1 else "below_50"),
                     "bos_aligned": bos_aligned,
                     "htf_bias_ok": htf_bias_ok,
+                    "adx_ok": True,
+                    "score_ok": True,
                     "confluence_score": score,
                     "session": session,
                     "atr": atr,
@@ -2021,6 +2032,8 @@ def evaluate_ingwe(df, fvgs, sweep, sweep_level, price, atr, lot_size, session):
                     "fvg_position": "above_50" if price >= fvg_50 else ("50%" if abs(price - fvg_50) < atr * 0.1 else "below_50"),
                     "bos_aligned": bos_aligned,
                     "htf_bias_ok": htf_bias_ok,
+                    "adx_ok": True,
+                    "score_ok": True,
                     "confluence_score": score,
                     "session": session,
                     "atr": atr,
@@ -2087,6 +2100,8 @@ def evaluate_ingwe(df, fvgs, sweep, sweep_level, price, atr, lot_size, session):
                     "fvg_position": "below_50" if price <= fvg_50 else ("50%" if abs(price - fvg_50) < atr * 0.1 else "above_50"),
                     "bos_aligned": bos_aligned,
                     "htf_bias_ok": htf_bias_ok,
+                    "adx_ok": True,
+                    "score_ok": True,
                     "confluence_score": score,
                     "session": session,
                     "atr": atr,
@@ -2268,35 +2283,34 @@ def evaluate_silver_bullet(df, fvgs, sweep, sweep_level, price, atr,
                 continue
             if not check_pre_trade_spread():
                 continue
-            
-                if KRONOS_VETO_GATE is not None:
-                    dol_name, dol_price = get_draw_on_liquidity("BUY")
-                    ctx = {
-                        "direction": "BUY",
-                        "setup_type": "SILVER_BULLET",
-                        "sweep": sweep,
-                        "fvg_type": fvg_type,
-                        "fvg_position": "below_50" if price <= fvg_50 else ("50%" if abs(price - fvg_50) < atr * 0.1 else "above_50"),
-                        "bos_aligned": False,
-                        "htf_bias_ok": False,
-                        "confluence_score": 70,
-                        "session": window,
-                        "atr": atr,
-                        "spread_ok": check_pre_trade_spread(),
-                        "trend": "BULLISH",
-                        "level_sweep": True,
-                        "draw_on_liquidity": dol_name,
-                        "dol_price": dol_price,
-                        "distance_to_dol": abs(dol_price - price) if dol_price else None,
-                        "sb_window": window
-                    }
-                    allowed, reason = KRONOS_VETO_GATE.validate(ctx, df, SYMBOL)
-                    log(f"[KRONOS] BUY signal: {reason}", "GUARD")
-                    if not allowed:
-                        log(f"Kronos vetoed BUY. Skipping trade.", "GUARD")
-                        return
 
-            
+            if KRONOS_VETO_GATE is not None:
+                dol_name, dol_price = get_draw_on_liquidity("BUY")
+                ctx = {
+                    "direction": "BUY",
+                    "setup_type": "SILVER_BULLET",
+                    "sweep": sweep,
+                    "fvg_type": fvg_type,
+                    "fvg_position": "below_50" if price <= fvg_50 else ("50%" if abs(price - fvg_50) < atr * 0.1 else "above_50"),
+                    "bos_aligned": False,
+                    "htf_bias_ok": False,
+                    "confluence_score": 70,
+                    "session": window,
+                    "atr": atr,
+                    "spread_ok": check_pre_trade_spread(),
+                    "trend": "BULLISH",
+                    "level_sweep": True,
+                    "draw_on_liquidity": dol_name,
+                    "dol_price": dol_price,
+                    "distance_to_dol": abs(dol_price - price) if dol_price else None,
+                    "sb_window": window
+                }
+                allowed, reason = KRONOS_VETO_GATE.validate(ctx, df, SYMBOL)
+                log(f"[KRONOS] BUY signal: {reason}", "GUARD")
+                if not allowed:
+                    log(f"Kronos vetoed BUY. Skipping trade.", "GUARD")
+                    return
+
             entry   = round(price, 5)
             sl      = round(sweep_level - atr * ATR_MULTIPLIER, 5)
             sl_dist = abs(entry - sl)
@@ -2322,35 +2336,34 @@ def evaluate_silver_bullet(df, fvgs, sweep, sweep_level, price, atr,
                 continue
             if not check_pre_trade_spread():
                 continue
-            
-                if KRONOS_VETO_GATE is not None:
-                    dol_name, dol_price = get_draw_on_liquidity("SELL")
-                    ctx = {
-                        "direction": "SELL",
-                        "setup_type": "SILVER_BULLET",
-                        "sweep": sweep,
-                        "fvg_type": fvg_type,
-                        "fvg_position": "above_50" if price >= fvg_50 else ("50%" if abs(price - fvg_50) < atr * 0.1 else "below_50"),
-                        "bos_aligned": False,
-                        "htf_bias_ok": False,
-                        "confluence_score": 70,
-                        "session": window,
-                        "atr": atr,
-                        "spread_ok": check_pre_trade_spread(),
-                        "trend": "BEARISH",
-                        "level_sweep": True,
-                        "draw_on_liquidity": dol_name,
-                        "dol_price": dol_price,
-                        "distance_to_dol": abs(dol_price - price) if dol_price else None,
-                        "sb_window": window
-                    }
-                    allowed, reason = KRONOS_VETO_GATE.validate(ctx, df, SYMBOL)
-                    log(f"[KRONOS] SELL signal: {reason}", "GUARD")
-                    if not allowed:
-                        log(f"Kronos vetoed SELL. Skipping trade.", "GUARD")
-                        return
 
-            
+            if KRONOS_VETO_GATE is not None:
+                dol_name, dol_price = get_draw_on_liquidity("SELL")
+                ctx = {
+                    "direction": "SELL",
+                    "setup_type": "SILVER_BULLET",
+                    "sweep": sweep,
+                    "fvg_type": fvg_type,
+                    "fvg_position": "above_50" if price >= fvg_50 else ("50%" if abs(price - fvg_50) < atr * 0.1 else "below_50"),
+                    "bos_aligned": False,
+                    "htf_bias_ok": False,
+                    "confluence_score": 70,
+                    "session": window,
+                    "atr": atr,
+                    "spread_ok": check_pre_trade_spread(),
+                    "trend": "BEARISH",
+                    "level_sweep": True,
+                    "draw_on_liquidity": dol_name,
+                    "dol_price": dol_price,
+                    "distance_to_dol": abs(dol_price - price) if dol_price else None,
+                    "sb_window": window
+                }
+                allowed, reason = KRONOS_VETO_GATE.validate(ctx, df, SYMBOL)
+                log(f"[KRONOS] SELL signal: {reason}", "GUARD")
+                if not allowed:
+                    log(f"Kronos vetoed SELL. Skipping trade.", "GUARD")
+                    return
+
             entry   = round(price, 5)
             sl      = round(sweep_level + atr * ATR_MULTIPLIER, 5)
             sl_dist = abs(sl - entry)
@@ -2603,6 +2616,7 @@ if __name__ == "__main__":
             log("BACKTEST MODE: Polling loop active.")
             while True:
                 run_agent()
+                run_backtest_step()
                 print(); import sys; sys.stdout.flush()
                 time.sleep(SCAN_INTERVAL_SEC)
         else:

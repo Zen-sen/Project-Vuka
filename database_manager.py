@@ -149,11 +149,42 @@ class DatabaseManager:
             )
         """)
         
+        # System logs table
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS system_logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+                level TEXT NOT NULL,
+                component TEXT NOT NULL,
+                message TEXT NOT NULL,
+                symbol TEXT,
+                strategy TEXT,
+                trace_id TEXT,
+                metadata TEXT,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        
+        # Command queue table
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS command_queue (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                command TEXT NOT NULL,
+                target TEXT,
+                params TEXT,
+                status TEXT DEFAULT 'pending',
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        
         # Indices for common queries
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_trades_symbol_time ON trades(symbol, time DESC)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_sessions_date_symbol ON sessions(date, symbol)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_losses_date_symbol ON loss_tracking(date, symbol)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_sl_time ON sl_movements(time DESC)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_logs_timestamp ON system_logs(timestamp DESC)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_logs_component ON system_logs(component)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_logs_trace ON system_logs(trace_id)")
         
         conn.commit()
         logger.info(f"Database initialized: {self.db_path}")
@@ -171,21 +202,17 @@ class DatabaseManager:
             raise
     
     def acquire_lock(self, instance_tag: str, timeout_seconds: int = LOCK_TIMEOUT_SECONDS) -> bool:
-        """
-        Acquire lock for instance to prevent concurrent writes.
-        
-        Args:
-            instance_tag: Instance identifier (e.g., "EURUSD_INGWE")
-            timeout_seconds: How long lock is valid before considered stale
-            
-        Returns:
-            True if lock acquired, False if timeout
-        """
         expires_at = datetime.now(timezone.utc) + timedelta(seconds=timeout_seconds)
         
         for attempt, backoff_ms in enumerate(self.LOCK_RETRY_BACKOFF_MS):
             try:
                 with self._transaction() as conn:
+                    cur = conn.execute(
+                        "SELECT 1 FROM instance_locks WHERE instance_tag = ? AND expires_at > ?",
+                        (instance_tag, datetime.now(timezone.utc))
+                    )
+                    if cur.fetchone():
+                        return False
                     conn.execute("""
                         INSERT OR REPLACE INTO instance_locks 
                         (instance_tag, locked_at, expires_at)
@@ -196,9 +223,7 @@ class DatabaseManager:
                 if attempt < len(self.LOCK_RETRY_BACKOFF_MS) - 1:
                     time.sleep(backoff_ms / 1000.0)
                 else:
-                    logger.warning(f"Could not acquire lock for {instance_tag} after {len(self.LOCK_RETRY_BACKOFF_MS)} attempts")
                     return False
-        
         return False
     
     def release_lock(self, instance_tag: str):
@@ -418,6 +443,71 @@ class DatabaseManager:
             logger.error(f"Error getting trade count: {e}")
             return 0
     
+    def log_event(self, level: str, component: str, message: str, 
+                     symbol: str = None, strategy: str = None, 
+                     trace_id: str = None, metadata: Dict = None):
+        """
+        Log a system event to the database.
+        
+        Args:
+            level: Log level (INFO, WARN, ERROR, TRADE, GUARD)
+            component: Component name (e.g., "Ingwe", "Kronos", "Supervisor")
+            message: The log message
+            symbol: Trading symbol (optional)
+            strategy: Trading strategy (optional)
+            trace_id: Correlation ID for tracing requests across components (optional)
+            metadata: Additional structured data as a dictionary (optional)
+        """
+        try:
+            with self._transaction() as conn:
+                conn.execute("""
+                    INSERT INTO system_logs 
+                    (level, component, message, symbol, strategy, trace_id, metadata)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    level,
+                    component,
+                    message,
+                    symbol,
+                    strategy,
+                    trace_id,
+                    json.dumps(metadata) if metadata else None
+                ))
+        except Exception as e:
+            # Fallback to standard python logging if DB logging fails
+            logger.error(f"Critical failure writing to system_logs: {e}")
+    
+    def push_command(self, command: str, target: str = None, params: Dict = None):
+        """Push a command to the queue for the Supervisor."""
+        try:
+            with self._transaction() as conn:
+                conn.execute("""
+                    INSERT INTO command_queue (command, target, params)
+                    VALUES (?, ?, ?)
+                """, (command, target, json.dumps(params) if params else None))
+        except Exception as e:
+            logger.error(f"Error pushing command: {e}")
+
+    def pop_commands(self) -> List[Dict]:
+        try:
+            with self._transaction() as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                cursor = conn.execute(
+                    "SELECT * FROM command_queue WHERE status = 'pending'"
+                )
+                commands = [dict(row) for row in cursor.fetchall()]
+                if commands:
+                    ids = tuple(c["id"] for c in commands)
+                    placeholders = ",".join("?" for _ in ids)
+                    conn.execute(
+                        f"UPDATE command_queue SET status = 'processed' WHERE id IN ({placeholders})",
+                        ids
+                    )
+                return commands
+        except Exception as e:
+            logger.error(f"Error popping commands: {e}")
+            return []
+
     def close(self):
         """Close database connection."""
         if hasattr(self.local, 'connection'):
