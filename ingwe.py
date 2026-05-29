@@ -114,6 +114,21 @@ except ImportError:
 #     SESSION_ASYMMETRY_BONUS passed to Kronos via
 #     confluence_score and dedicated context fields.
 #
+#   FIX-7: PATTERN_BLACKLIST inversion error (CRITICAL).
+#     Removed ("Asian", "SELL", "SWEEP_HIGH") which was blocking
+#     a 100% win-rate pattern. Comment said "keep enabled" but
+#     blacklist logic was blocking it. Only ("Asian", "BUY", "SWEEP_LOW")
+#     at 28% WR remains blocked.
+#
+#   FIX-8: ADX threshold unified.
+#     Removed min_adx_hard_limit=10 magic number. Single ADX_MIN_THRESHOLD
+#     from config used for both soft warning and hard block (was split across
+#     two values doing different things in same function).
+#
+#   FIX-9: Kronos veto mode enforced.
+#     config_v4.6.json mode changed from "warn" to "enforced".
+#     Veto gate now actually blocks trades below confidence threshold.
+#
 # CHANGELOG v4.4 — PERFORMANCE IMPROVEMENTS:
 #
 #   FIX-1: Duplicate entry prevention via has_open_position().
@@ -289,8 +304,7 @@ else:
 # =======================================================
 # Win rate <35% patterns - auto-blocked to prevent losses
 PATTERN_BLACKLIST = [
-    ("Asian", "BUY", "SWEEP_LOW"),       # 28% WR
-    ("Asian", "SELL", "SWEEP_HIGH"),     # 100% WR - keep enabled
+    ("Asian", "BUY", "SWEEP_LOW"),       # 28% WR — block
 ]
 
 # =======================================================
@@ -1819,11 +1833,10 @@ def evaluate_ingwe(df, fvgs, sweep, sweep_level, price, atr, lot_size, session):
     if blacklist_blocked:
         return
     
-    # ── MIN_ADX_FOR_TRADING GATE (v5.2 - Weighted Context) ──────────────────
-    # Only extreme lows remain hard blocks to prevent total chaos.
-    min_adx_hard_limit = 10 
-    if adx < min_adx_hard_limit:
-        log(f"ADX {adx} below hard limit ({min_adx_hard_limit}) — Extreme chop. Standing down.", "GUARD")
+    # ── ADX_MIN_THRESHOLD GATE ──────────────────────────────────────────────
+    # Single threshold from config. Below it = extreme chop, hard block.
+    if adx < ADX_MIN_THRESHOLD:
+        log(f"ADX {adx} below threshold ({ADX_MIN_THRESHOLD}) — Extreme chop. Standing down.", "GUARD")
         return
 
 
