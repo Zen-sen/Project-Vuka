@@ -56,7 +56,9 @@ Daily Loss Limit   : 3% circuit breaker → session lock
 Panic Candle Guard : Detects abnormal volatility, halts entry
 News Blackout      : ±30 min around red-folder events
 Session Lock       : Prevents re-entry after daily limit hit
-Kronos Veto Gate   : AI-powered trade validation (threshold 0.30, mode: warn)
+Kronos Veto Gate   : AI-powered trade validation (threshold 0.40, mode: enforced)
+Pattern Sequence   : ICT sequential wave detection (sweep→displacement→retracement)
+Killzone Timing    : Pattern quality scored by session alignment
 ```
 
 ---
@@ -161,19 +163,33 @@ python supervisor.py
 
 ## Recent Structural Changes
 
-- **Consolidated** `ingwe_backtest.py` and `ingwe_v4.6_test.py` into `ingwe.py` with `--backtest`/`--test` flags
-- **Added** `dashboard.py` — rich TUI with live bot status, config panel, per-instance logs, and supervisor auto-launch
-- **Added** `indicators.py` — shared ADX/ATR module (eliminated 70 lines of duplication between ingwe.py and backtester)
-- **Added** `skills/__init__.py` — skills/ is now a proper Python package
-- **Removed** old v4.6 modules — consolidated into main files
-- **Added** `warning()` alias to `UnifiedLogger` — `logger.warning()` now works
-- **Fixed** dashboard bot detection — `tag.split('_', 1)` correctly matches `SILVER_BULLET`
-- **Rewrote** dashboard input — replaced `Prompt.ask()` with `msvcrt` non-blocking keyboard, eliminated thread-collision flicker
-- **Added** zombie cleanup — `supervisor.kill_stale_processes()` kills orphaned bots before start_all()
-- **Fixed** migration script — auto-injects symbol from JSON filename, maps old `entry` field to `entry_req`/`entry_fill`
-- **Patched** DB — 40 UNKNOWN trade symbols resolved to EURUSDc/GBPUSDc via `fix_unknown_symbols.py`
-- **Organized** `.gitignore` — suppresses backups, CSVs, data/, archive/, test files, junk
+- **v5.5 — Critical datetime fix** — `place_limit_order()` now uses `_server_now()` (naive server-time) instead of timezone-aware Unix timestamps. Expiry passes `datetime` object directly to MT5.
+- **v5.5 — Scoring rebalance** — Trend weight 40→30 (no longer dominant alone), HTF bias 10→15, Zone 20→15. New `SESSION_ASYMMETRY_BONUS` (+10) encodes live SELL/BUY asymmetry (~77% vs ~40%).
+- **v5.5 — ADX backtest decontaminated** — Removed `random.uniform(10,40)` fallback. Candle skipped when ADX unavailable. Proper Wilder cold-start seed in both backtest engines.
+- **v5.5 — HTF backtest guard** — `get_htf_bias()` returns `None` in `BACKTEST_MODE`, preventing live MT5 calls during replay.
+- **v5.5 — Kronos pattern training** — `detect_pattern_sequence()` identifies sweep→displacement→retracement wave. `get_killzone_quality()` scores timing alignment. Both modulate inference confidence.
+- **v5.5 — Blacklist inversion fix** — Removed `("Asian", "SELL", "SWEEP_HIGH")` that was blocking a 100% win-rate pattern.
+- **v5.5 — ADX threshold unified** — Single `ADX_MIN_THRESHOLD` replaces split `min_adx_hard_limit=10` magic number.
+- **v5.5 — Kronos veto enforced** — Config changed from `"warn"` to `"enforced"`. Gate now blocks trades below 0.40 confidence.
+- **v4.6** — Consolidated `ingwe_backtest.py` and `ingwe_v4.6_test.py` into `ingwe.py` with `--backtest`/`--test` flags
+- **v4.6** — Added `dashboard.py`, `indicators.py`, `skills/__init__.py`
+- **v4.6** — Removed old v4.6 modules, added zombie cleanup, patched UNKNOWN trade symbols
 
 ---
 
-*Last updated: 2026-05-28*
+## Backtest Results (v5.5, Real ADX, Jan–May 2026)
+
+| Metric | EURUSD M15 | GBPUSD M15 |
+|---|---|---|
+| Candles | 8,748 | 8,747 |
+| Orders | 26 | 22 |
+| Trades executed | 25 | 20 |
+| Win rate | 56.0% | 50.0% |
+| Net P&L | +$305.83 | +$337.15 |
+| Return | +3.06% | +3.37% |
+| SL moves | 15 | 13 |
+| Fill rate | 100% | 100% |
+
+---
+
+*Last updated: 2026-05-29*
