@@ -230,28 +230,32 @@ class Supervisor:
         logger.info("Supervisor stopped.")
 
 
+_supervisor_ref = None
+
+
 def signal_handler(signum, frame):
     logger.info("Shutdown signal received.")
+    if _supervisor_ref is not None:
+        _supervisor_ref.stop_all()
     sys.exit(0)
 
 
 def main():
+    global _supervisor_ref
     logger.info("Starting Project Vuka Supervisor...")
     
-    # Handle signals
+    supervisor = Supervisor()
+    _supervisor_ref = supervisor
+    
     signal.signal(signal.SIGINT, signal_handler)
     if hasattr(signal, 'SIGTERM'):
         signal.signal(signal.SIGTERM, signal_handler)
     
-    supervisor = Supervisor()
-    
     try:
         supervisor.start_all()
         supervisor.run()
-    except Exception as e:
-        logger.error(f"Fatal error: {e}")
+    finally:
         supervisor.stop_all()
-        raise
 
 
 if __name__ == "__main__":

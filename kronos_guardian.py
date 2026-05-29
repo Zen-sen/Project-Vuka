@@ -1,12 +1,10 @@
-"""
-Kronos Veto Gate - Ingwe Integration Middleware
-Filters Ingwe's BUY/SELL signals through the Kronos Oracle
-"""
 import json
 import logging
+import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional, List
+from typing import Optional, Tuple, List
+from enum import Enum
 
 import pandas as pd
 import requests
@@ -25,40 +23,129 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-CONCEPT_TRACKER = None
-try:
-    from skills.concept_tracker import ConceptTracker
-    CONCEPT_TRACKER = ConceptTracker()
-except ImportError:
-    pass
+
+class CircuitBreakerState(Enum):
+    """Circuit Breaker States"""
+    CLOSED = "CLOSED"          # Normal operation
+    OPEN = "OPEN"              # Failing, block requests
+    HALF_OPEN = "HALF_OPEN"    # Testing recovery
+
+
+class CircuitBreaker:
+    """
+    Prevents cascading failures when Kronos is unavailable.
+    
+    State Machine:
+    CLOSED --[failures > threshold]--> OPEN
+    OPEN --[timeout reached]--> HALF_OPEN
+    HALF_OPEN --[success]--> CLOSED
+    HALF_OPEN --[failure]--> OPEN
+    """
+    
+    def __init__(
+        self,
+        failure_threshold: int = 3,
+        recovery_timeout: int = 30,
+        half_open_max_calls: int = 1
+    ):
+        self.failure_threshold = failure_threshold
+        self.recovery_timeout = recovery_timeout
+        self.half_open_max_calls = half_open_max_calls
+        
+        self.failure_count = 0
+        self.state = CircuitBreakerState.CLOSED
+        self.last_failure_time = None
+        self.half_open_calls = 0
+    
+    def call(self, func, *args, **kwargs) -> Tuple[bool, any]:
+        """
+        Execute func with circuit breaker protection.
+        
+        Returns:
+            (success: bool, result: any)
+        """
+        if self.state == CircuitBreakerState.OPEN:
+            # Check if recovery timeout has passed
+            if time.time() - self.last_failure_time > self.recovery_timeout:
+                self.state = CircuitBreakerState.HALF_OPEN
+                self.half_open_calls = 0
+                logger.info(f"Circuit breaker: OPEN → HALF_OPEN (recovery test)")
+            else:
+                return False, None  # Still open, reject
+        
+        try:
+            result = func(*args, **kwargs)
+            self._on_success()
+            return True, result
+        
+        except Exception as e:
+            self._on_failure()
+            return False, str(e)
+    
+    def _on_success(self):
+        """Reset on successful call"""
+        self.failure_count = 0
+        old_state = self.state
+        self.state = CircuitBreakerState.CLOSED
+        
+        if old_state == CircuitBreakerState.HALF_OPEN:
+            logger.info(f"Circuit breaker: HALF_OPEN → CLOSED (recovered)")
+    
+    def _on_failure(self):
+        """Increment failure count, possibly open circuit"""
+        self.failure_count += 1
+        self.last_failure_time = time.time()
+        
+        if self.state == CircuitBreakerState.HALF_OPEN:
+            logger.warning(f"Circuit breaker: HALF_OPEN → OPEN (recovery failed)")
+            self.state = CircuitBreakerState.OPEN
+        
+        elif self.failure_count >= self.failure_threshold:
+            old_state = self.state
+            self.state = CircuitBreakerState.OPEN
+            logger.warning(f"Circuit breaker: {old_state.value} → OPEN (threshold reached: {self.failure_count})")
+    
+    def get_state(self) -> str:
+        return self.state.value
 
 
 class KronosVetoGate:
     """
-    Veto Gate Middleware for Ingwe
-    Intercepts signals and validates against Kronos Oracle
+    Enhanced Kronos Validation Gate with Circuit Breaker & VETO_SAFE Mode
     """
-
+    
     def __init__(
         self,
-        endpoint: str = "http://127.0.0.1:8000/v1/predict",
+        endpoint: str = "http://127.0.0.1:8000/v1/predict-ict",
         threshold: float = 0.40,
         enabled: bool = True,
-        mode: str = "advisory"
+        mode: str = "enforced",
+        safety_mode: str = "VETO_SAFE"  # NEW: "VETO_SAFE" | "ALLOW_SAFE"
     ):
         """
         Args:
-            endpoint: Kronos API URL
+            endpoint: Kronos API endpoint
             threshold: Minimum confidence to allow trade
-            enabled: Enable/disable the veto gate
+            enabled: Enable/disable veto gate
             mode: "advisory" (log only) or "enforced" (block on veto)
+            safety_mode: Error handling behavior
+                "VETO_SAFE": Block trades on any error (conservative, misses trades)
+                "ALLOW_SAFE": Allow trades on errors (aggressive, v4.5 behavior)
         """
         self.endpoint = endpoint
         self.threshold = threshold
         self.enabled = enabled
         self.mode = mode
+        self.safety_mode = safety_mode
         self.request_timeout = 2.5
-
+        
+        # Circuit breaker
+        self.circuit_breaker = CircuitBreaker(
+            failure_threshold=3,
+            recovery_timeout=30,
+            half_open_max_calls=1
+        )
+    
     def _log_veto_decision(
         self,
         signal: str,
@@ -66,7 +153,8 @@ class KronosVetoGate:
         kronos_agree: bool,
         confidence: float,
         decision: str,
-        reason: str
+        reason: str,
+        circuit_state: str = "CLOSED"
     ):
         """Log veto decision in JSON format"""
         entry = {
@@ -74,19 +162,19 @@ class KronosVetoGate:
             "signal": signal,
             "symbol": symbol,
             "kronos_agree": kronos_agree,
-            "confidence": confidence,
+            "confidence": round(confidence, 2),
             "threshold": self.threshold,
             "decision": decision,
             "mode": self.mode,
+            "safety_mode": self.safety_mode,
+            "circuit_breaker_state": circuit_state,
             "reason": reason
         }
         logger.info(json.dumps(entry))
-
+    
     def _prepare_ohlcv_payload(self, df: pd.DataFrame) -> dict:
         """
-        v4.5 FIX-1: Prepare OHLCV data for Kronos API as list-of-dicts (correct Pandas format).
-        Previous dict-of-dicts format caused transposition in pd.DataFrame() constructor.
-        Returns: {"candles": [{"open": ..., "high": ..., ...}, ...]}
+        Prepare OHLCV data for Kronos API (v4.6: correct format)
         """
         df = df.tail(512).copy()
 
@@ -96,121 +184,87 @@ class KronosVetoGate:
             if col not in df.columns:
                 df[col] = 1000.0
         
-        # v4.5: Return dict with 'candles' key containing list of records
-        # This ensures pd.DataFrame(request.ohlcv["candles"]) creates correct structure
-        # with columns=['open', 'high', 'low', 'close', 'volume']
+        # v4.6: Return dict with 'candles' key containing list of records
         candles = []
         for idx, row in df.iterrows():
             candles.append({col: float(row[col]) for col in required_cols})
         
         return {"candles": candles}
-
-    def _extract_concepts_from_context(self, context: dict) -> List[str]:
-        """Extract ICT concepts from trade context"""
-        concepts = []
-        
-        sweep = context.get("sweep", "")
-        fvg_type = context.get("fvg_type", "")
-        fvg_position = context.get("fvg_position", "")
-        setup_type = context.get("setup_type", "")
-        bos_aligned = context.get("bos_aligned", False)
-        htf_bias_ok = context.get("htf_bias_ok", False)
-        level_sweep = context.get("level_sweep", False)
-        
-        if sweep == "SWEEP_LOW" and fvg_type == "BULLISH_FVG":
-            concepts.extend(["liquidity_sweep", "fvg_after_sweep", "bullish_break"])
-        elif sweep == "SWEEP_HIGH" and fvg_type == "BEARISH_FVG":
-            concepts.extend(["liquidity_sweep", "fvg_after_sweep", "bearish_break"])
-        
-        if fvg_position == "50%":
-            concepts.append("fvg_50Midpoint")
-        elif fvg_position == "full":
-            concepts.append("fvg_full")
-        
-        if bos_aligned:
-            concepts.append("bos_alignment")
-        
-        if htf_bias_ok:
-            concepts.append("htf_bias")
-        
-        if level_sweep:
-            concepts.append("level_sweep")
-        
-        if setup_type == "CONTINUATION":
-            concepts.append("continuation")
-        elif setup_type == "SB_FVG":
-            concepts.append("silver_bullet")
-        elif setup_type == "UNICON_REVERSAL":
-            concepts.append("unicorn_reversal")
-        
-        return list(set(concepts)) if concepts else ["unknown_setup"]
     
-    def record_concepts_used(
-        self,
-        trade_id: str,
-        context: dict,
-        kronos_decision: str
-    ):
-        """Record concepts used for a trade for later attribution"""
-        if not CONCEPT_TRACKER:
-            return
+    def _fallback_confidence(self, context: dict) -> float:
+        """
+        Calculate fallback confidence based on Ingwe confluence score.
+        Used when Kronos is unavailable.
         
-        direction = context.get("direction", "UNKNOWN")
-        setup_type = context.get("setup_type", "UNKNOWN")
-        concepts = self._extract_concepts_from_context(context)
+        Maps Ingwe score (0-120) to confidence (0-1)
+        """
+        confluence_score = context.get("confluence_score", 0)
         
-        CONCEPT_TRACKER.record_trade(
-            trade_id=trade_id,
-            direction=direction,
-            concepts_used=concepts,
-            kronos_decision=kronos_decision,
-            setup_type=setup_type
-        )
+        # Scale: 0-60 = 0.2-0.4, 60-90 = 0.4-0.7, 90-120 = 0.7-0.95
+        if confluence_score < 60:
+            confidence = 0.2 + (confluence_score / 60) * 0.2
+        elif confluence_score < 90:
+            confidence = 0.4 + ((confluence_score - 60) / 30) * 0.3
+        else:
+            confidence = 0.7 + ((confluence_score - 90) / 30) * 0.25
+        
+        return min(0.95, max(0.1, confidence))
     
-    def get_performance_context(self, concepts: List[str]) -> str:
-        """Get performance-aware context for concepts used in a trade"""
-        if not CONCEPT_TRACKER:
-            return ""
-        
-        return CONCEPT_TRACKER.get_weighted_context({"concepts_used": concepts})
-
     def validate(
         self,
         context: dict,
         df: pd.DataFrame,
         symbol: str = "EURUSD"
-    ) -> tuple[bool, str]:
+    ) -> Tuple[bool, str]:
         """
-        Validate Ingwe signal against Kronos Oracle
-
-        Args:
-            context: Structured setup context with keys:
-                - direction: "BUY" or "SELL"
-                - setup_type: e.g., "SB_FVG", "UNICON_REVERSAL", "CONTINUATION"
-                - sweep: "SWEEP_HIGH" or "SWEEP_LOW"
-                - fvg_type: "BULLISH_FVG" or "BEARISH_FVG"
-                - fvg_position: "50%", "full", "below_50", "above_50"
-                - bos_aligned: bool
-                - htf_bias_ok: bool
-                - confluence_score: int
-                - session: str
-                - atr: float
-                - spread_ok: bool
-                - trend: "BULLISH" or "BEARISH"
-                - level_sweep: bool
-            df: OHLCV DataFrame (last 512 candles)
-            symbol: Trading symbol
-
+        Validate Ingwe signal against Kronos Oracle with circuit breaker.
+        
         Returns:
             (allowed: bool, reason: str)
         """
         if not self.enabled:
             return True, "Veto Gate Disabled"
-
+        
         direction = context.get("direction", "BUY")
         if direction not in ("BUY", "SELL"):
             return True, f"Ignored non-trade signal: {direction}"
-
+        
+        circuit_state = self.circuit_breaker.get_state()
+        
+        # Check circuit breaker state
+        if circuit_state == "OPEN":
+            # Circuit is open, use fallback
+            fallback_confidence = self._fallback_confidence(context)
+            
+            if fallback_confidence < self.threshold:
+                self._log_veto_decision(
+                    signal=direction,
+                    symbol=symbol,
+                    kronos_agree=False,
+                    confidence=fallback_confidence,
+                    decision="VETO_CIRCUIT_OPEN",
+                    reason=f"Kronos offline (circuit OPEN), fallback confidence {fallback_confidence:.0%} < threshold",
+                    circuit_state=circuit_state
+                )
+                return False, "Kronos offline - blocking trade (circuit breaker)"
+            else:
+                if self.mode == "advisory":
+                    decision = "ALLOW_FALLBACK"
+                else:
+                    decision = "ALLOW_FALLBACK"
+                
+                self._log_veto_decision(
+                    signal=direction,
+                    symbol=symbol,
+                    kronos_agree=True,
+                    confidence=fallback_confidence,
+                    decision=decision,
+                    reason=f"Kronos offline, using Ingwe confluence ({fallback_confidence:.0%})",
+                    circuit_state=circuit_state
+                )
+                return True, f"Kronos offline - allowing based on Ingwe score ({fallback_confidence:.0%})"
+        
+        # Normal path: Try to call Kronos
         try:
             ohlcv_data = self._prepare_ohlcv_payload(df)
 
@@ -244,19 +298,24 @@ class KronosVetoGate:
                 }
             }
 
-            response = requests.post(
-                "http://127.0.0.1:8000/v1/predict-ict",
+            success, result = self.circuit_breaker.call(
+                requests.post,
+                self.endpoint,
                 json=payload,
                 timeout=self.request_timeout
             )
 
+            if not success:
+                raise Exception(f"Circuit breaker blocked: {result}")
+
+            response = result
             if response.status_code != 200:
                 raise Exception(f"API returned {response.status_code}")
 
-            result = response.json()
-            kronos_agree = result.get("agree", True)
-            confidence = result.get("confidence", 0.5)
-            reason = result.get("reason", "Unknown")
+            result_data = response.json()
+            kronos_agree = result_data.get("agree", True)
+            confidence = result_data.get("confidence", 0.5)
+            reason = result_data.get("reason", "Unknown")
 
             if confidence < self.threshold:
                 kronos_agree = False
@@ -273,7 +332,8 @@ class KronosVetoGate:
                 kronos_agree=kronos_agree,
                 confidence=confidence,
                 decision=decision,
-                reason=reason
+                reason=reason,
+                circuit_state=circuit_state
             )
 
             if self.mode == "advisory":
@@ -282,40 +342,85 @@ class KronosVetoGate:
                 return kronos_agree, reason
 
         except requests.exceptions.Timeout:
-            logger.warning("Kronos API timeout - defaulting to ALLOW")
-            self._log_veto_decision(
-                signal=direction,
-                symbol=symbol,
-                kronos_agree=True,
-                confidence=0.5,
-                decision="ALLOW_TIMEOUT",
-                reason="API Timeout - Default Allow"
-            )
-            return True, "API Timeout - Default Allow"
+            # Timeout -> Circuit breaker fault
+            circuit_state = self.circuit_breaker.get_state()
+            
+            if self.safety_mode == "VETO_SAFE":
+                self._log_veto_decision(
+                    signal=direction,
+                    symbol=symbol,
+                    kronos_agree=False,
+                    confidence=0.0,
+                    decision="VETO_TIMEOUT",
+                    reason="Kronos API timeout (VETO_SAFE mode)",
+                    circuit_state=circuit_state
+                )
+                return False, "Kronos timeout - blocking trade (VETO_SAFE)"
+            else:
+                self._log_veto_decision(
+                    signal=direction,
+                    symbol=symbol,
+                    kronos_agree=True,
+                    confidence=0.5,
+                    decision="ALLOW_TIMEOUT",
+                    reason="Kronos API timeout (ALLOW_SAFE mode)",
+                    circuit_state=circuit_state
+                )
+                return True, "Kronos timeout - allowing trade (ALLOW_SAFE)"
 
         except requests.exceptions.ConnectionError:
-            logger.error("Kronos API unreachable - defaulting to ALLOW")
-            self._log_veto_decision(
-                signal=direction,
-                symbol=symbol,
-                kronos_agree=True,
-                confidence=0.5,
-                decision="ALLOW_OFFLINE",
-                reason="API Offline - Default Allow"
-            )
-            return True, "API Offline - Default Allow"
+            # Connection error -> Circuit breaker fault
+            circuit_state = self.circuit_breaker.get_state()
+            
+            if self.safety_mode == "VETO_SAFE":
+                self._log_veto_decision(
+                    signal=direction,
+                    symbol=symbol,
+                    kronos_agree=False,
+                    confidence=0.0,
+                    decision="VETO_OFFLINE",
+                    reason="Kronos API unreachable (VETO_SAFE mode)",
+                    circuit_state=circuit_state
+                )
+                return False, "Kronos offline - blocking trade (VETO_SAFE)"
+            else:
+                self._log_veto_decision(
+                    signal=direction,
+                    symbol=symbol,
+                    kronos_agree=True,
+                    confidence=0.5,
+                    decision="ALLOW_OFFLINE",
+                    reason="Kronos API unreachable (ALLOW_SAFE mode)",
+                    circuit_state=circuit_state
+                )
+                return True, "Kronos offline - allowing trade (ALLOW_SAFE)"
 
         except Exception as e:
-            logger.error(f"Kronos validation error: {str(e)} - defaulting to ALLOW")
-            self._log_veto_decision(
-                signal=direction,
-                symbol=symbol,
-                kronos_agree=True,
-                confidence=0.5,
-                decision="ALLOW_ERROR",
-                reason=f"Error: {str(e)}"
-            )
-            return True, f"API Error - Default Allow: {str(e)}"
+            # Other error
+            circuit_state = self.circuit_breaker.get_state()
+            
+            if self.safety_mode == "VETO_SAFE":
+                self._log_veto_decision(
+                    signal=direction,
+                    symbol=symbol,
+                    kronos_agree=False,
+                    confidence=0.0,
+                    decision="VETO_ERROR",
+                    reason=f"Error: {str(e)} (VETO_SAFE mode)",
+                    circuit_state=circuit_state
+                )
+                return False, f"Validation error - blocking trade (VETO_SAFE): {str(e)}"
+            else:
+                self._log_veto_decision(
+                    signal=direction,
+                    symbol=symbol,
+                    kronos_agree=True,
+                    confidence=0.5,
+                    decision="ALLOW_ERROR",
+                    reason=f"Error: {str(e)} (ALLOW_SAFE mode)",
+                    circuit_state=circuit_state
+                )
+                return True, f"Validation error - allowing trade (ALLOW_SAFE): {str(e)}"
 
     def is_enabled(self) -> bool:
         return self.enabled
@@ -327,6 +432,13 @@ class KronosVetoGate:
         self.mode = mode
         logger.info(f"Veto Gate mode switched to: {mode}")
 
+    def set_safety_mode(self, safety_mode: str):
+        """Switch between VETO_SAFE and ALLOW_SAFE"""
+        if safety_mode not in ("VETO_SAFE", "ALLOW_SAFE"):
+            raise ValueError(f"Invalid safety mode: {safety_mode}. Use 'VETO_SAFE' or 'ALLOW_SAFE'.")
+        self.safety_mode = safety_mode
+        logger.info(f"Safety mode switched to: {safety_mode}")
+
     def enable(self):
         self.enabled = True
         logger.info("Veto Gate enabled")
@@ -335,22 +447,29 @@ class KronosVetoGate:
         self.enabled = False
         logger.info("Veto Gate disabled")
 
+    def get_circuit_breaker_state(self) -> str:
+        """Return current circuit breaker state"""
+        return self.circuit_breaker.get_state()
+
 
 def create_veto_gate(config: Optional[dict] = None) -> KronosVetoGate:
     """Factory function to create Veto Gate from config"""
     if config is None:
-        return KronosVetoGate()
+        return KronosVetoGate(safety_mode="VETO_SAFE")
 
     return KronosVetoGate(
-        endpoint=config.get("endpoint", "http://127.0.0.1:8000/v1/predict"),
+        endpoint=config.get("endpoint", "http://127.0.0.1:8000/v1/predict-ict"),
         threshold=config.get("threshold", 0.75),
         enabled=config.get("enabled", True),
-        mode=config.get("mode", "advisory")
+        mode=config.get("mode", "enforced"),
+        safety_mode=config.get("safety_mode", "VETO_SAFE")
     )
 
 
 if __name__ == "__main__":
-    gate = KronosVetoGate()
-    print(f"Veto Gate initialized: enabled={gate.enabled}, mode={gate.mode}")
-    print(f"Endpoint: {gate.endpoint}")
-    print(f"Threshold: {gate.threshold}")
+    gate = KronosVetoGate(safety_mode="VETO_SAFE")
+    print(f"✅ Veto Gate initialized:")
+    print(f"   - Enabled: {gate.enabled}")
+    print(f"   - Mode: {gate.mode}")
+    print(f"   - Safety Mode: {gate.safety_mode}")
+    print(f"   - Circuit Breaker: {gate.get_circuit_breaker_state()}")

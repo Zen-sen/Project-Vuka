@@ -12,15 +12,19 @@ from typing import List, Dict, Any, Optional
 from database_manager import get_db
 from unified_logger import get_logger
 
+from rich.console import Console
 from rich.layout import Layout
+from rich.live import Live
 from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 from rich.align import Align
-from rich.live import Live
+from rich import box
 
 logger = get_logger("Dashboard")
 CONFIG_PATH = Path("config_v4.6.json")
+_OUT = Console(force_terminal=True, legacy_windows=True)
+_NO_BOX = box.ASCII  # avoid Unicode box chars that flicker in MINGW
 
 
 def load_config():
@@ -137,15 +141,15 @@ class CommandCenter:
 
     def get_recent_logs(self):
         conn = self.db._get_connection()
-        cursor = conn.execute("SELECT timestamp, level, component, message FROM system_logs ORDER BY timestamp DESC LIMIT 12")
+        cursor = conn.execute("SELECT timestamp, level, component, message FROM system_logs ORDER BY timestamp DESC LIMIT 8")
         return [dict(row) for row in cursor.fetchall()]
 
     def make_layout(self) -> Layout:
         layout = Layout()
         layout.split_column(
-            Layout(name="header", size=5),
-            Layout(name="top", size=10),
-            Layout(name="main", size=18),
+            Layout(name="header", size=4),
+            Layout(name="top", size=8),
+            Layout(name="main", size=12),
             Layout(name="footer", size=3),
         )
         layout["top"].split_row(
@@ -167,7 +171,7 @@ class CommandCenter:
                              style="bold white on blue", justify="center")
         
         full_header = title + slogan + metrics_line
-        layout["header"].update(Panel(Align.center(full_header), style="blue"))
+        layout["header"].update(Panel(Align.center(full_header), style="blue", box=_NO_BOX))
 
     def update_bots(self, layout: Layout):
         table = Table(title="Bot Instances", expand=True, box=None)
@@ -200,7 +204,7 @@ class CommandCenter:
                 Text(bot["status"], style=status_style)
             )
         
-        layout["bots"].update(Panel(table, title="Fleet Status", border_style="cyan"))
+        layout["bots"].update(Panel(table, title="Fleet Status", border_style="cyan", box=_NO_BOX))
 
 
 
@@ -230,7 +234,7 @@ class CommandCenter:
         text.append(f"  Backups:   {sm.get('max_backups', 'N/A')}\n")
         text.append(f"  Atomic:    {sm.get('atomic_write_enabled', 'N/A')}")
 
-        layout["config"].update(Panel(text, title="System Config", border_style="yellow"))
+        layout["config"].update(Panel(text, title="System Config", border_style="yellow", box=_NO_BOX))
 
     def update_logs(self, layout: Layout):
         log_layout = Layout()
@@ -250,7 +254,7 @@ class CommandCenter:
                 SELECT timestamp, level, message 
                 FROM system_logs 
                 WHERE (symbol = ? AND strategy = ?) 
-                ORDER BY timestamp DESC LIMIT 15
+                ORDER BY timestamp DESC LIMIT 8
             """, (symbol, strategy))
             bot_logs = [dict(row) for row in cursor.fetchall()]
 
@@ -266,7 +270,7 @@ class CommandCenter:
                 log_text.append(f"{log['message']}\n")
 
             log_layout[tag].update(
-                Panel(log_text, title=f"Logs: {tag}", border_style="blue")
+                Panel(log_text, title=f"Logs: {tag}", border_style="blue", box=_NO_BOX)
             )
 
         layout["logs_container"].update(log_layout)
@@ -278,7 +282,7 @@ class CommandCenter:
         text.append(f"\n  Bots: 1={bots[0]}  2={bots[1]}  3={bots[2]}  4={bots[3]}", style="dim")
         if self._status_msg:
             text.append(f"\n  {self._status_msg}", style="italic yellow")
-        layout["footer"].update(Panel(Align.center(text), border_style="dim"))
+        layout["footer"].update(Panel(Align.center(text), border_style="dim", box=_NO_BOX))
 
     def _bot_index(self) -> List[str]:
         """Return bot tags in display order for 1-4 key mapping."""
@@ -340,13 +344,15 @@ class CommandCenter:
         layout = self.make_layout()
         threading.Thread(target=self._input_thread, daemon=True).start()
 
-        with Live(layout, refresh_per_second=2, screen=True) as live:
+        with Live(layout, console=_OUT, refresh_per_second=2, screen=True) as live:
             while True:
                 self.update_header(layout)
                 self.update_bots(layout)
                 self.update_config(layout)
                 self.update_logs(layout)
                 self.update_footer(layout)
+
+                live.update(layout)
 
                 try:
                     action = self._action_q.get_nowait()
@@ -355,7 +361,7 @@ class CommandCenter:
                 except queue.Empty:
                     pass
 
-                time.sleep(1)
+                time.sleep(0.5)
 
 if __name__ == "__main__":
     cmd_center = CommandCenter()
