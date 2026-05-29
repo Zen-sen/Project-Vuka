@@ -1916,7 +1916,7 @@ def evaluate_ingwe(df, fvgs, sweep, sweep_level, price, atr, lot_size, session):
 
         # ── PATH A: BUY REVERSAL ─────────────────────────
         if sweep == "SWEEP_LOW" and fvg_type == "BULLISH_FVG" and trend == "BULLISH":
-            if plus_di <= minus_di:
+            if plus_di is None or minus_di is None or plus_di <= minus_di:
                 log(f"DI filter: +DI({plus_di}) <= -DI({minus_di}). Skip.", "GUARD")
                 continue
             if not check_premium_discount_zone(df, price, "BUY"):
@@ -1992,7 +1992,7 @@ def evaluate_ingwe(df, fvgs, sweep, sweep_level, price, atr, lot_size, session):
 
         # ── PATH B: SELL REVERSAL ────────────────────────
         if sweep == "SWEEP_HIGH" and fvg_type == "BEARISH_FVG" and trend == "BEARISH":
-            if minus_di <= plus_di:
+            if plus_di is None or minus_di is None or minus_di <= plus_di:
                 log(f"DI filter: -DI({minus_di}) <= +DI({plus_di}). Skip.", "GUARD")
                 continue
             if not check_premium_discount_zone(df, price, "SELL"):
@@ -2054,7 +2054,7 @@ def evaluate_ingwe(df, fvgs, sweep, sweep_level, price, atr, lot_size, session):
 
         # ── PATH C: SELL CONTINUATION (v3.9.1) ──────────
         if sweep == "SWEEP_LOW" and fvg_type == "BEARISH_FVG" and trend == "BEARISH":
-            if minus_di <= plus_di:
+            if plus_di is None or minus_di is None or minus_di <= plus_di:
                 log(f"DI filter: -DI({minus_di}) <= +DI({plus_di}). Skip.", "GUARD")
                 continue
             log(f"Zone context: {_zone_context(df, price)}")
@@ -2116,7 +2116,7 @@ def evaluate_ingwe(df, fvgs, sweep, sweep_level, price, atr, lot_size, session):
 
         # ── PATH D: BUY CONTINUATION (v3.9.1) ───────────
         if sweep == "SWEEP_HIGH" and fvg_type == "BULLISH_FVG" and trend == "BULLISH":
-            if plus_di <= minus_di:
+            if plus_di is None or minus_di is None or plus_di <= minus_di:
                 log(f"DI filter: +DI({plus_di}) <= -DI({minus_di}). Skip.", "GUARD")
                 continue
             # v5.0 FIX: Require strong HTF bias for BUY signals
