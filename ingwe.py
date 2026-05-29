@@ -129,6 +129,20 @@ except ImportError:
 #     config_v4.6.json mode changed from "warn" to "enforced".
 #     Veto gate now actually blocks trades below confidence threshold.
 #
+#   FIX-10: Deleted tainted best_params.json (pre-fix optimizer run).
+#     Recorded ADX=30, win_rate=76.1% from contaminated backtester.
+#     File removed — must not guide parameter selection.
+#
+#   FIX-11: Removed dead MIN_ADX_FOR_TRADING=25 constant.
+#     Was defined at module level but never referenced in any
+#     execution path. Single ADX_MIN_THRESHOLD is now the
+#     sole ADX gate.
+#
+#   FIX-12: log_trade() now pulls actual fill from deal history.
+#     Uses mt5.history_deals_get(ticket=result.deal) to get the
+#     real executed price instead of result.price (which was None
+#     on all 21 live trades). Slippage and effective RR now accurate.
+#
 # CHANGELOG v4.4 — PERFORMANCE IMPROVEMENTS:
 #
 #   FIX-1: Duplicate entry prevention via has_open_position().
@@ -306,11 +320,6 @@ else:
 PATTERN_BLACKLIST = [
     ("Asian", "BUY", "SWEEP_LOW"),       # 28% WR — block
 ]
-
-# =======================================================
-# MARKET REGIME THRESHOLD
-# =======================================================
-MIN_ADX_FOR_TRADING = 25  # Above 25 = trending, below = ranging
 
 # -------------------------------------------------------
 # BACKTEST MODE (Option B) — CSV Replay
@@ -1427,8 +1436,20 @@ def log_trade(direction, entry, sl, tp, result, lot_size, session):
     """
     Log trade to database (primary) or JSON fallback.
     Tracks: fill price, slippage, effective RR based on actual execution.
+    v5.5: Pulls actual fill from MT5 deal history when available.
     """
-    actual_fill = getattr(result, "price", entry)
+    actual_fill = entry
+    if result and not BACKTEST_MODE:
+        deal_ticket = getattr(result, "deal", 0)
+        if deal_ticket:
+            try:
+                deals = mt5.history_deals_get(ticket=deal_ticket)
+                if deals and len(deals) > 0:
+                    actual_fill = deals[0].price
+            except Exception:
+                actual_fill = getattr(result, "price", entry)
+        else:
+            actual_fill = getattr(result, "price", entry)
     slippage = abs(actual_fill - entry)
     slippage_pips = slippage * 10000
     
