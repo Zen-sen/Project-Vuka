@@ -1953,6 +1953,9 @@ def evaluate_ingwe(df, fvgs, sweep, sweep_level, price, atr, lot_size, session):
             if plus_di is None or minus_di is None or plus_di <= minus_di:
                 log(f"DI filter: +DI({plus_di}) <= -DI({minus_di}). Skip.", "GUARD")
                 continue
+            if _arg_symbol == "GBPUSD" and session == "London Open":
+                log("GBPUSD London Open BUX blocked (23.1% WR). SELL only.", "GUARD")
+                continue
             if not check_premium_discount_zone(df, price, "BUY"):
                 log("Not in discount zone. Skip.", "GUARD")
                 continue
@@ -2152,6 +2155,9 @@ def evaluate_ingwe(df, fvgs, sweep, sweep_level, price, atr, lot_size, session):
         if sweep == "SWEEP_HIGH" and fvg_type == "BULLISH_FVG" and trend == "BULLISH":
             if plus_di is None or minus_di is None or plus_di <= minus_di:
                 log(f"DI filter: +DI({plus_di}) <= -DI({minus_di}). Skip.", "GUARD")
+                continue
+            if _arg_symbol == "GBPUSD" and session == "London Open":
+                log("GBPUSD London Open BUX blocked (23.1% WR). SELL only.", "GUARD")
                 continue
             # v5.0 FIX: Require strong HTF bias for BUY signals
             if not htf_bias_ok:
@@ -2528,8 +2534,9 @@ def run_agent():
             return
         
         if _arg_symbol == "GBPUSD" and active == "London Open":
-            log("GBPUSD London Open disabled (0% win rate historically). Ingwe waits.", "GUARD")
-            return
+            log("GBPUSD London Open — SELL only (BUY blocked: 23.1% WR historically).", "GUARD")
+
+
         
         s, e = get_active_killzones()[active]
         log(f"KILLZONE: {active} ({s:02d}:00–{e:02d}:00 SAST)")
