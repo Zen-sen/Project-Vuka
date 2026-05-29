@@ -266,10 +266,11 @@ def simulate_ingwe(candles: list, config: dict, strategy: str = "INGWE", use_rea
     params = strategy_params.get(strategy, strategy_params["INGWE"])
 
     adx_values = [None] * len(candles)
-    if use_real_adx and len(candles) >= 50:
+    min_adx_bars = 29
+    if use_real_adx and len(candles) >= min_adx_bars:
         print(f"  Calculating real ADX for {len(candles)} candles...")
-        for i in range(50, len(candles)):
-            adx, _, _ = calculate_adx_wilder(candles[max(0, i-50):i+1])
+        for i in range(min_adx_bars, len(candles)):
+            adx, _, _ = calculate_adx_wilder(candles[:i+1])
             adx_values[i] = adx
 
     i = 0
@@ -288,10 +289,13 @@ def simulate_ingwe(candles: list, config: dict, strategy: str = "INGWE", use_rea
             i += 1
             continue
 
-        if use_real_adx and adx_values[i] is not None:
+        if use_real_adx:
+            if adx_values[i] is None:
+                i += 1
+                continue
             adx = adx_values[i]
         else:
-            adx = random.uniform(10, 40)
+            adx = 999
         
         if adx < config["adx_threshold"]:
             i += 1

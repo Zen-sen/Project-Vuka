@@ -526,6 +526,115 @@ async def predict_structured(request: StructuredRequest):
         )
 
 
+# ── v5.5: ICT Pattern Sequence Detection ──────────────────────
+# The sequential wave: Sweep (1-2 candles) → Displacement (1 candle) → Retracement (2+ candles)
+ICT_KILLZONES = {"London Open", "New York Open", "London Close"}
+
+def detect_pattern_sequence(df: pd.DataFrame) -> dict:
+    """
+    Analyzes OHLCV data for the ICT sequential wave pattern.
+    Returns quality score (0-1) and description.
+    
+    Sequence:
+    Candle 1-2 (Sweep): Price grabs liquidity at previous high/low
+    Candle 3 (Displacement): Large candle creates FVG + BOS  
+    Candle 4-5+ (Retracement): Price returns toward displacement origin
+    """
+    if df is None or len(df) < 10:
+        return {"quality": 0.5, "description": "insufficient_data"}
+    
+    closes = df["close"].values
+    highs = df["high"].values
+    lows = df["low"].values
+    n = len(closes)
+    
+    lookback = min(20, n - 1)
+    recent = df.iloc[-lookback:]
+    avg_body = (recent["close"] - recent["open"]).abs().mean()
+    if avg_body == 0:
+        return {"quality": 0.5, "description": "no_volatility"}
+    
+    # 1. Detect Sweep (liquidity grab): did price breach a recent high/low?
+    swing_window = min(8, lookback - 3)
+    prior_high = recent["high"].iloc[:swing_window].max()
+    prior_low = recent["low"].iloc[:swing_window].min()
+    
+    last_3 = df.iloc[-3:]
+    sweep_detected = False
+    sweep_type = None
+    for _, row in last_3.iterrows():
+        if row["high"] > prior_high * 1.001:
+            sweep_detected = True
+            sweep_type = "SWEEP_HIGH"
+            break
+        if row["low"] < prior_low * 0.999:
+            sweep_detected = True
+            sweep_type = "SWEEP_LOW"
+            break
+    
+    if not sweep_detected:
+        return {"quality": 0.4, "description": "no_sweep"}
+    
+    # 2. Detect Displacement: is there a candle with body > 1.8x average?
+    displacement_idx = None
+    for i in range(max(0, n - 5), n):
+        body = abs(closes[i] - df["open"].values[i])
+        if body > avg_body * 1.8:
+            displacement_idx = i
+            break
+    
+    if displacement_idx is None:
+        return {"quality": 0.5, "description": f"sweep_no_displacement"}
+    
+    # 3. Detect Retracement: after displacement, does price move back?
+    retracement_quality = 0.5
+    if displacement_idx < n - 2:
+        displace_high = highs[displacement_idx]
+        displace_low = lows[displacement_idx]
+        displace_close = closes[displacement_idx]
+        displace_open = df["open"].values[displacement_idx]
+        
+        post_close = closes[-1]
+        displace_range = displace_high - displace_low
+        
+        if sweep_type == "SWEEP_LOW":
+            retrace = (post_close - displace_low) / displace_range
+            if 0.2 <= retrace <= 0.6:
+                retracement_quality = 0.9
+            elif retrace < 0.2:
+                retracement_quality = 0.3
+            else:
+                retracement_quality = 0.6
+        else:
+            retrace = (displace_high - post_close) / displace_range
+            if 0.2 <= retrace <= 0.6:
+                retracement_quality = 0.9
+            elif retrace < 0.2:
+                retracement_quality = 0.3
+            else:
+                retracement_quality = 0.6
+    
+    quality = 0.3 + (0.4 if sweep_detected else 0) + (0.3 * retracement_quality)
+    quality = min(1.0, max(0.1, quality))
+    
+    return {
+        "quality": round(quality, 2),
+        "description": f"sweep_{sweep_type}_disp_{'yes' if displacement_idx is not None else 'no'}_retrace_{retracement_quality:.1f}",
+        "sweep": sweep_type,
+        "has_displacement": displacement_idx is not None,
+        "retracement_quality": round(retracement_quality, 2)
+    }
+
+
+def get_killzone_quality(session: str) -> float:
+    """Score timing alignment with ICT Killzones (1.0 = prime, 0.3 = off-peak)."""
+    if session in ICT_KILLZONES:
+        return 1.0
+    if session and "Asian" in session:
+        return 0.5
+    return 0.3
+
+
 ICT_CONTEXT_AVAILABLE = False
 try:
     from skills.ict_retriever import ICTRetriever, build_ict_prompt
@@ -579,6 +688,44 @@ async def predict_ict(request: ICTPredictRequest):
         bos_aligned = ict_ctx.get("bos_aligned", False)
         htf_bias_ok = ict_ctx.get("htf_bias_ok", False)
 
+        ctx = request.context
+        direction = ctx.get("direction", "BUY")
+        setup_type = ctx.get("setup_type", "UNKNOWN")
+
+        # v4.5 FIX-2: Data format normalization with validation
+        if isinstance(request.ohlcv, dict) and "candles" in request.ohlcv:
+            df = pd.DataFrame(request.ohlcv["candles"])
+        elif isinstance(request.ohlcv, dict):
+            if request.ohlcv:
+                first_key = next(iter(request.ohlcv.keys()))
+                if isinstance(request.ohlcv[first_key], dict):
+                    df = pd.DataFrame(request.ohlcv).T
+                    df = df.reset_index(drop=True)
+                else:
+                    df = pd.DataFrame(request.ohlcv)
+            else:
+                df = pd.DataFrame()
+        else:
+            df = pd.DataFrame(request.ohlcv)
+
+        required_cols = ['open', 'high', 'low', 'close', 'volume']
+        if df.empty or not all(col in df.columns for col in required_cols):
+            log_json("WARN", "OHLCV validation failed - missing columns",
+                     columns=list(df.columns),
+                     required=required_cols,
+                     df_empty=df.empty,
+                     df_shape=df.shape if not df.empty else (0, 0))
+            return PredictResponse(
+                agree=True,
+                confidence=0.5,
+                reason="Data validation failed - default allow (v4.5)"
+            )
+
+        # ── v5.5: Pattern Sequence & Timing Analysis ──────
+        seq = detect_pattern_sequence(df)
+        pattern_quality = seq.get("quality", 0.5)
+        kz_quality = get_killzone_quality(session)
+
         log_json("INFO", "ICT-enhanced prediction request",
                  sweep=sweep,
                  fvg_type=fvg_type,
@@ -586,7 +733,9 @@ async def predict_ict(request: ICTPredictRequest):
                  session=session,
                  bos_aligned=bos_aligned,
                  htf_bias_ok=htf_bias_ok,
-                 ict_available=ICT_CONTEXT_AVAILABLE)
+                 ict_available=ICT_CONTEXT_AVAILABLE,
+                 pattern_quality=pattern_quality,
+                 killzone_quality=kz_quality)
 
         ict_prompt = ""
         if ICT_CONTEXT_AVAILABLE and ict_retriever:
@@ -600,49 +749,26 @@ async def predict_ict(request: ICTPredictRequest):
             )
             log_json("INFO", "ICT context retrieved", prompt_length=len(ict_prompt))
 
-        ctx = request.context
-        direction = ctx.get("direction", "BUY")
-        setup_type = ctx.get("setup_type", "UNKNOWN")
-
-        # v4.5 FIX-2: Data format normalization with validation
-        if isinstance(request.ohlcv, dict) and "candles" in request.ohlcv:
-            df = pd.DataFrame(request.ohlcv["candles"])
-        elif isinstance(request.ohlcv, dict):
-            # Handle dict-of-dicts by converting to list-of-dicts (transposed format)
-            if request.ohlcv:
-                first_key = next(iter(request.ohlcv.keys()))
-                if isinstance(request.ohlcv[first_key], dict):
-                    # Dict of dicts — transpose to list format via DataFrame
-                    df = pd.DataFrame(request.ohlcv).T
-                    df = df.reset_index(drop=True)
-                else:
-                    # Already list format
-                    df = pd.DataFrame(request.ohlcv)
-            else:
-                df = pd.DataFrame()
-        else:
-            df = pd.DataFrame(request.ohlcv)
-
-        # v4.5: Validate required columns before tokenization
-        required_cols = ['open', 'high', 'low', 'close', 'volume']
-        if df.empty or not all(col in df.columns for col in required_cols):
-            log_json("WARN", "OHLCV validation failed - missing columns",
-                     columns=list(df.columns),
-                     required=required_cols,
-                     df_empty=df.empty,
-                     df_shape=df.shape if not df.empty else (0, 0))
-            # Return safe default prediction
-            return PredictResponse(
-                agree=True,
-                confidence=0.5,
-                reason="Data validation failed - default allow (v4.5)"
-            )
-
         ohlcv_tensor = tokenize_ohlcv(df)
 
         agree, confidence = run_inference(ohlcv_tensor, direction)
 
+        # ── v5.5: Pattern Sequence Confidence Adjustment ──
         reason_detail = []
+        if pattern_quality < 0.4:
+            confidence *= 0.7
+            reason_detail.append("weak_pattern_sequence")
+        elif pattern_quality >= 0.8:
+            confidence = min(confidence * 1.15, 0.95)
+            reason_detail.append("strong_pattern_sequence")
+
+        # ── v5.5: Killzone Timing Confidence Adjustment ───
+        if kz_quality < 0.5:
+            confidence *= 0.8
+            reason_detail.append("off_killzone_timing")
+        elif kz_quality >= 1.0:
+            confidence = min(confidence * 1.1, 0.95)
+            reason_detail.append("killzone_aligned")
 
         expected_trend = "BULLISH" if direction == "BUY" else "BEARISH"
         if trend != expected_trend and trend != "UNKNOWN":

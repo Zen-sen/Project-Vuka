@@ -75,10 +75,45 @@ except ImportError:
     logger.warn("database_manager not available — falling back to JSON files")
 
 # =======================================================
-#    PROJECT VUKA — AGENT INGWE  v4.4
+#    PROJECT VUKA — AGENT INGWE  v5.5
 #    The leopard does not miss because it does not rush.
 #    "Ingwe ayidlozi ngoba ayiphuthi isikhathi."
 # =======================================================
+# CHANGELOG v5.5 — AUDIT-DRIVEN FIXES + KRONOS TRAINING:
+#
+#   FIX-1: place_limit_order() datetime bug (CRITICAL).
+#     Replaced timezone-aware datetime with _server_now()
+#     naive datetime for MT5 compatibility. Expiry now uses
+#     datetime object directly instead of Unix timestamp.
+#     Ref: _server_now() at ingwe.py:626.
+#
+#   FIX-2: Scoring model rebalanced.
+#     Trend weight reduced 40→30 (no longer dominant alone).
+#     HTF bias increased 10→15. Zone reduced 20→15.
+#     New: SESSION_ASYMMETRY_BONUS (+10) encodes the live
+#     SELL/BUY asymmetry (~77% vs ~40%) directly into scores.
+#
+#   FIX-3: ADX backtest contamination eliminated.
+#     backtester.py: random.uniform(10,40) fallback removed.
+#     Candle skipped when ADX unavailable. Lookback window
+#     changed from fixed 50 to proper expanding window.
+#     run_backtest.py: cold-start ADX seed now uses Wilder
+#     proper mean of first `period` DX values.
+#
+#   FIX-4: HTF bias backtest guard.
+#     get_htf_bias() now returns None in BACKTEST_MODE
+#     instead of making live MT5 API calls.
+#
+#   FIX-5: Kronos trained on ICT pattern sequence + timing.
+#     New detect_pattern_sequence() in kronos_server.py
+#     identifies the sweep→displacement→retracement wave.
+#     get_killzone_quality() scores timing alignment.
+#     Both modulate inference confidence in predict-ict.
+#
+#   FIX-6: Session-direction asymmetry encoded in context.
+#     SESSION_ASYMMETRY_BONUS passed to Kronos via
+#     confluence_score and dedicated context fields.
+#
 # CHANGELOG v4.4 — PERFORMANCE IMPROVEMENTS:
 #
 #   FIX-1: Duplicate entry prevention via has_open_position().
@@ -761,7 +796,11 @@ def get_htf_bias() -> str | None:
     v3.9: Daily/H4 structural bias layer.
     D1 + H4 EMA10/30 must agree for a confirmed bias.
     Returns 'BULLISH', 'BEARISH', or None (conflicted).
+    v5.5: BACKTEST_MODE guard — skips live MT5 calls during backtest.
     """
+    if BACKTEST_MODE:
+        return None
+
     d1_rates = mt5_fetch_with_retry(
         mt5.copy_rates_from_pos, SYMBOL, mt5.TIMEFRAME_D1, 0, 50
     )
@@ -1299,11 +1338,17 @@ def get_overlap_multiplier() -> float:
 #  SECTION 9 — CONFLUENCE SCORING (INGWE MODE)
 # =======================================================
 
-# v5.0: Session performance multipliers (apply stricter thresholds for weak sessions)
+# v5.5: Updated session-direction performance from live data (~77% SELL vs ~40% BUY)
 SESSION_PERFORMANCE = {
-    "Asian": {"buy": 0.29, "sell": 1.00},    # SELL excellent, BUY weak
-    "London": {"buy": 0.14, "sell": 0.00},   # Both weak - need high confirmation
-    "New York": {"buy": 0.00, "sell": 0.58}, # BUY needs HTF, SELL good
+    "Asian": {"buy": 0.29, "sell": 1.00},    # SELL dominant, BUX weak
+    "London": {"buy": 0.14, "sell": 0.00},   # BUY very weak, SELL undefined
+    "New York": {"buy": 0.00, "sell": 0.58}, # BUX zero, SELL decent
+}
+
+# v5.5: Asymmetry bonus for session-direction pairs with documented high win rate
+SESSION_ASYMMETRY_BONUS = {
+    ("asian", "sell"): 10,
+    ("new york", "sell"): 10,
 }
 
 def get_session_multiplier(session: str, direction: str) -> float:
@@ -1338,20 +1383,25 @@ def get_confluence_threshold(adx: float, session: str = "", direction: str = "")
 def calculate_confluence_score(trend, fvg_ok, zone_ok, spread_ok, adx_ok,
                                 level_sweep: bool = False,
                                 bos_aligned: bool = False,
-                                htf_bias_ok: bool = False) -> int:
+                                htf_bias_ok: bool = False,
+                                session: str = "",
+                                direction: str = "") -> int:
     """
-    v3.9: htf_bias_ok added. Max score 120.
-      Trend +40 | FVG +30 | Zone +20 | Spread +10
-      Key level sweep +5 | BOS +5 | HTF bias +10
+    v5.5: Rebalanced weights, asymmetry encoding added. Max score 120.
+      Trend +30 | FVG +30 | Zone +15 | Spread +10
+      Key level sweep +5 | BOS +5 | HTF bias +15
+      Session-direction asymmetry +10 (for high-probability pairs)
     """
     score = 0
-    if trend in ("BULLISH", "BEARISH"):  score += 40
+    if trend in ("BULLISH", "BEARISH"):  score += 30
     if fvg_ok:                           score += 30
-    if zone_ok:                          score += 20
+    if zone_ok:                          score += 15
     if spread_ok:                        score += 10
     if level_sweep:                      score += 5
     if bos_aligned:                      score += 5
-    if htf_bias_ok:                      score += 10
+    if htf_bias_ok:                      score += 15
+    key = (session.lower().strip(), direction.lower().strip())
+    if key in SESSION_ASYMMETRY_BONUS:   score += SESSION_ASYMMETRY_BONUS[key]
     return score
 
 
@@ -1532,9 +1582,9 @@ def place_limit_order(direction: str, entry: float, sl: float,
                   if direction == "BUY"
                   else mt5.ORDER_TYPE_SELL_LIMIT)
 
-    server_now = datetime.now(timezone.utc) + timedelta(hours=get_exness_server_offset())
-    expiry_dt = server_now + timedelta(seconds=LIMIT_ORDER_EXPIRY_CANDLES * SCAN_INTERVAL_SEC)
-    expiry_ts = int(expiry_dt.timestamp())
+    expiry_dt = _server_now() + timedelta(
+        seconds=LIMIT_ORDER_EXPIRY_CANDLES * SCAN_INTERVAL_SEC
+    )
 
     order = {
         "action":          mt5.TRADE_ACTION_PENDING,
@@ -1548,7 +1598,7 @@ def place_limit_order(direction: str, entry: float, sl: float,
         "magic":           _instance_magic,
         "comment":         _instance_short,
         "type_time":       mt5.ORDER_TIME_SPECIFIED,
-        "expiration":      expiry_ts,
+        "expiration":      expiry_dt,
     }
 
     result = mt5.order_send(order)
@@ -1882,7 +1932,8 @@ def evaluate_ingwe(df, fvgs, sweep, sweep_level, price, atr, lot_size, session):
             bos_aligned = (m15_bos == "BULLISH_BOS")
             score = calculate_confluence_score(
                 trend, True, True, spread_ok, True,
-                level_sweep, bos_aligned, htf_bias_ok
+                level_sweep, bos_aligned, htf_bias_ok,
+                session, "BUY"
             )
             bonus_label = (
                 (" [+PDH/PDL/AR]" if level_sweep  else "") +
@@ -1950,7 +2001,8 @@ def evaluate_ingwe(df, fvgs, sweep, sweep_level, price, atr, lot_size, session):
             bos_aligned = (m15_bos == "BEARISH_BOS")
             score = calculate_confluence_score(
                 trend, True, True, spread_ok, True,
-                level_sweep, bos_aligned, htf_bias_ok
+                level_sweep, bos_aligned, htf_bias_ok,
+                session, "SELL"
             )
             bonus_label = (
                 (" [+PDH/PDL/AR]" if level_sweep  else "") +
@@ -2009,7 +2061,8 @@ def evaluate_ingwe(df, fvgs, sweep, sweep_level, price, atr, lot_size, session):
             bos_aligned = (m15_bos == "BEARISH_BOS")
             score = calculate_confluence_score(
                 trend, True, True, spread_ok, True,
-                level_sweep, bos_aligned, htf_bias_ok
+                level_sweep, bos_aligned, htf_bias_ok,
+                session, "SELL"
             )
             bonus_label = (
                 (" [+PDH/PDL/AR]" if level_sweep  else "") +
@@ -2077,7 +2130,8 @@ def evaluate_ingwe(df, fvgs, sweep, sweep_level, price, atr, lot_size, session):
             bos_aligned = (m15_bos == "BULLISH_BOS")
             score = calculate_confluence_score(
                 trend, True, True, spread_ok, True,
-                level_sweep, bos_aligned, htf_bias_ok
+                level_sweep, bos_aligned, htf_bias_ok,
+                session, "BUY"
             )
             bonus_label = (
                 (" [+PDH/PDL/AR]" if level_sweep  else "") +

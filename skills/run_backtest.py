@@ -150,11 +150,12 @@ class IngweBacktester:
         return dx
     
     def cache_adx_values(self, period: int = 14):
-        if len(self.df) < period + 2:
-            self.adx_values = [25] * len(self.df)
+        n = len(self.df)
+        adx_seed_end = period * 2 - 1
+        if n < adx_seed_end + 1:
+            self.adx_values = [None] * n
             return
         
-        n = len(self.df)
         self.adx_values = [None] * n
         
         high = self.df["high"].values
@@ -176,14 +177,12 @@ class IngweBacktester:
         pdm_s = float(np.sum(plus_dm_arr[1:period + 1]))
         mdm_s = float(np.sum(minus_dm_arr[1:period + 1]))
         
+        dx_arr = np.zeros(n)
         if atr_s > 0:
             pdi = 100.0 * pdm_s / atr_s
             mdi = 100.0 * mdm_s / atr_s
             di_sum = pdi + mdi
-            dx_arr = np.zeros(n)
             dx_arr[period] = 100.0 * abs(pdi - mdi) / di_sum if di_sum else 0.0
-        else:
-            dx_arr = np.zeros(n)
         
         for i in range(period + 1, n):
             atr_s += -atr_s / period + tr_arr[i]
@@ -197,19 +196,17 @@ class IngweBacktester:
             di_sum = pdi + mdi
             dx_arr[i] = 100.0 * abs(pdi - mdi) / di_sum if di_sum else 0.0
         
-        adx_s = dx_arr[period]
-        self.adx_values[period] = adx_s
-        for i in range(period + 1, n):
+        # Proper Wilder ADX seed: mean of first `period` DX values
+        adx_s = float(np.mean(dx_arr[period:adx_seed_end + 1]))
+        self.adx_values[adx_seed_end] = adx_s
+        for i in range(adx_seed_end + 1, n):
             adx_s = (adx_s * (period - 1) + dx_arr[i]) / period
             self.adx_values[i] = adx_s
-        
-        for i in range(period):
-            self.adx_values[i] = 25
     
-    def get_adx_at_index(self, idx: int) -> float:
+    def get_adx_at_index(self, idx: int) -> float | None:
         if idx < len(self.adx_values):
-            return self.adx_values[idx] if self.adx_values[idx] is not None else 25
-        return 25
+            return self.adx_values[idx]
+        return None
     
     def get_volatility_regime(self, adx: float) -> str:
         if adx is None:
