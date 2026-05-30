@@ -1530,42 +1530,6 @@ def log_trade(direction, entry, sl, tp, result, lot_size, session):
     log(f"Trade logged -> {LOG_FILE}", "TRADE")
 
 
-def update_trade_pnl():
-    if BACKTEST_MODE:
-        return
-    deals = mt5.history_deals_get(_server_midnight(), _server_now())
-    if not deals:
-        return
-    closed = {}
-    for d in deals:
-        if d.magic != _instance_magic or d.position_id == 0:
-            continue
-        if d.entry == 1 and d.profit != 0:
-            closed[d.position_id] = d.profit
-    if not closed:
-        return
-    if not os.path.exists(LOG_FILE):
-        return
-    try:
-        with open(LOG_FILE, "r") as f:
-            trade_log = json.load(f)
-    except (json.JSONDecodeError, IOError):
-        return
-    updated = 0
-    for t in trade_log:
-        pos_id = t.get("position_id", 0)
-        if pos_id and pos_id in closed and t.get("pnl_usd") is None:
-            t["pnl_usd"] = round(closed[pos_id], 2)
-            updated += 1
-    if updated == 0:
-        return
-    tmp = LOG_FILE + ".tmp"
-    with open(tmp, "w") as f:
-        json.dump(trade_log, f, indent=2)
-    os.replace(tmp, LOG_FILE)
-    log(f"P&L updated for {updated} closed trade(s) in {LOG_FILE}", "TRADE")
-
-
 def place_trade(direction, entry, sl, tp, lot_size):
     if BACKTEST_MODE:
         class MockResult:
@@ -1839,6 +1803,35 @@ def manage_open_positions():
                 new_sl = round(entry, 5)
                 if new_sl < sl:
                     _modify_sl(pos, new_sl, "0.5:1 -> SL to BE")
+
+    # ── P&L backfill for closed trades ───────────────────
+    if not BACKTEST_MODE:
+        closed = mt5.history_deals_get(_server_midnight(), _server_now())
+        if closed:
+            pnl_by_pos = {}
+            for d in closed:
+                if d.magic == _instance_magic and d.profit != 0:
+                    pnl_by_pos[d.position_id] = d.profit
+            if pnl_by_pos:
+                if not os.path.exists(LOG_FILE):
+                    return
+                try:
+                    with open(LOG_FILE, "r") as f:
+                        trade_log_data = json.load(f)
+                except (json.JSONDecodeError, IOError):
+                    return
+                updated = 0
+                for t in trade_log_data:
+                    pos_id = t.get("position_id", 0)
+                    if pos_id in pnl_by_pos and t.get("pnl_usd") is None:
+                        t["pnl_usd"] = round(pnl_by_pos[pos_id], 2)
+                        updated += 1
+                if updated:
+                    tmp = LOG_FILE + ".tmp"
+                    with open(tmp, "w") as f:
+                        json.dump(trade_log_data, f, indent=2)
+                    os.replace(tmp, LOG_FILE)
+                    log(f"P&L updated for {updated} closed trade(s)", "TRADE")
 
 
 # =======================================================
@@ -2563,7 +2556,6 @@ def run_agent():
 
     # ── v3.9.5: Manage open positions every cycle ────────
     manage_open_positions()
-    update_trade_pnl()
 
     if is_in_news_blackout():
         log("News blackout — Ingwe waits...")
