@@ -1458,6 +1458,7 @@ def log_trade(direction, entry, sl, tp, result, lot_size, session):
     v5.5: Pulls actual fill from MT5 deal history when available.
     """
     actual_fill = entry
+    position_id = 0
     if result and not BACKTEST_MODE:
         deal_ticket = getattr(result, "deal", 0)
         if deal_ticket:
@@ -1465,6 +1466,7 @@ def log_trade(direction, entry, sl, tp, result, lot_size, session):
                 deals = mt5.history_deals_get(ticket=deal_ticket)
                 if deals and len(deals) > 0:
                     actual_fill = deals[0].price
+                    position_id = deals[0].position_id
             except Exception:
                 actual_fill = getattr(result, "price", entry)
         else:
@@ -1496,7 +1498,9 @@ def log_trade(direction, entry, sl, tp, result, lot_size, session):
         "lot_size":    lot_size,
         "effective_rr": round(effective_rr, 2),
         "retcode":     result.retcode,
-        "comment":     getattr(result, "comment", "")
+        "comment":     getattr(result, "comment", ""),
+        "position_id": position_id,
+        "pnl_usd":     None
     }
     
     log(f"[FILL] req={entry} fill={actual_fill} slip={slippage_pips:.1f}p eff_RR={effective_rr:.2f}", "TRADE")
@@ -1524,6 +1528,42 @@ def log_trade(direction, entry, sl, tp, result, lot_size, session):
         json.dump(trade_log, f, indent=2)
     os.replace(tmp, LOG_FILE)
     log(f"Trade logged -> {LOG_FILE}", "TRADE")
+
+
+def update_trade_pnl():
+    if BACKTEST_MODE:
+        return
+    deals = mt5.history_deals_get(_server_midnight(), _server_now())
+    if not deals:
+        return
+    closed = {}
+    for d in deals:
+        if d.magic != _instance_magic or d.position_id == 0:
+            continue
+        if d.entry == 1 and d.profit != 0:
+            closed[d.position_id] = d.profit
+    if not closed:
+        return
+    if not os.path.exists(LOG_FILE):
+        return
+    try:
+        with open(LOG_FILE, "r") as f:
+            trade_log = json.load(f)
+    except (json.JSONDecodeError, IOError):
+        return
+    updated = 0
+    for t in trade_log:
+        pos_id = t.get("position_id", 0)
+        if pos_id and pos_id in closed and t.get("pnl_usd") is None:
+            t["pnl_usd"] = round(closed[pos_id], 2)
+            updated += 1
+    if updated == 0:
+        return
+    tmp = LOG_FILE + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(trade_log, f, indent=2)
+    os.replace(tmp, LOG_FILE)
+    log(f"P&L updated for {updated} closed trade(s) in {LOG_FILE}", "TRADE")
 
 
 def place_trade(direction, entry, sl, tp, lot_size):
@@ -2523,6 +2563,7 @@ def run_agent():
 
     # ── v3.9.5: Manage open positions every cycle ────────
     manage_open_positions()
+    update_trade_pnl()
 
     if is_in_news_blackout():
         log("News blackout — Ingwe waits...")
