@@ -116,3 +116,116 @@ Database initialized: vuka_trading.db
 Database initialized: vuka_trading.db
 Database initialized: vuka_trading.db
 Database initialized: vuka_trading.db
+Database initialized: vuka_trading.db
+Database initialized: vuka_trading.db
+Database initialized: vuka_trading.db
+Database initialized: vuka_trading.db
+Database initialized: vuka_trading.db
+Database initialized: vuka_trading.db
+Database initialized: vuka_trading.db
+Database initialized: vuka_trading.db
+Database initialized: vuka_trading.db
+Database initialized: vuka_trading.db
+Database initialized: vuka_trading.db
+Database initialized: vuka_trading.db
+Database initialized: vuka_trading.db
+Database initialized: vuka_trading.db
+Database initialized: vuka_trading.db
+Database initialized: vuka_trading.db
+Database initialized: vuka_trading.db
+Database initialized: vuka_trading.db
+Database initialized: vuka_trading.db
+Database initialized: vuka_trading.db
+Database initialized: vuka_trading.db
+Database initialized: vuka_trading.db
+Database initialized: vuka_trading.db
+Database initialized: vuka_trading.db
+Database initialized: vuka_trading.db
+Database initialized: vuka_trading.db
+Database initialized: vuka_trading.db
+Database initialized: vuka_trading.db
+Database initialized: vuka_trading.db
+Database initialized: vuka_trading.db
+Database initialized: vuka_trading.db
+Database initialized: vuka_trading.db
+Database initialized: vuka_trading.db
+Database initialized: vuka_trading.db
+Database initialized: vuka_trading.db
+Database initialized: vuka_trading.db
+Database initialized: vuka_trading.db
+Database initialized: vuka_trading.db
+Database initialized: vuka_trading.db
+Database initialized: vuka_trading.db
+Database initialized: vuka_trading.db
+Database initialized: vuka_trading.db
+Database initialized: vuka_trading.db
+Database initialized: vuka_trading.db
+Database initialized: vuka_trading.db
+Database initialized: vuka_trading.db
+Database initialized: vuka_trading.db
+Database initialized: vuka_trading.db
+Database initialized: vuka_trading.db
+Database initialized: vuka_trading.db
+Database initialized: vuka_trading.db
+Database initialized: vuka_trading.db
+Database initialized: vuka_trading.db
+Database initialized: vuka_trading.db
+Database initialized: vuka_trading.db
+Database initialized: vuka_trading.db
+Database initialized: vuka_trading.db
+Database initialized: vuka_trading.db
+Database initialized: vuka_trading.db
+Database initialized: vuka_trading.db
+Database initialized: vuka_trading.db
+Database initialized: vuka_trading.db
+Database initialized: vuka_trading.db
+Database initialized: vuka_trading.db
+Database initialized: vuka_trading.db
+Database initialized: vuka_trading.db
+Database initialized: vuka_trading.db
+Database initialized: vuka_trading.db
+Database initialized: vuka_trading.db
+Database initialized: vuka_trading.db
+Database initialized: vuka_trading.db
+Database initialized: vuka_trading.db
+Database initialized: vuka_trading.db
+Database initialized: vuka_trading.db
+Database initialized: vuka_trading.db
+Database initialized: vuka_trading.db
+Database initialized: vuka_trading.db
+Database initialized: vuka_trading.db
+Database initialized: vuka_trading.db
+Database initialized: vuka_trading.db
+Database initialized: vuka_trading.db
+Database initialized: vuka_trading.db
+Database initialized: vuka_trading.db
+{"timestamp": "2026-05-26T13:46:59.707851+00:00", "signal": "SELL", "symbol": "GBPUSDc", "kronos_agree": false, "confidence": 0.41, "threshold": 0.4, "decision": "VETO_BLOCKED", "mode": "enforced", "safety_mode": "VETO_SAFE", "circuit_breaker_state": "CLOSED", "reason": "Disagrees (41%) | ICT Enhanced | Continuation without BOS"}
+{"timestamp": "2026-05-26T15:02:00.564241+00:00", "signal": "SELL", "symbol": "GBPUSDc", "kronos_agree": false, "confidence": 0.51, "threshold": 0.4, "decision": "VETO_BLOCKED", "mode": "enforced", "safety_mode": "VETO_SAFE", "circuit_breaker_state": "CLOSED", "reason": "Disagrees (51%) | ICT Enhanced"}
+{"timestamp": "2026-05-26T15:17:00.770166+00:00", "signal": "SELL", "symbol": "GBPUSDc", "kronos_agree": false, "confidence": 0.51, "threshold": 0.4, "decision": "VETO_BLOCKED", "mode": "enforced", "safety_mode": "VETO_SAFE", "circuit_breaker_state": "CLOSED", "reason": "Disagrees (51%) | ICT Enhanced"}
+Database initialized: vuka_trading.db
+Database initialized: vuka_trading.db
+Database initialized: vuka_trading.db
+Database initialized: vuka_trading.db
+Database initialized: vuka_trading.db
+Database initialized: vuka_trading.db
+Database initialized: vuka_trading.db
+Database initialized: vuka_trading.db
+Database initialized: vuka_trading.db
+Database initialized: vuka_trading.db
+Database initialized: vuka_trading.db
+Database initialized: vuka_trading.db
+Database initialized: vuka_trading.db
+Database initialized: vuka_trading.db
+Database initialized: vuka_trading.db
+{"timestamp": "2026-05-27T15:02:47.164467+00:00", "signal": "SELL", "symbol": "GBPUSDc", "kronos_agree": true, "confidence": 0.52, "threshold": 0.4, "decision": "ALLOW", "mode": "enforced", "safety_mode": "VETO_SAFE", "circuit_breaker_state": "CLOSED", "reason": "Agrees (52%) | ICT Enhanced"}
+{"timestamp": "2026-05-27T15:02:47.178764+00:00", "signal": "SELL", "symbol": "EURUSDc", "kronos_agree": false, "confidence": 0.5, "threshold": 0.4, "decision": "VETO_BLOCKED", "mode": "enforced", "safety_mode": "VETO_SAFE", "circuit_breaker_state": "CLOSED", "reason": "Disagrees (50%) | ICT Enhanced"}
+{"timestamp": "2026-05-27T17:17:47.723366+00:00", "signal": "SELL", "symbol": "EURUSDc", "kronos_agree": false, "confidence": 0.5, "threshold": 0.4, "decision": "VETO_BLOCKED", "mode": "enforced", "safety_mode": "VETO_SAFE", "circuit_breaker_state": "CLOSED", "reason": "Disagrees (50%) | ICT Enhanced"}
+Database initialized: vuka_trading.db
+Database initialized: vuka_trading.db
+Database initialized: vuka_trading.db
+Database initialized: vuka_trading.db
+{"timestamp": "2026-05-28T01:46:49.166724+00:00", "signal": "SELL", "symbol": "EURUSDc", "kronos_agree": true, "confidence": 0.5, "threshold": 0.4, "decision": "ALLOW", "mode": "enforced", "safety_mode": "VETO_SAFE", "circuit_breaker_state": "CLOSED", "reason": "Agrees (50%) | ICT Enhanced"}
+{"timestamp": "2026-05-28T03:16:49.444353+00:00", "signal": "SELL", "symbol": "GBPUSDc", "kronos_agree": true, "confidence": 0.51, "threshold": 0.4, "decision": "ALLOW", "mode": "enforced", "safety_mode": "VETO_SAFE", "circuit_breaker_state": "CLOSED", "reason": "Agrees (51%) | ICT Enhanced"}
+{"timestamp": "2026-05-28T03:31:49.589182+00:00", "signal": "SELL", "symbol": "GBPUSDc", "kronos_agree": true, "confidence": 0.51, "threshold": 0.4, "decision": "ALLOW", "mode": "enforced", "safety_mode": "VETO_SAFE", "circuit_breaker_state": "CLOSED", "reason": "Agrees (51%) | ICT Enhanced"}
+{"timestamp": "2026-05-29T07:31:57.053264+00:00", "signal": "BUY", "symbol": "EURUSDc", "kronos_agree": true, "confidence": 0.5, "threshold": 0.4, "decision": "ALLOW", "mode": "enforced", "safety_mode": "VETO_SAFE", "circuit_breaker_state": "CLOSED", "reason": "Agrees (50%) | ICT Enhanced"}
+Database initialized: vuka_trading.db

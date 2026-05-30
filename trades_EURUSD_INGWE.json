@@ -82,5 +82,22 @@
     "lot_size": 0.2,
     "retcode": 10009,
     "comment": "Ingwe_EURUSD_ING"
+  },
+  {
+    "symbol": "EURUSDc",
+    "time": "2026-05-28 03:46:51",
+    "strategy": "INGWE",
+    "market_mode": "summer",
+    "session": "Asian",
+    "direction": "SELL",
+    "entry_req": 1.1614,
+    "entry_fill": 1.1614,
+    "slippage": 0.0,
+    "sl": 1.16196,
+    "tp": 1.15973,
+    "lot_size": 0.2,
+    "effective_rr": 2.98,
+    "retcode": 10009,
+    "comment": "EURIW"
   }
 ]

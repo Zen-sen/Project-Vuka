@@ -1,0 +1,24 @@
+[
+  {
+    "time": "2026-04-14 11:43:26",
+    "ticket": 280785976,
+    "entry": 1.1777400000000002,
+    "old_sl": 1.17667,
+    "new_sl": 1.17774,
+    "movement": 0.00107,
+    "label": "1:1 \u2192 SL to BE",
+    "symbol": "EURUSD",
+    "strategy": "INGWE"
+  },
+  {
+    "time": "2026-05-11 10:24:49",
+    "ticket": 305919939,
+    "entry": 1.1766900000000002,
+    "old_sl": 1.17595,
+    "new_sl": 1.17669,
+    "movement": 0.00074,
+    "label": "1:1 -> SL to BE",
+    "symbol": "EURUSD",
+    "strategy": "INGWE"
+  }
+]

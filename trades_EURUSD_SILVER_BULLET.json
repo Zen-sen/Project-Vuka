@@ -12,5 +12,22 @@
     "lot_size": 0.2,
     "retcode": 10009,
     "comment": "Ingwe_EURUSD_SIL"
+  },
+  {
+    "symbol": "EURUSDc",
+    "time": "2026-05-29 09:31:58",
+    "strategy": "SILVER_BULLET",
+    "market_mode": "summer",
+    "session": "SB_Window1",
+    "direction": "BUY",
+    "entry_req": 1.1642,
+    "entry_fill": 1.1642700000000001,
+    "slippage": 0.7,
+    "sl": 1.16348,
+    "tp": 1.16636,
+    "lot_size": 0.2,
+    "effective_rr": 2.65,
+    "retcode": 10009,
+    "comment": "EURSB"
   }
 ]

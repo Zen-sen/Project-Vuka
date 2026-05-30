@@ -1,0 +1,13 @@
+[
+  {
+    "time": "2026-05-15 07:06:01",
+    "ticket": 310028960,
+    "entry": 1.3374000000000001,
+    "old_sl": 1.33852,
+    "new_sl": 1.3374,
+    "movement": -0.00112,
+    "label": "1:1 -> SL to BE",
+    "symbol": "GBPUSD",
+    "strategy": "INGWE"
+  }
+]
