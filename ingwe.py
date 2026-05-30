@@ -293,6 +293,25 @@ elif STRATEGY == "ICT_M1":
     DATA_STALE_MINUTES_ASIAN = 5
     MT5_RETRY_ATTEMPTS       = 3
     MT5_RETRY_DELAY_SEC      = 10
+elif _arg_symbol in ("EURUSD", "USDJPY"):
+    TIMEFRAME                = mt5.TIMEFRAME_M15
+    RISK_PERCENT             = 1.0
+    RISK_REWARD_RATIO        = 3.0   # v5.0: Reduced from 3.5 for better win rate
+    ATR_PERIOD               = 14
+    ATR_MULTIPLIER           = 1.5
+    MIN_SL_ATR_MULTIPLIER    = 0.8   # v5.0: Increased from 0.5 for more breathing room
+    LIMIT_ORDER_EXPIRY_CANDLES = 4
+    ADX_PERIOD               = 14
+    ADX_MIN_THRESHOLD        = 25
+    MIN_SPREAD_PIPS          = 0.0002
+    MAX_DAILY_LOSS           = 50.0
+    MAX_DRAWDOWN_PCT         = 10.0
+    HARD_LOT_CAP             = 0.20
+    SCAN_INTERVAL_SEC        = 900
+    DATA_STALE_MINUTES       = 30
+    DATA_STALE_MINUTES_ASIAN = 90
+    MT5_RETRY_ATTEMPTS       = 3
+    MT5_RETRY_DELAY_SEC      = 30
 else:
     TIMEFRAME                = mt5.TIMEFRAME_M15
     RISK_PERCENT             = 1.0
@@ -302,7 +321,7 @@ else:
     MIN_SL_ATR_MULTIPLIER    = 0.8   # v5.0: Increased from 0.5 for more breathing room
     LIMIT_ORDER_EXPIRY_CANDLES = 4
     ADX_PERIOD               = 14
-    ADX_MIN_THRESHOLD        = 15    # Reduced from 20 to allow more trades in ranging markets
+    ADX_MIN_THRESHOLD        = 20    # Conservative middle ground — avoids ranging markets where ICT setups fail
     MIN_SPREAD_PIPS          = 0.0002
     MAX_DAILY_LOSS           = 50.0
     MAX_DRAWDOWN_PCT         = 10.0
