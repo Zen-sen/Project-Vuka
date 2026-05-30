@@ -209,7 +209,7 @@ class Supervisor:
                         # Restarting the server requires a process kill/start
                         # We'll implement this via a subprocess call to the server
                         logger.info("Restarting Kronos Server...")
-                        subprocess.Popen([sys.executable, "kronos_server.py"], shell=True)
+                        subprocess.Popen([sys.executable, "kronos_server.py"])
                 
                 # 2. Health Check
                 crashed = self.check_health()
