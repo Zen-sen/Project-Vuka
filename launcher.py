@@ -16,7 +16,7 @@ VUKA_DIR   = Path(__file__).parent.resolve()
 PYTHON     = sys.executable
 BOOT_DELAY = 2       # seconds between bot instance starts
 KRONOS_URL = "http://127.0.0.1:8000/health"
-KRONOS_MAX_WAIT = 30  # seconds to wait for Kronos to be ready
+KRONOS_MAX_WAIT = 60  # seconds to wait for Kronos to be ready (model load can take 30-45s)
 
 DETACHED = 0x00000008          # Windows: DETACHED_PROCESS
 NO_WIN   = subprocess.CREATE_NO_WINDOW
