@@ -1,11 +1,12 @@
 """
-Project Vuka — Python Launcher
+Project Vuka -- Python Launcher
 Replaces start_all.bat as the single entry point.
 Works correctly regardless of how it's invoked (interactive terminal,
 double-click, Task Scheduler, subprocess call).
 """
 import sys
 import time
+import socket
 import subprocess
 import psutil
 import urllib.request
@@ -45,10 +46,16 @@ def launch(label: str, script: str, *args, visible: bool = False) -> subprocess.
     """Launch a Python script as a detached process."""
     cmd = [PYTHON, script, *args]
     if visible:
+        log_path = VUKA_DIR / "logs" / f"{script}.log"
+        log_path.parent.mkdir(exist_ok=True)
+        logf = open(log_path, "a", buffering=1)
+        logf.write(f"\n--- {time.strftime('%Y-%m-%d %H:%M:%S')} ---\n")
         proc = subprocess.Popen(
             cmd,
             cwd=str(VUKA_DIR),
-            creationflags=subprocess.CREATE_NEW_CONSOLE,
+            stdout=logf,
+            stderr=subprocess.STDOUT,
+            creationflags=DETACHED | NO_WIN,
         )
     else:
         proc = subprocess.Popen(
@@ -58,7 +65,7 @@ def launch(label: str, script: str, *args, visible: bool = False) -> subprocess.
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
-    log(f"  Started {label} — PID {proc.pid}")
+    log(f"  Started {label} -- PID {proc.pid}")
     return proc
 
 def wait_for_kronos(timeout: int = KRONOS_MAX_WAIT) -> bool:
@@ -66,15 +73,19 @@ def wait_for_kronos(timeout: int = KRONOS_MAX_WAIT) -> bool:
     log(f"Waiting for Kronos (max {timeout}s)...")
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.settimeout(1)
         try:
-            with urllib.request.urlopen(KRONOS_URL, timeout=2) as r:
+            s.connect(('127.0.0.1', 8000))
+            s.close()
+            with urllib.request.urlopen(KRONOS_URL, timeout=10) as r:
                 if r.status == 200:
-                    log("  Kronos ready \u2713")
+                    log("  Kronos ready [OK]")
                     return True
         except Exception:
             pass
         time.sleep(1)
-    log("  !! Kronos did not respond within timeout — bots will start in VETO_SAFE mode")
+    log("  !! Kronos did not respond within timeout -- bots will start in VETO_SAFE mode")
     return False
 
 def kill_port_8000():
@@ -91,7 +102,7 @@ def kill_port_8000():
 def main():
     print()
     print("=" * 50)
-    print("   PROJECT VUKA — ONE-CLICK LAUNCHER")
+    print("   PROJECT VUKA -- ONE-CLICK LAUNCHER")
     print("=" * 50)
     print()
 
@@ -115,8 +126,8 @@ def main():
     print()
     print("=" * 50)
     print("   ALL SYSTEMS STARTED")
-    print("   Run:  python launcher.py stop    — kill everything")
-    print("         python launcher.py status  — check what's running")
+    print("   Run:  python launcher.py stop    -- kill everything")
+    print("         python launcher.py status  -- check what's running")
     print("=" * 50)
     print()
 
