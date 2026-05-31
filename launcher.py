@@ -21,6 +21,7 @@ KRONOS_MAX_WAIT = 60  # seconds to wait for Kronos to be ready (model load can t
 
 DETACHED = 0x00000008          # Windows: DETACHED_PROCESS
 NO_WIN   = subprocess.CREATE_NO_WINDOW
+BREAKAWAY = 0x01000000        # Windows: CREATE_BREAKAWAY_FROM_JOB
 
 def log(msg: str):
     ts = time.strftime("%H:%M:%S")
@@ -46,16 +47,10 @@ def launch(label: str, script: str, *args, visible: bool = False) -> subprocess.
     """Launch a Python script as a detached process."""
     cmd = [PYTHON, script, *args]
     if visible:
-        log_path = VUKA_DIR / "logs" / f"{script}.log"
-        log_path.parent.mkdir(exist_ok=True)
-        logf = open(log_path, "a", buffering=1)
-        logf.write(f"\n--- {time.strftime('%Y-%m-%d %H:%M:%S')} ---\n")
         proc = subprocess.Popen(
             cmd,
             cwd=str(VUKA_DIR),
-            stdout=logf,
-            stderr=subprocess.STDOUT,
-            creationflags=DETACHED | NO_WIN,
+            creationflags=subprocess.CREATE_NEW_CONSOLE | BREAKAWAY,
         )
     else:
         proc = subprocess.Popen(
