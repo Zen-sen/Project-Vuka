@@ -134,7 +134,7 @@ class Supervisor:
                     continue
                 cmd = ' '.join(cmdline)
                 if 'python' in proc.info.get('name', '').lower():
-                    if any(tag in cmd for tag in ['ingwe.py', 'kronos_server.py', 'dashboard.py']):
+                    if any(tag in cmd for tag in ['ingwe.py', 'dashboard.py']):
                         proc.kill()
                         killed.append((proc.info['pid'], cmd.split('\\')[-1].split('/')[-1]))
             except (psutil.NoSuchProcess, psutil.AccessDenied):
