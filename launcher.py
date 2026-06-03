@@ -14,7 +14,7 @@ import urllib.error
 from pathlib import Path
 
 VUKA_DIR   = Path(__file__).parent.resolve()
-PYTHON     = sys.executable
+PYTHON     = r"C:\Users\classic\AppData\Local\Python\pythoncore-3.14-64\python.exe"
 BOOT_DELAY = 2       # seconds between bot instance starts
 KRONOS_URL = "http://127.0.0.1:8000/health"
 KRONOS_MAX_WAIT = 60  # seconds to wait for Kronos to be ready (model load can take 30-45s)
@@ -50,7 +50,7 @@ def launch(label: str, script: str, *args, visible: bool = False) -> subprocess.
         proc = subprocess.Popen(
             cmd,
             cwd=str(VUKA_DIR),
-            creationflags=subprocess.CREATE_NEW_CONSOLE | BREAKAWAY,
+            creationflags=subprocess.CREATE_NEW_CONSOLE,
         )
     else:
         proc = subprocess.Popen(

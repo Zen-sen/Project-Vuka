@@ -99,5 +99,24 @@
     "effective_rr": 2.98,
     "retcode": 10009,
     "comment": "EURIW"
+  },
+  {
+    "symbol": "EURUSDc",
+    "time": "2026-06-03 09:32:28",
+    "strategy": "INGWE",
+    "market_mode": "summer",
+    "session": "London Open",
+    "direction": "SELL",
+    "entry_req": 1.16152,
+    "entry_fill": 1.16152,
+    "slippage": 0.0,
+    "sl": 1.16214,
+    "tp": 1.15967,
+    "lot_size": 0.2,
+    "effective_rr": 2.98,
+    "retcode": 10009,
+    "comment": "EURIW",
+    "position_id": 327757732,
+    "pnl_usd": null
   }
 ]

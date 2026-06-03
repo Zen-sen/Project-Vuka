@@ -23,8 +23,8 @@ goto end
 
 :stop
 echo Stopping all Vuka processes...
-powershell -Command "Get-Process python | Where-Object { $_.CommandLine -match 'supervisor.py|ingwe.py|dashboard.py|kronos_server' } | ForEach-Object { $_.Kill(); Write-Host ('Killed ' + $_.Id) }" 2>nul
-echo All processes stopped.
+"%PYTHON%" launcher.py stop
+echo.
 goto end
 
 :status
