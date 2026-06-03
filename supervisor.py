@@ -114,10 +114,79 @@ class BotInstance:
         self.start()
 
 
+class ManagedProcess:
+    def __init__(self, name: str, script: str, args: list = None):
+        self.name = name
+        self.script = script
+        self.args = args or []
+        self.process: Optional[subprocess.Popen] = None
+        self.crash_count = 0
+        self.last_crash_time: Optional[datetime] = None
+
+    @property
+    def is_running(self) -> bool:
+        if self.process is None:
+            return False
+        return self.process.poll() is None
+
+    def start(self) -> bool:
+        if self.is_running:
+            logger.info(f"{self.name} is already running (PID: {self.process.pid})")
+            return True
+        logger.info(f"Starting {self.name} ({self.script})...")
+        try:
+            log_file = LOG_DIR / f"{self.name.lower().replace(' ', '_')}.log"
+            self.process = subprocess.Popen(
+                [sys.executable, self.script, *self.args],
+                cwd=str(PROJECT_DIR),
+                stdout=open(log_file, "a"),
+                stderr=subprocess.STDOUT,
+                stdin=subprocess.DEVNULL,
+                creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if os.name == 'nt' else 0
+            )
+            logger.info(f"{self.name} started (PID: {self.process.pid})")
+            self.crash_count = 0
+            return True
+        except Exception as e:
+            logger.error(f"Failed to start {self.name}: {e}")
+            return False
+
+    def stop(self):
+        if self.process and self.is_running:
+            logger.info(f"Stopping {self.name} (PID: {self.process.pid})...")
+            try:
+                if os.name == 'nt':
+                    self.process.terminate()
+                else:
+                    os.killpg(os.getpgid(self.process.pid), signal.SIGTERM)
+                self.process.wait(timeout=10)
+            except Exception as e:
+                logger.warning(f"Error stopping {self.name}: {e}")
+                try:
+                    if os.name == 'nt':
+                        self.process.kill()
+                    else:
+                        os.killpg(os.getpgid(self.process.pid), signal.SIGKILL)
+                except:
+                    pass
+            self.process = None
+
+    def restart(self):
+        self.stop()
+        self.crash_count += 1
+        self.last_crash_time = datetime.now()
+        if self.crash_count >= MAX_CRASHES_BEFORE_ALERT:
+            logger.warning(f"{self.name} crashed {self.crash_count} times! Manual intervention may be needed.")
+        logger.info(f"Restarting {self.name} in {RESTART_DELAY}s (crash #{self.crash_count})...")
+        time.sleep(RESTART_DELAY)
+        self.start()
+
+
 class Supervisor:
     def __init__(self):
         self.bots: Dict[str, BotInstance] = {}
         self.running = False
+        self.kronos_ok = False
         
         for symbol, strategy in BOT_SCRIPTS:
             bot = BotInstance(symbol, strategy)
@@ -157,10 +226,30 @@ class Supervisor:
         self.kill_stale_processes()
         time.sleep(1)
         
+        # Check if Kronos is already running (external process)
+        self.kronos_ok = self._check_kronos()
+        if self.kronos_ok:
+            logger.info("Kronos already running on port 8000 — skipping managed launch")
+        else:
+            logger.warning("Kronos not detected on port 8000 — bots will start in VETO_SAFE mode")
+        
         for name, bot in self.bots.items():
             bot.start()
             time.sleep(2)  # Stagger startup
     
+    @staticmethod
+    def _check_kronos() -> bool:
+        """Check if Kronos is alive via port 8000."""
+        import socket
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            s.settimeout(2)
+            s.connect(('127.0.0.1', 8000))
+            s.close()
+            return True
+        except Exception:
+            return False
+
     def stop_all(self):
         logger.info("Stopping all bot instances...")
         for name, bot in self.bots.items():
@@ -169,6 +258,9 @@ class Supervisor:
     
     def check_health(self):
         crashed = []
+        kronos_alive = self._check_kronos()
+        if not kronos_alive:
+            logger.warning("Kronos not responding on port 8000 — bots will use VETO_SAFE mode")
         for name, bot in self.bots.items():
             if not bot.is_running:
                 crashed.append(bot)
