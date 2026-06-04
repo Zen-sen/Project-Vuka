@@ -298,7 +298,7 @@ elif _arg_symbol in ("EURUSD", "USDJPY"):
     RISK_PERCENT             = 1.0
     RISK_REWARD_RATIO        = 3.0   # v5.0: Reduced from 3.5 for better win rate
     ATR_PERIOD               = 14
-    ATR_MULTIPLIER           = 1.5
+    ATR_MULTIPLIER           = 3.0
     MIN_SL_ATR_MULTIPLIER    = 0.8   # v5.0: Increased from 0.5 for more breathing room
     LIMIT_ORDER_EXPIRY_CANDLES = 4
     ADX_PERIOD               = 14
