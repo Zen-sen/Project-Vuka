@@ -118,10 +118,17 @@ class DatabaseManager:
                 symbol TEXT NOT NULL,
                 strategy TEXT NOT NULL,
                 consecutive_losses INTEGER DEFAULT 0,
+                last_counted_ticket INTEGER DEFAULT 0,
                 last_update DATETIME DEFAULT CURRENT_TIMESTAMP,
                 UNIQUE(date, symbol, strategy)
             )
         """)
+        
+        # Add last_counted_ticket column for existing databases (safe if already exists)
+        try:
+            cursor.execute("ALTER TABLE loss_tracking ADD COLUMN last_counted_ticket INTEGER DEFAULT 0")
+        except:
+            pass
         
         # SL movements table
         cursor.execute("""
@@ -323,39 +330,42 @@ class DatabaseManager:
             logger.error(f"Error getting session status: {e}")
             return False
     
-    def update_loss_tracking(self, date: str, symbol: str, strategy: str, consecutive_losses: int):
-        """Update consecutive loss counter."""
+    def update_loss_tracking(self, date: str, symbol: str, strategy: str, consecutive_losses: int, last_counted_ticket: int = 0):
+        """Update consecutive loss counter and last counted deal ticket."""
         try:
             with self._transaction() as conn:
                 conn.execute("""
                     INSERT INTO loss_tracking
-                    (date, symbol, strategy, consecutive_losses, last_update)
-                    VALUES (?, ?, ?, ?, ?)
+                    (date, symbol, strategy, consecutive_losses, last_counted_ticket, last_update)
+                    VALUES (?, ?, ?, ?, ?, ?)
                     ON CONFLICT(date, symbol, strategy) DO UPDATE SET
                         consecutive_losses = ?,
+                        last_counted_ticket = ?,
                         last_update = CURRENT_TIMESTAMP
                 """, (
-                    date, symbol, strategy, consecutive_losses, 
+                    date, symbol, strategy, consecutive_losses, last_counted_ticket,
                     datetime.now(timezone.utc),
-                    consecutive_losses
+                    consecutive_losses, last_counted_ticket
                 ))
         except Exception as e:
             logger.error(f"Error updating loss tracking: {e}")
             raise
     
-    def get_consecutive_losses(self, date: str, symbol: str, strategy: str) -> int:
-        """Get consecutive loss count for today."""
+    def get_loss_tracking(self, date: str, symbol: str, strategy: str) -> tuple:
+        """Get (consecutive_losses, last_counted_ticket) for today."""
         try:
             conn = self._get_connection()
             cursor = conn.execute("""
-                SELECT consecutive_losses FROM loss_tracking
+                SELECT consecutive_losses, last_counted_ticket FROM loss_tracking
                 WHERE date = ? AND symbol = ? AND strategy = ?
             """, (date, symbol, strategy))
             row = cursor.fetchone()
-            return row["consecutive_losses"] if row else 0
+            if row:
+                return (row["consecutive_losses"], row["last_counted_ticket"])
+            return (0, 0)
         except Exception as e:
             logger.error(f"Error getting loss tracking: {e}")
-            return 0
+            return (0, 0)
     
     def insert_sl_movement(self, sl_move_dict: Dict[str, Any]) -> int:
         """Insert SL movement record."""

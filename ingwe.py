@@ -721,26 +721,26 @@ def get_daily_pnl() -> float:
 
 def check_consecutive_losses() -> bool:
     """
-    v4.4 FIX-2: Persistent consecutive loss tracking across days.
-    Loads saved loss count from sessions file, checks against threshold.
+    v5.1 FIX: Persistent consecutive loss tracking across days.
+    Loads saved loss count, checks against threshold (3 losses = pause).
     """
-    loss_count = load_consecutive_losses()
-    if loss_count >= 2:
+    loss_count, _ = load_consecutive_losses()
+    if loss_count >= 3:
         log(f"Consecutive loss limit reached ({loss_count} losses) — Ingwe pauses.", "GUARD")
         return True
     return False
 
 
-def load_consecutive_losses() -> int:
+def load_consecutive_losses() -> tuple:
     """
-    Load consecutive loss count from database or JSON fallback.
+    Load (consecutive_losses, last_counted_ticket) from database or JSON fallback.
     Persists across days for multi-day drawdown protection.
     """
     today = datetime.now().strftime("%Y-%m-%d")
     
     if DB_AVAILABLE:
         try:
-            return DB.get_consecutive_losses(today, _arg_symbol, STRATEGY)
+            return DB.get_loss_tracking(today, _arg_symbol, STRATEGY)
         except Exception as e:
             log(f"Database read error: {e}. Falling back to JSON.", "WARN")
     
@@ -750,31 +750,32 @@ def load_consecutive_losses() -> int:
             with open(SESSIONS_FILE, "r") as f:
                 data = json.load(f)
             if data.get("date") == today:
-                return data.get("consecutive_losses", 0)
+                return (data.get("consecutive_losses", 0), data.get("last_counted_ticket", 0))
         except (json.JSONDecodeError, KeyError):
             pass
-    return 0
+    return (0, 0)
 
 
-def save_consecutive_losses(count: int):
+def save_consecutive_losses(count: int, last_ticket: int = 0):
     """
-    Save consecutive loss count to database (primary) or JSON fallback.
-    Used to track multi-day losing streaks.
+    Save consecutive loss count and last counted deal ticket to database (primary)
+    or JSON fallback.
     """
     today = datetime.now().strftime("%Y-%m-%d")
     
     if DB_AVAILABLE:
         try:
-            DB.update_loss_tracking(today, _arg_symbol, STRATEGY, count)
+            DB.update_loss_tracking(today, _arg_symbol, STRATEGY, count, last_ticket)
             return
         except Exception as e:
             log(f"Database write error: {e}. Falling back to JSON.", "WARN")
     
-    # JSON fallback (dual-write for safety during transition)
+    # JSON fallback
     payload = {
         "date": today,
         "sessions": list(sessions_traded_today),
-        "consecutive_losses": count
+        "consecutive_losses": count,
+        "last_counted_ticket": last_ticket
     }
     tmp = SESSIONS_FILE + ".tmp"
     with open(tmp, "w") as f:
@@ -784,8 +785,9 @@ def save_consecutive_losses(count: int):
 
 def update_consecutive_losses():
     """
-    v4.4 FIX-2: Update consecutive loss counter based on today's closed trades.
-    Call this at start of each scan cycle.
+    v5.1 FIX: Update consecutive loss counter based on today's closed trades.
+    Tracks the last counted deal ticket to avoid re-counting the same deal
+    across multiple scan cycles.
     """
     midnight = _server_midnight()
     deals = mt5_fetch_with_retry(mt5.history_deals_get, midnight, _server_now())
@@ -797,13 +799,18 @@ def update_consecutive_losses():
         return
     
     last_deal = own_deals[-1]
+    current_count, last_ticket = load_consecutive_losses()
+    
+    if last_deal.ticket == last_ticket:
+        return
+    
     if last_deal.profit < 0:
-        new_count = load_consecutive_losses() + 1
-        save_consecutive_losses(new_count)
+        new_count = current_count + 1
+        save_consecutive_losses(new_count, last_deal.ticket)
         log(f"Loss recorded — consecutive losses: {new_count}", "INFO")
     else:
-        if load_consecutive_losses() > 0:
-            save_consecutive_losses(0)
+        if current_count > 0:
+            save_consecutive_losses(0, last_deal.ticket)
             log("Win recorded — consecutive loss counter reset.", "INFO")
 
 
