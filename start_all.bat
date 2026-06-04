@@ -23,6 +23,11 @@ echo [2/3] Starting Supervisor (manages all bots)...
 start "Vuka Supervisor" /min "%PYTHON%" supervisor.py
 timeout /t 3 /nobreak > nul
 
+REM [2b/3] GBPUSD LONDON_OPEN — standalone visible window
+echo [--] Spawning: GBPUSD - LONDON_OPEN
+start "Ingwe - GBPUSD LondonOpen" cmd /k "%PYTHON%" ingwe.py GBPUSD LONDON_OPEN
+timeout /t 2 /nobreak > nul
+
 REM [3/3] Dashboard
 echo [3/3] Opening Dashboard...
 start "Vuka Dashboard" /min "%PYTHON%" dashboard.py
@@ -32,9 +37,10 @@ echo ==========================================
 echo  ALL SYSTEMS STARTED
 echo ==========================================
 echo.
-echo  Kronos      : Visible window — AI trade validation (check it's running)
-echo  Supervisor  : Manages 4 bots (EURUSD/GBPUSD x INGWE/SB)
-echo  Dashboard   : Live fleet monitor
+echo  Kronos           : Visible window — AI trade validation (check it's running)
+echo  Supervisor       : Manages 4 bots (EURUSD/GBPUSD x INGWE/SB)
+echo  LondonOpen       : GBPUSD London Open standalone window
+echo  Dashboard        : Live fleet monitor
 echo.
 echo  Commands:
 echo    vuka status    —  Check what's running + flag missing components

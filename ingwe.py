@@ -13,7 +13,7 @@ import codecs
 
 # ── ARGUMENT PARSING (Moved to top for Logger) ────────────────
 _valid_symbols    = ("EURUSD", "GBPUSD", "USDJPY", "BTCUSD")
-_valid_strategies = ("INGWE", "SILVER_BULLET", "ICT_M1")
+_valid_strategies = ("INGWE", "SILVER_BULLET", "ICT_M1", "LONDON_OPEN")
 
 _arg_symbol   = sys.argv[1].upper() if len(sys.argv) > 1 else "EURUSD"
 _arg_strategy = sys.argv[2].upper() if len(sys.argv) > 2 else "INGWE"
@@ -152,8 +152,7 @@ except ImportError:
 #     Loss counter now persists across days via sessions file.
 #     Bot pauses after 2 consecutive losses.
 #
-#   FIX-3: GBPUSD London Open disabled.
-#     0% win rate historically — now skipped for GBPUSD_INGWE.
+#   FIX-3: GBPUSD London Open — enabled both directions (guard removed per user request).
 #
 #   FIX-4: SL movement tracking added.
 #     All trailing SL moves logged to sl_moves_{symbol}_{strategy}.json
@@ -291,6 +290,25 @@ elif STRATEGY == "ICT_M1":
     SCAN_INTERVAL_SEC        = 15
     DATA_STALE_MINUTES       = 2
     DATA_STALE_MINUTES_ASIAN = 5
+    MT5_RETRY_ATTEMPTS       = 3
+    MT5_RETRY_DELAY_SEC      = 10
+elif STRATEGY == "LONDON_OPEN":
+    TIMEFRAME                = mt5.TIMEFRAME_M15
+    RISK_PERCENT             = 1.0
+    RISK_REWARD_RATIO        = 1.0   # Backtest-optimized: 43.8% WR, +9.8% return, PF 7.01
+    ATR_PERIOD               = 14
+    ATR_MULTIPLIER           = 3.0
+    MIN_SL_ATR_MULTIPLIER    = 0.8
+    LIMIT_ORDER_EXPIRY_CANDLES = 4
+    ADX_PERIOD               = 14
+    ADX_MIN_THRESHOLD        = 25
+    MIN_SPREAD_PIPS          = 0.0002
+    MAX_DAILY_LOSS           = 50.0
+    MAX_DRAWDOWN_PCT         = 10.0
+    HARD_LOT_CAP             = 0.20
+    SCAN_INTERVAL_SEC        = 60
+    DATA_STALE_MINUTES       = 5
+    DATA_STALE_MINUTES_ASIAN = 10
     MT5_RETRY_ATTEMPTS       = 3
     MT5_RETRY_DELAY_SEC      = 10
 elif _arg_symbol in ("EURUSD", "USDJPY"):
@@ -2012,9 +2030,6 @@ def evaluate_ingwe(df, fvgs, sweep, sweep_level, price, atr, lot_size, session):
             if plus_di is None or minus_di is None or plus_di <= minus_di:
                 log(f"DI filter: +DI({plus_di}) <= -DI({minus_di}). Skip.", "GUARD")
                 continue
-            if _arg_symbol == "GBPUSD" and session == "London Open":
-                log("GBPUSD London Open BUX blocked (23.1% WR). SELL only.", "GUARD")
-                continue
             if not check_premium_discount_zone(df, price, "BUY"):
                 log("Not in discount zone. Skip.", "GUARD")
                 continue
@@ -2214,9 +2229,6 @@ def evaluate_ingwe(df, fvgs, sweep, sweep_level, price, atr, lot_size, session):
         if sweep == "SWEEP_HIGH" and fvg_type == "BULLISH_FVG" and trend == "BULLISH":
             if plus_di is None or minus_di is None or plus_di <= minus_di:
                 log(f"DI filter: +DI({plus_di}) <= -DI({minus_di}). Skip.", "GUARD")
-                continue
-            if _arg_symbol == "GBPUSD" and session == "London Open":
-                log("GBPUSD London Open BUX blocked (23.1% WR). SELL only.", "GUARD")
                 continue
             # v5.0 FIX: Require strong HTF bias for BUY signals
             if not htf_bias_ok:
@@ -2591,11 +2603,6 @@ def run_agent():
         if not active:
             log("No killzone active. Ingwe watches...")
             return
-        
-        if _arg_symbol == "GBPUSD" and active == "London Open":
-            log("GBPUSD London Open — SELL only (BUY blocked: 23.1% WR historically).", "GUARD")
-
-
         
         s, e = get_active_killzones()[active]
         log(f"KILLZONE: {active} ({s:02d}:00–{e:02d}:00 SAST)")
