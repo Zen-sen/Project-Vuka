@@ -1,9 +1,11 @@
 {
   "bot": "Ingwe",
-  "instance": "GBPUSD_SILVER_BULLET",
-  "last_updated": "2026-06-03T22:17:33.517158+00:00",
-  "equity": 4222.31,
-  "daily_pnl": 0,
-  "active_sessions": [],
+  "instance": "GBPUSD_LONDON_OPEN",
+  "last_updated": "2026-06-08T22:31:33.614362+00:00",
+  "equity": 4208.71,
+  "daily_pnl": 0.0,
+  "active_sessions": [
+    "Asian"
+  ],
   "status": "HEALTHY"
 }

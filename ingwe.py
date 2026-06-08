@@ -1803,7 +1803,7 @@ def manage_open_positions():
                 new_sl = round(entry, 5)
                 if new_sl > sl:
                     _modify_sl(pos, new_sl, "1:1 -> SL to BE")
-            elif at_05r and sl_below_be:
+            elif at_05r and sl_below_be and SYMBOL != "GBPUSDc":
                 new_sl = round(entry, 5)
                 if new_sl > sl:
                     _modify_sl(pos, new_sl, "0.5:1 -> SL to BE")
@@ -1824,7 +1824,7 @@ def manage_open_positions():
                 new_sl = round(entry, 5)
                 if new_sl < sl:
                     _modify_sl(pos, new_sl, "1:1 -> SL to BE")
-            elif at_05r and sl_above_be:
+            elif at_05r and sl_above_be and SYMBOL != "GBPUSDc":
                 new_sl = round(entry, 5)
                 if new_sl < sl:
                     _modify_sl(pos, new_sl, "0.5:1 -> SL to BE")

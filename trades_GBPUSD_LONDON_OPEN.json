@@ -1,0 +1,21 @@
+[
+  {
+    "symbol": "GBPUSDc",
+    "time": "2026-06-08 04:46:27",
+    "strategy": "LONDON_OPEN",
+    "market_mode": "summer",
+    "session": "Asian",
+    "direction": "SELL",
+    "entry_req": 1.33383,
+    "entry_fill": 1.3338400000000001,
+    "slippage": 0.1,
+    "sl": 1.33615,
+    "tp": 1.33151,
+    "lot_size": 0.2,
+    "effective_rr": 1.01,
+    "retcode": 10009,
+    "comment": "GBPIW",
+    "position_id": 332733435,
+    "pnl_usd": null
+  }
+]

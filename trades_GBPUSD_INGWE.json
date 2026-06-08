@@ -213,5 +213,24 @@
     "comment": "GBPIW",
     "position_id": 328610312,
     "pnl_usd": null
+  },
+  {
+    "symbol": "GBPUSDc",
+    "time": "2026-06-08 04:46:27",
+    "strategy": "INGWE",
+    "market_mode": "summer",
+    "session": "Asian",
+    "direction": "SELL",
+    "entry_req": 1.33383,
+    "entry_fill": 1.3338400000000001,
+    "slippage": 0.1,
+    "sl": 1.33499,
+    "tp": 1.33036,
+    "lot_size": 0.2,
+    "effective_rr": 3.03,
+    "retcode": 10009,
+    "comment": "GBPIW",
+    "position_id": 332733439,
+    "pnl_usd": null
   }
 ]

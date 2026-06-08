@@ -118,5 +118,24 @@
     "comment": "EURIW",
     "position_id": 327757732,
     "pnl_usd": null
+  },
+  {
+    "symbol": "EURUSDc",
+    "time": "2026-06-08 04:46:27",
+    "strategy": "INGWE",
+    "market_mode": "summer",
+    "session": "Asian",
+    "direction": "SELL",
+    "entry_req": 1.15292,
+    "entry_fill": 1.1529200000000002,
+    "slippage": 0.0,
+    "sl": 1.15468,
+    "tp": 1.14764,
+    "lot_size": 0.2,
+    "effective_rr": 3.0,
+    "retcode": 10009,
+    "comment": "EURIW",
+    "position_id": 332733434,
+    "pnl_usd": null
   }
 ]
