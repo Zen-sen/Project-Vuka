@@ -126,8 +126,8 @@ class CanaryMonitor:
         print(f"  Avg RR achieved:      {trade_stats['avg_rr']:.2f}:1")
         
         print(f"\n[DATABASE]")
-        print(f"  Connected:            {'✓ YES' if db_health['connected'] else '✗ NO'}")
-        print(f"  Writable:             {'✓ YES' if db_health['writable'] else '✗ NO'}")
+        print(f"  Connected:            {'[OK] YES' if db_health['connected'] else '[X] NO'}")
+        print(f"  Writable:             {'[OK] YES' if db_health['writable'] else '[X] NO'}")
         print(f"  Size:                 {db_health['size_mb']:.2f} MB")
         
         print("\n" + "=" * 80)
@@ -135,7 +135,7 @@ class CanaryMonitor:
         # Checkpoints
         if elapsed >= 24:
             print("[CHECKPOINT 4 - CANARY COMPLETE]")
-            print("  ✓ 24-hour period complete")
+            print("  [OK] 24-hour period complete")
             print("  Proceed to Phase 2b: Full Rollout")
             return "complete"
         elif elapsed >= 18:
@@ -165,7 +165,7 @@ class CanaryMonitor:
                 status = self.print_status()
                 
                 if status == "complete":
-                    print("\n✓ CANARY DEPLOYMENT COMPLETE")
+                    print("\n[OK] CANARY DEPLOYMENT COMPLETE")
                     print("Decision: Ready for Phase 2b - Full Rollout")
                     break
                 

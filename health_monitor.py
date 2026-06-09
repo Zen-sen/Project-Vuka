@@ -4,6 +4,7 @@ from datetime import datetime, timedelta, timezone
 from collections import deque
 import logging
 from typing import Optional, List, Dict, Any
+from notifier import send as send_notification
 
 logger = logging.getLogger(__name__)
 
@@ -281,12 +282,20 @@ class HealthMonitor:
         return [a for a in anomalies["anomalies"] if a.get("severity") == "ERROR"]
     
     def log_alert(self, alert: Dict):
-        """Log alert to file for analysis."""
+        """Log alert to file for analysis and send notification."""
         try:
             with open(self.alert_log_file, 'a') as f:
                 f.write(json.dumps(alert) + "\n")
         except Exception as e:
             logger.error(f"Alert logging failed: {str(e)}")
+
+        severity = alert.get("severity", "INFO")
+        if severity in ("ERROR", "WARN"):
+            send_notification(
+                title=f"HEALTH {severity}",
+                message=alert.get("message", str(alert)),
+                level=severity,
+            )
 
 
 if __name__ == "__main__":
@@ -310,6 +319,6 @@ if __name__ == "__main__":
     
     # Check health
     report = monitor.get_health_report()
-    print(f"✅ Status: {report['system_status']}")
-    print(f"✅ Anomalies: {len(report['recent_anomalies'])}")
-    print(f"✅ Trades: {report['metrics']['total_trades']}")
+    print(f"[OK] Status: {report['system_status']}")
+    print(f"[OK] Anomalies: {len(report['recent_anomalies'])}")
+    print(f"[OK] Trades: {report['metrics']['total_trades']}")

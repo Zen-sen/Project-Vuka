@@ -189,7 +189,7 @@ class TickEngine:
                     idle_secs = (datetime.now() - idle_start).total_seconds()
                     if idle_secs >= self.max_idle_seconds:
                         if self.verbose:
-                            print(f"[TickEngine] {idle_secs:.0f}s without ticks — "
+                            print(f"[TickEngine] {idle_secs:.0f}s without ticks -- "
                                   f"heartbeat fallback")
                         yield HeartbeatTick()
                         idle_start = datetime.now()
@@ -234,7 +234,7 @@ class TickEngine:
                     
                     try:
                         if self.verbose:
-                            print(f"[TickEngine] → Executing callback at {candle_time}")
+                            print(f"[TickEngine] -> Executing callback at {candle_time}")
                         
                         self.callback(candle_time)
                         

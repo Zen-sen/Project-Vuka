@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Dict, Optional
 from unified_logger import get_logger
 from database_manager import get_db
+from notifier import send as send_notification
 
 # Configuration
 PROJECT_DIR = Path(__file__).parent.absolute()
@@ -106,9 +107,15 @@ class BotInstance:
         self.crash_count += 1
         self.last_crash_time = datetime.now()
         
-        if self.crash_count >= MAX_CRASHES_BEFORE_ALERT:
-            logger.warning(f"{self.name} crashed {self.crash_count} times! Manual intervention may be needed.")
+        msg = f"{self.name} crashed #{self.crash_count} -- restarting in {RESTART_DELAY}s"
+        logger.warning(msg)
         
+        if self.crash_count >= MAX_CRASHES_BEFORE_ALERT:
+            alert = f"{self.name} crashed {self.crash_count} times! Manual intervention may be needed."
+            logger.warning(alert)
+            send_notification("SUPERVISOR ALERT", alert, level="ERROR")
+        
+        send_notification("BOT CRASH", msg, level="WARN")
         logger.info(f"Restarting {self.name} in {RESTART_DELAY}s (crash #{self.crash_count})...")
         time.sleep(RESTART_DELAY)
         self.start()
@@ -229,13 +236,15 @@ class Supervisor:
         # Check if Kronos is already running (external process)
         self.kronos_ok = self._check_kronos()
         if self.kronos_ok:
-            logger.info("Kronos already running on port 8000 — skipping managed launch")
+            logger.info("Kronos already running on port 8000 -- skipping managed launch")
         else:
-            logger.warning("Kronos not detected on port 8000 — bots will start in VETO_SAFE mode")
+            logger.warning("Kronos not detected on port 8000 -- bots will start in VETO_SAFE mode")
         
         for name, bot in self.bots.items():
             bot.start()
             time.sleep(2)  # Stagger startup
+
+        send_notification("SUPERVISOR", f"Started -- monitoring {len(self.bots)} bots")
     
     @staticmethod
     def _check_kronos() -> bool:
@@ -260,7 +269,7 @@ class Supervisor:
         crashed = []
         kronos_alive = self._check_kronos()
         if not kronos_alive:
-            logger.warning("Kronos not responding on port 8000 — bots will use VETO_SAFE mode")
+            logger.warning("Kronos not responding on port 8000 -- bots will use VETO_SAFE mode")
         for name, bot in self.bots.items():
             if not bot.is_running:
                 crashed.append(bot)

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-PROJECT VUKA — MONITOR
+PROJECT VUKA -- MONITOR
 Runs all bots in check mode and displays consolidated status.
 """
 
@@ -185,7 +185,7 @@ def check_consecutive_losses(symbol, strategy):
 def print_header():
     now = now_sast()
     print("=" * 70)
-    print(f"   PROJECT VUKA — MONITOR")
+    print(f"   PROJECT VUKA -- MONITOR")
     print(f"   {now.strftime('%Y-%m-%d %H:%M')} SAST")
     print("=" * 70)
     print()

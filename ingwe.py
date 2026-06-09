@@ -72,14 +72,14 @@ try:
 except ImportError:
     DB = None
     DB_AVAILABLE = False
-    logger.warn("database_manager not available — falling back to JSON files")
+    logger.warn("database_manager not available -- falling back to JSON files")
 
 # =======================================================
-#    PROJECT VUKA — AGENT INGWE  v5.5
+#    PROJECT VUKA -- AGENT INGWE  v5.5
 #    The leopard does not miss because it does not rush.
 #    "Ingwe ayidlozi ngoba ayiphuthi isikhathi."
 # =======================================================
-# CHANGELOG v5.5 — AUDIT-DRIVEN FIXES + KRONOS TRAINING:
+# CHANGELOG v5.5 -- AUDIT-DRIVEN FIXES + KRONOS TRAINING:
 #
 #   FIX-1: place_limit_order() datetime bug (CRITICAL).
 #     Replaced timezone-aware datetime with _server_now()
@@ -131,7 +131,7 @@ except ImportError:
 #
 #   FIX-10: Deleted tainted best_params.json (pre-fix optimizer run).
 #     Recorded ADX=30, win_rate=76.1% from contaminated backtester.
-#     File removed — must not guide parameter selection.
+#     File removed -- must not guide parameter selection.
 #
 #   FIX-11: Removed dead MIN_ADX_FOR_TRADING=25 constant.
 #     Was defined at module level but never referenced in any
@@ -143,7 +143,7 @@ except ImportError:
 #     real executed price instead of result.price (which was None
 #     on all 21 live trades). Slippage and effective RR now accurate.
 #
-# CHANGELOG v4.4 — PERFORMANCE IMPROVEMENTS:
+# CHANGELOG v4.4 -- PERFORMANCE IMPROVEMENTS:
 #
 #   FIX-1: Duplicate entry prevention via has_open_position().
 #     Prevents placing duplicate market orders when position exists.
@@ -152,12 +152,12 @@ except ImportError:
 #     Loss counter now persists across days via sessions file.
 #     Bot pauses after 2 consecutive losses.
 #
-#   FIX-3: GBPUSD London Open — enabled both directions (guard removed per user request).
+#   FIX-3: GBPUSD London Open -- enabled both directions (guard removed per user request).
 #
 #   FIX-4: SL movement tracking added.
 #     All trailing SL moves logged to sl_moves_{symbol}_{strategy}.json
 #
-# CHANGELOG v4.2 — MARKET ORDERS REINSTATED:
+# CHANGELOG v4.2 -- MARKET ORDERS REINSTATED:
 #
 #   v4.0 limit orders (FVG 50% midpoint) produced 0% win rate
 #   across all instances. Static limit levels got filled into
@@ -166,29 +166,29 @@ except ImportError:
 #
 #   - All 4 evaluate_ingwe() paths use place_trade() (market).
 #   - Entry price = current market price (bid), not fvg_50.
-#   - Price-side guard removed — no static level constraint.
-#   - has_pending_order() guard removed — market orders fill
+#   - Price-side guard removed -- no static level constraint.
+#   - has_pending_order() guard removed -- market orders fill
 #     instantly or fail; no duplicate risk.
 #   - place_limit_order() kept for future use.
 #
-# CHANGELOG v4.1 — LIMIT ORDER ENTRY AT FVG 50%:
+# CHANGELOG v4.1 -- LIMIT ORDER ENTRY AT FVG 50%:
 #
 #   FIX-1: place_limit_order() added to Section 10.
 #   FIX-2: has_pending_order() guard added to Section 10.
-#   FIX-3: evaluate_ingwe() — all 4 paths converted to limit orders.
+#   FIX-3: evaluate_ingwe() -- all 4 paths converted to limit orders.
 #
-# CHANGELOG v3.9.5 — TRAILING SL + COMMENT FIX (2 fixes):
+# CHANGELOG v3.9.5 -- TRAILING SL + COMMENT FIX (2 fixes):
 #
 #   FIX-1: Order comment truncated to 18 chars.
 #     Exness enforces a 31-character hard cap on order
 #     comments. "Ingwe v3.9.4 EURUSD_SILVER_BULLET" = 34
-#     chars — exceeded the limit, causing MT5 error -2
+#     chars -- exceeded the limit, causing MT5 error -2
 #     ('Invalid "comment" argument') on every order_send
 #     attempt. Both Silver Bullet instances were unable to
 #     execute any trade. Fixed to f"Ingwe_{_instance_tag[:14]}"
-#     — max 18 chars across all four instances.
+#     -- max 18 chars across all four instances.
 #
-#   FIX-2: manage_open_positions() — trailing SL manager.
+#   FIX-2: manage_open_positions() -- trailing SL manager.
 #     New function added to Section 10. Runs every scan
 #     cycle before session logic, filtered by magic number.
 #     At 1:1 profit -> SL moves to breakeven (entry).
@@ -197,21 +197,21 @@ except ImportError:
 #     minimum. Helper _modify_sl() handles MT5 SLTP modify
 #     with full retcode logging.
 #
-# CHANGELOG v3.9.4 — CODE REVIEW HARDENING (5 fixes).
-# CHANGELOG v3.9.3 — TRUE WILDER ADX SMOOTHING.
-# CHANGELOG v3.9.2 — ZONE CONTEXT LOGGING.
-# CHANGELOG v3.9.1 — ENTRY MODEL EXPANSION (HOTFIX).
-# CHANGELOG v3.9 — v3.9 PATCH BLOCK.
-# CHANGELOG v3.8.1 — MULTI-INSTANCE DAILY P&L FIX.
-# CHANGELOG v3.8 — ICT DEPTH UPGRADE.
-# CHANGELOG v3.7 — UNICORN ZONE INTEGRATION.
-# CHANGELOG v3.6 — THIRD CODE REVIEW HARDENING.
-# CHANGELOG v3.5 — SECOND CODE REVIEW HARDENING.
-# CHANGELOG v3.4 — CODE REVIEW HARDENING.
-# CHANGELOG v3.3 — SESSION ARCHITECTURE FIX.
-# CHANGELOG v3.2 — ORDER FILLING + STALE FVG FIX.
-# CHANGELOG v3.1 — MULTI-SYMBOL + MULTI-INSTANCE.
-# CHANGELOG v2.x — Oracle's Eye, persistence, logging, risk.
+# CHANGELOG v3.9.4 -- CODE REVIEW HARDENING (5 fixes).
+# CHANGELOG v3.9.3 -- TRUE WILDER ADX SMOOTHING.
+# CHANGELOG v3.9.2 -- ZONE CONTEXT LOGGING.
+# CHANGELOG v3.9.1 -- ENTRY MODEL EXPANSION (HOTFIX).
+# CHANGELOG v3.9 -- v3.9 PATCH BLOCK.
+# CHANGELOG v3.8.1 -- MULTI-INSTANCE DAILY P&L FIX.
+# CHANGELOG v3.8 -- ICT DEPTH UPGRADE.
+# CHANGELOG v3.7 -- UNICORN ZONE INTEGRATION.
+# CHANGELOG v3.6 -- THIRD CODE REVIEW HARDENING.
+# CHANGELOG v3.5 -- SECOND CODE REVIEW HARDENING.
+# CHANGELOG v3.4 -- CODE REVIEW HARDENING.
+# CHANGELOG v3.3 -- SESSION ARCHITECTURE FIX.
+# CHANGELOG v3.2 -- ORDER FILLING + STALE FVG FIX.
+# CHANGELOG v3.1 -- MULTI-SYMBOL + MULTI-INSTANCE.
+# CHANGELOG v2.x -- Oracle's Eye, persistence, logging, risk.
 # =======================================================
 
 # -------------------------------------------------------
@@ -242,7 +242,7 @@ SESSIONS_FILE   = f"sessions_{_instance_tag}.json"
 def _derive_magic(tag: str) -> int:
     """
     Deterministic magic number from instance tag using SHA-256.
-    Stable across restarts — hash() randomises per process in Python 3.3+.
+    Stable across restarts -- hash() randomises per process in Python 3.3+.
     Range: 234000-244000. Each instance tag maps to exactly one value.
     """
     digest = hashlib.sha256(tag.encode()).hexdigest()
@@ -339,7 +339,7 @@ else:
     MIN_SL_ATR_MULTIPLIER    = 0.8   # v5.0: Increased from 0.5 for more breathing room
     LIMIT_ORDER_EXPIRY_CANDLES = 4
     ADX_PERIOD               = 14
-    ADX_MIN_THRESHOLD        = 20    # Conservative middle ground — avoids ranging markets where ICT setups fail
+    ADX_MIN_THRESHOLD        = 20    # Conservative middle ground -- avoids ranging markets where ICT setups fail
     MIN_SPREAD_PIPS          = 0.0002
     MAX_DAILY_LOSS           = 50.0
     MAX_DRAWDOWN_PCT         = 10.0
@@ -355,11 +355,11 @@ else:
 # =======================================================
 # Win rate <35% patterns - auto-blocked to prevent losses
 PATTERN_BLACKLIST = [
-    ("Asian", "BUY", "SWEEP_LOW"),       # 28% WR — block
+    ("Asian", "BUY", "SWEEP_LOW"),       # 28% WR -- block
 ]
 
 # -------------------------------------------------------
-# BACKTEST MODE (Option B) — CSV Replay
+# BACKTEST MODE (Option B) -- CSV Replay
 # -------------------------------------------------------
 BACKTEST_MODE            = False
 BACKTEST_CSV            = "eurusd_m15_march2026.csv"
@@ -368,13 +368,13 @@ _backtest_index         = 0
 _backtest_data          = None
 
 # -------------------------------------------------------
-# TIMEZONE — South Africa
+# TIMEZONE -- South Africa
 # SAST = UTC+2, permanently. No DST. Ever.
 # -------------------------------------------------------
 SA_OFFSET = 2
 
 # -------------------------------------------------------
-# INGWE — KILLZONES (SAST)
+# INGWE -- KILLZONES (SAST)
 # -------------------------------------------------------
 KILLZONES_WINTER = {
     "Asian":         (2,  6),
@@ -399,7 +399,7 @@ INGWE_BLACKOUTS_SUMMER = [
 ]
 
 # -------------------------------------------------------
-# SILVER BULLET — WINDOWS (SAST)
+# SILVER BULLET -- WINDOWS (SAST)
 # -------------------------------------------------------
 SB_WINDOWS_WINTER = {
     "SB_Window1": (10, 11),
@@ -451,7 +451,7 @@ sessions_traded_today = set()
 
 
 # =======================================================
-#  SECTION 1 — UTILITIES & TIMEZONE
+#  SECTION 1 -- UTILITIES & TIMEZONE
 # =======================================================
 
 def log(msg: str, level: str = "INFO"):
@@ -556,7 +556,7 @@ def is_market_open() -> bool:
 
 
 # =======================================================
-#  SECTION 2 — DATA INTEGRITY (THE ORACLE'S EYE)
+#  SECTION 2 -- DATA INTEGRITY (THE ORACLE'S EYE)
 # =======================================================
 
 def mt5_fetch_with_retry(fetch_fn, *args, **kwargs):
@@ -583,7 +583,7 @@ def is_data_fresh(df: pd.DataFrame, session: str = None) -> bool:
     age = (datetime.now(timezone.utc) - last_utc).total_seconds() / 60
     stale_threshold = DATA_STALE_MINUTES_ASIAN if session == "Asian" else DATA_STALE_MINUTES
     if age > stale_threshold:
-        log(f"Data stale — last candle {age:.1f} min ago (session: {session or 'N/A'}).", "WARN")
+        log(f"Data stale -- last candle {age:.1f} min ago (session: {session or 'N/A'}).", "WARN")
         return False
     return True
 
@@ -593,7 +593,7 @@ def has_frozen_prices(df: pd.DataFrame, lookback: int = 4) -> bool:
         return False
     closes = df["close"].tail(lookback).values
     if len(set(closes)) == 1:
-        log(f"FROZEN FEED — {lookback} identical closes ({closes[0]:.5f}).", "GUARD")
+        log(f"FROZEN FEED -- {lookback} identical closes ({closes[0]:.5f}).", "GUARD")
         return True
     return False
 
@@ -619,7 +619,7 @@ def validate_candles(df: pd.DataFrame, session: str = None) -> bool:
 
 
 # =======================================================
-#  SECTION 3 — SESSION PERSISTENCE
+#  SECTION 3 -- SESSION PERSISTENCE
 # =======================================================
 
 def load_sessions() -> set:
@@ -644,7 +644,7 @@ def load_sessions() -> set:
             if data.get("date") == datetime.now().strftime("%Y-%m-%d"):
                 return set(data.get("sessions", []))
         except (json.JSONDecodeError, KeyError):
-            log("Sessions file corrupted — starting fresh.", "WARN")
+            log("Sessions file corrupted -- starting fresh.", "WARN")
     return set()
 
 
@@ -675,7 +675,7 @@ def save_sessions(sessions: set):
 
 
 # =======================================================
-#  SECTION 4 — ACCOUNT & RISK MANAGEMENT
+#  SECTION 4 -- ACCOUNT & RISK MANAGEMENT
 # =======================================================
 
 def get_initial_equity() -> float:
@@ -707,7 +707,7 @@ def _server_midnight() -> datetime:
     MT5 history_deals_get() interprets naive datetimes as broker server time.
     Exness server = UTC+2 (winter) or UTC+3 (EU summer).
     SAST machine is always UTC+2. In EU summer, a naive datetime.now()
-    on a SAST machine maps to UTC+2 but MT5 expects UTC+3 — 1-hour drift.
+    on a SAST machine maps to UTC+2 but MT5 expects UTC+3 -- 1-hour drift.
     Using server offset here eliminates that drift.
     """
     server_offset   = get_exness_server_offset()
@@ -744,7 +744,7 @@ def check_consecutive_losses() -> bool:
     """
     loss_count, _ = load_consecutive_losses()
     if loss_count >= 3:
-        log(f"Consecutive loss limit reached ({loss_count} losses) — Ingwe pauses.", "GUARD")
+        log(f"Consecutive loss limit reached ({loss_count} losses) -- Ingwe pauses.", "GUARD")
         return True
     return False
 
@@ -825,11 +825,11 @@ def update_consecutive_losses():
     if last_deal.profit < 0:
         new_count = current_count + 1
         save_consecutive_losses(new_count, last_deal.ticket)
-        log(f"Loss recorded — consecutive losses: {new_count}", "INFO")
+        log(f"Loss recorded -- consecutive losses: {new_count}", "INFO")
     else:
         if current_count > 0:
             save_consecutive_losses(0, last_deal.ticket)
-            log("Win recorded — consecutive loss counter reset.", "INFO")
+            log("Win recorded -- consecutive loss counter reset.", "INFO")
 
 
 def get_spread() -> float | None:
@@ -840,7 +840,7 @@ def get_spread() -> float | None:
 
 
 # =======================================================
-#  SECTION 5 — TREND & MARKET STRUCTURE
+#  SECTION 5 -- TREND & MARKET STRUCTURE
 # =======================================================
 
 def get_h1_trend() -> str | None:
@@ -863,7 +863,7 @@ def get_htf_bias() -> str | None:
     v3.9: Daily/H4 structural bias layer.
     D1 + H4 EMA10/30 must agree for a confirmed bias.
     Returns 'BULLISH', 'BEARISH', or None (conflicted).
-    v5.5: BACKTEST_MODE guard — skips live MT5 calls during backtest.
+    v5.5: BACKTEST_MODE guard -- skips live MT5 calls during backtest.
     """
     if BACKTEST_MODE:
         return None
@@ -896,7 +896,7 @@ def get_htf_bias() -> str | None:
     if d1_bias and h4_bias and d1_bias == h4_bias:
         return d1_bias
     
-    log(f"HTF bias split — D1: {d1_bias}  H4: {h4_bias}. No HTF confirmation.")
+    log(f"HTF bias split -- D1: {d1_bias}  H4: {h4_bias}. No HTF confirmation.")
     return None
 
 def get_draw_on_liquidity(direction: str) -> tuple[str, float] | tuple[None, None]:
@@ -957,7 +957,7 @@ def get_candles() -> pd.DataFrame | None:
 
 
 def get_pdh_pdl() -> tuple[float, float] | tuple[None, None]:
-    """Previous Day High / Low. Uses iloc[-2] — today's candle is always incomplete."""
+    """Previous Day High / Low. Uses iloc[-2] -- today's candle is always incomplete."""
     rates = mt5_fetch_with_retry(
         mt5.copy_rates_from_pos, SYMBOL, mt5.TIMEFRAME_D1, 0, 3
     )
@@ -969,7 +969,7 @@ def get_pdh_pdl() -> tuple[float, float] | tuple[None, None]:
 
 
 def get_asian_range(df: pd.DataFrame) -> tuple[float, float] | tuple[None, None]:
-    """Asian Session Range High/Low. Window: 02:00–06:00 SAST = 00:00–04:00 UTC."""
+    """Asian Session Range High/Low. Window: 02:00-06:00 SAST = 00:00-04:00 UTC."""
     utc_now      = datetime.now(timezone.utc)
     utc_midnight = utc_now.replace(hour=0, minute=0, second=0, microsecond=0)
     asian_start  = utc_midnight
@@ -1121,7 +1121,7 @@ def detect_immediate_fvg(df: pd.DataFrame) -> list:
 
 def detect_breaker_blocks(df: pd.DataFrame, lookback: int = 30) -> list:
     """
-    Breaker Blocks — former Order Blocks whose polarity has flipped.
+    Breaker Blocks -- former Order Blocks whose polarity has flipped.
     Invalidation guard: zone spent if price broke back through extreme.
     """
     breakers = []
@@ -1226,7 +1226,7 @@ def detect_m15_bos(df: pd.DataFrame, lookback: int = 20) -> str | None:
 
 
 # =======================================================
-#  SECTION 6 — INDICATORS
+#  SECTION 6 -- INDICATORS
 # =======================================================
 
 from indicators import calculate_adx_wilder as _calculate_adx_wilder
@@ -1270,7 +1270,7 @@ def calculate_atr(df: pd.DataFrame, period: int = 14) -> float | None:
 
 
 # =======================================================
-#  SECTION 7 — FILTERS
+#  SECTION 7 -- FILTERS
 # =======================================================
 
 def get_current_session() -> str | None:
@@ -1347,7 +1347,7 @@ def check_pre_trade_spread() -> bool:
 
 
 # =======================================================
-#  SECTION 8 — POSITION SIZING
+#  SECTION 8 -- POSITION SIZING
 # =======================================================
 
 def calculate_lot_size(sl_distance: float | None = None) -> float:
@@ -1402,7 +1402,7 @@ def get_overlap_multiplier() -> float:
 
 
 # =======================================================
-#  SECTION 9 — CONFLUENCE SCORING (INGWE MODE)
+#  SECTION 9 -- CONFLUENCE SCORING (INGWE MODE)
 # =======================================================
 
 # v5.5: Updated session-direction performance from live data (~77% SELL vs ~40% BUY)
@@ -1473,7 +1473,7 @@ def calculate_confluence_score(trend, fvg_ok, zone_ok, spread_ok, adx_ok,
 
 
 # =======================================================
-#  SECTION 10 — TRADE EXECUTION & LOGGING
+#  SECTION 10 -- TRADE EXECUTION & LOGGING
 # =======================================================
 
 def log_trade(direction, entry, sl, tp, result, lot_size, session):
@@ -1563,7 +1563,7 @@ def place_trade(direction, entry, sl, tp, lot_size):
         return MockResult()
 
     if has_open_position():
-        log(f"Position already open for {_instance_tag} — skipping duplicate entry.", "GUARD")
+        log(f"Position already open for {_instance_tag} -- skipping duplicate entry.", "GUARD")
         return None
     
     order_type = mt5.ORDER_TYPE_BUY if direction == "BUY" else mt5.ORDER_TYPE_SELL
@@ -1603,7 +1603,7 @@ def place_trade(direction, entry, sl, tp, lot_size):
 
         if result.retcode == 10030:
             if i < 3:
-                log(f"Filling mode rejected (10030) — trying fallback {i+1}/3...", "WARN")
+                log(f"Filling mode rejected (10030) -- trying fallback {i+1}/3...", "WARN")
             continue
 
         log(f"Order failed. Retcode: {result.retcode}, "
@@ -1650,7 +1650,7 @@ def place_limit_order(direction: str, entry: float, sl: float,
     BUY_LIMIT / SELL_LIMIT via TRADE_ACTION_PENDING.
     Expiry: LIMIT_ORDER_EXPIRY_CANDLES × SCAN_INTERVAL_SEC from now
     (default 4 × 15min = 1hr) in broker server time.
-    Single submission — pending orders do not use filling modes.
+    Single submission -- pending orders do not use filling modes.
     
     BACKTEST MODE: Simulates limit order fill based on price retracement.
     """
@@ -1763,7 +1763,7 @@ def manage_open_positions():
     """
     v3.9.5 FIX-2: Trailing SL manager.
     Runs every scan cycle before session logic.
-    Filtered by _instance_magic — each instance manages only its own trades.
+    Filtered by _instance_magic -- each instance manages only its own trades.
 
     Rules:
       1:1 profit hit -> SL moves to breakeven (entry). Worst case: 0.
@@ -1860,7 +1860,7 @@ def manage_open_positions():
 
 
 # =======================================================
-#  SECTION 11 — DAILY RESET
+#  SECTION 11 -- DAILY RESET
 # =======================================================
 
 def reset_daily_sessions():
@@ -1870,11 +1870,11 @@ def reset_daily_sessions():
         sessions_traded_today.clear()
         save_sessions(sessions_traded_today)
         consecutive_losses = 0
-        log("Midnight reset — sessions and loss counter cleared.")
+        log("Midnight reset -- sessions and loss counter cleared.")
 
 
 # =======================================================
-#  SECTION 12A — SETUP EVALUATION: INGWE MODE
+#  SECTION 12A -- SETUP EVALUATION: INGWE MODE
 # =======================================================
 
 def evaluate_ingwe(df, fvgs, sweep, sweep_level, price, atr, lot_size, session):
@@ -1882,7 +1882,7 @@ def evaluate_ingwe(df, fvgs, sweep, sweep_level, price, atr, lot_size, session):
     Full multi-confluence model.
     v4.3:   Three hard gates added after GBPUSD loss (ADX<20, D1 bias
             conflict, SL min distance). All block entry regardless of score.
-    v4.2:   Market orders reinstated — same confluence logic, no static
+    v4.2:   Market orders reinstated -- same confluence logic, no static
             limit levels. Reverted from v4.0 which produced 0% win rate.
     v3.9.4: FIX-1 zone check removed from Paths C/D.
     v3.9.3: True Wilder ADX.
@@ -1900,7 +1900,7 @@ def evaluate_ingwe(df, fvgs, sweep, sweep_level, price, atr, lot_size, session):
     # Instead of blocking, we flag low ADX for Kronos to decide.
     adx_ok = True
     if adx < ADX_MIN_THRESHOLD:
-        log(f"ADX {adx} below minimum ({ADX_MIN_THRESHOLD}) — Range-bound risk.", "WARN")
+        log(f"ADX {adx} below minimum ({ADX_MIN_THRESHOLD}) -- Range-bound risk.", "WARN")
         adx_ok = False
     
     # ── PATTERN BLACKLIST CHECK (STILL A HARD GATE) ────────────────────────────
@@ -1921,7 +1921,7 @@ def evaluate_ingwe(df, fvgs, sweep, sweep_level, price, atr, lot_size, session):
                 else:
                     continue
                 if current_direction == blk_direction:
-                    log(f"PATTERN BLACKLIST: {session} {current_direction} {sweep} — "
+                    log(f"PATTERN BLACKLIST: {session} {current_direction} {sweep} -- "
                         f"historically <35% win rate. Standing down.", "GUARD")
                     blacklist_blocked = True
                     break
@@ -1934,7 +1934,7 @@ def evaluate_ingwe(df, fvgs, sweep, sweep_level, price, atr, lot_size, session):
     # ── ADX_MIN_THRESHOLD GATE ──────────────────────────────────────────────
     # Single threshold from config. Below it = extreme chop, hard block.
     if adx < ADX_MIN_THRESHOLD:
-        log(f"ADX {adx} below threshold ({ADX_MIN_THRESHOLD}) — Extreme chop. Standing down.", "GUARD")
+        log(f"ADX {adx} below threshold ({ADX_MIN_THRESHOLD}) -- Extreme chop. Standing down.", "GUARD")
         return
 
 
@@ -1962,13 +1962,13 @@ def evaluate_ingwe(df, fvgs, sweep, sweep_level, price, atr, lot_size, session):
     htf_bias = get_htf_bias()
     htf_bias_ok = True
     if not htf_bias:
-        log("HTF bias unavailable — flagged for Kronos review.", "WARN")
+        log("HTF bias unavailable -- flagged for Kronos review.", "WARN")
         htf_bias_ok = False
     elif htf_bias != trend:
-        log(f"HTF bias ({htf_bias}) conflicts with H1 trend ({trend}) — flagged for Kronos review.", "WARN")
+        log(f"HTF bias ({htf_bias}) conflicts with H1 trend ({trend}) -- flagged for Kronos review.", "WARN")
         htf_bias_ok = False
     else:
-        log(f"HTF bias confirms H1 trend — full top-down alignment.  [+10]")
+        log(f"HTF bias confirms H1 trend -- full top-down alignment.  [+10]")
 
 
     # ── FIX-3: SL MINIMUM DISTANCE (v4.3) ───────────────
@@ -1984,9 +1984,9 @@ def evaluate_ingwe(df, fvgs, sweep, sweep_level, price, atr, lot_size, session):
 
     asian_high, asian_low = get_asian_range(df)
     if asian_high and asian_low:
-        log(f"Asian Range: {asian_low:.5f}–{asian_high:.5f}")
+        log(f"Asian Range: {asian_low:.5f}-{asian_high:.5f}")
 
-    # ── LEVEL SWEEP — 0.5 ATR guard (v3.9) ──────────────
+    # ── LEVEL SWEEP -- 0.5 ATR guard (v3.9) ──────────────
     level_sweep = False
     if pdh and pdl:
         if sweep == "SWEEP_HIGH" and abs(sweep_level - pdh) < atr * 0.5:
@@ -2003,7 +2003,7 @@ def evaluate_ingwe(df, fvgs, sweep, sweep_level, price, atr, lot_size, session):
             level_sweep = True
             log(f"ASIAN LOW SWEEP: {sweep_level:.5f} ~ AR {asian_low:.5f}  [+5]")
 
-    # ── M15 BOS — dynamic lookback (v3.9) ────────────────
+    # ── M15 BOS -- dynamic lookback (v3.9) ────────────────
     bos_lookback = 12 if session == "London Open" else 20
     m15_bos      = detect_m15_bos(df, lookback=bos_lookback)
     if m15_bos:
@@ -2298,16 +2298,16 @@ def evaluate_ingwe(df, fvgs, sweep, sweep_level, price, atr, lot_size, session):
 
 
 # =======================================================
-#  SECTION 12B — SETUP EVALUATION: SILVER BULLET MODE
+#  SECTION 12B -- SETUP EVALUATION: SILVER BULLET MODE
 # =======================================================
 
 def evaluate_silver_bullet(df, fvgs, sweep, sweep_level, price, atr,
                            lot_size, window, unicorn_zones=None):
     """
-    ICT Silver Bullet — time-precision model.
+    ICT Silver Bullet -- time-precision model.
     No trend filter. No ADX. No zone filter.
     The 1-hour window is the primary confluence filter.
-    Market orders retained in v4.0 — limit order conversion is INGWE only.
+    Market orders retained in v4.0 -- limit order conversion is INGWE only.
     """
     if unicorn_zones is None:
         unicorn_zones = []
@@ -2327,13 +2327,13 @@ def evaluate_silver_bullet(df, fvgs, sweep, sweep_level, price, atr,
         for u_type, u_low, u_high, u_mid, bb_low, bb_high in unicorn_zones_sorted:
 
             if u_type == "BULLISH_UNICORN" and sweep == "SWEEP_LOW":
-                log(f"UNICORN BULLISH zone: {u_low:.5f}–{u_high:.5f}  |  "
-                    f"Mid: {u_mid:.5f}  |  BB: {bb_low:.5f}–{bb_high:.5f}")
+                log(f"UNICORN BULLISH zone: {u_low:.5f}-{u_high:.5f}  |  "
+                    f"Mid: {u_mid:.5f}  |  BB: {bb_low:.5f}-{bb_high:.5f}")
                 if price > u_high:
-                    log("Price above Unicorn zone — waiting for retracement.", "GUARD")
+                    log("Price above Unicorn zone -- waiting for retracement.", "GUARD")
                     continue
                 if price < u_low:
-                    log("Price below Unicorn zone — not yet in range.", "GUARD")
+                    log("Price below Unicorn zone -- not yet in range.", "GUARD")
                     continue
                 if check_panic_candle(df, atr):
                     continue
@@ -2368,7 +2368,7 @@ def evaluate_silver_bullet(df, fvgs, sweep, sweep_level, price, atr,
                 tp      = round(entry + sl_dist * RISK_REWARD_RATIO, 5)
                 res     = place_trade("BUY", entry, sl, tp, lot_size)
                 if res and res.retcode == mt5.TRADE_RETCODE_DONE:
-                    log(f"🦄 UNICORN BUY  Entry={entry}  SL={sl}  TP={tp}  "
+                    log(f"[UNICORN] UNICORN BUY  Entry={entry}  SL={sl}  TP={tp}  "
                         f"Lot={lot_size}", "TRADE")
                     log_trade("BUY", entry, sl, tp, res, lot_size, window)
                     sessions_traded_today.add(window)
@@ -2379,13 +2379,13 @@ def evaluate_silver_bullet(df, fvgs, sweep, sweep_level, price, atr,
                 return
 
             if u_type == "BEARISH_UNICORN" and sweep == "SWEEP_HIGH":
-                log(f"UNICORN BEARISH zone: {u_low:.5f}–{u_high:.5f}  |  "
-                    f"Mid: {u_mid:.5f}  |  BB: {bb_low:.5f}–{bb_high:.5f}")
+                log(f"UNICORN BEARISH zone: {u_low:.5f}-{u_high:.5f}  |  "
+                    f"Mid: {u_mid:.5f}  |  BB: {bb_low:.5f}-{bb_high:.5f}")
                 if price < u_low:
-                    log("Price below Unicorn zone — waiting for retracement.", "GUARD")
+                    log("Price below Unicorn zone -- waiting for retracement.", "GUARD")
                     continue
                 if price > u_high:
-                    log("Price above Unicorn zone — not yet in range.", "GUARD")
+                    log("Price above Unicorn zone -- not yet in range.", "GUARD")
                     continue
                 if check_panic_candle(df, atr):
                     continue
@@ -2420,7 +2420,7 @@ def evaluate_silver_bullet(df, fvgs, sweep, sweep_level, price, atr,
                 tp      = round(entry - sl_dist * RISK_REWARD_RATIO, 5)
                 res     = place_trade("SELL", entry, sl, tp, lot_size)
                 if res and res.retcode == mt5.TRADE_RETCODE_DONE:
-                    log(f"🦄 UNICORN SELL  Entry={entry}  SL={sl}  TP={tp}  "
+                    log(f"[UNICORN] UNICORN SELL  Entry={entry}  SL={sl}  TP={tp}  "
                         f"Lot={lot_size}", "TRADE")
                     log_trade("SELL", entry, sl, tp, res, lot_size, window)
                     sessions_traded_today.add(window)
@@ -2438,12 +2438,12 @@ def evaluate_silver_bullet(df, fvgs, sweep, sweep_level, price, atr,
             continue
 
         if sweep == "SWEEP_LOW" and fvg_type == "BULLISH_FVG":
-            log(f"SB Bullish FVG: {fvg_low:.5f}–{fvg_high:.5f}  |  50%: {fvg_50:.5f}")
+            log(f"SB Bullish FVG: {fvg_low:.5f}-{fvg_high:.5f}  |  50%: {fvg_50:.5f}")
             if price > fvg_high:
-                log("Price above FVG — waiting for retracement into gap.", "GUARD")
+                log("Price above FVG -- waiting for retracement into gap.", "GUARD")
                 continue
             if price > fvg_50:
-                log(f"Price in FVG but above 50% ({fvg_50:.5f}) — waiting deeper.",
+                log(f"Price in FVG but above 50% ({fvg_50:.5f}) -- waiting deeper.",
                     "GUARD")
                 continue
             if not check_pre_trade_spread():
@@ -2491,12 +2491,12 @@ def evaluate_silver_bullet(df, fvgs, sweep, sweep_level, price, atr,
             return
 
         if sweep == "SWEEP_HIGH" and fvg_type == "BEARISH_FVG":
-            log(f"SB Bearish FVG: {fvg_low:.5f}–{fvg_high:.5f}  |  50%: {fvg_50:.5f}")
+            log(f"SB Bearish FVG: {fvg_low:.5f}-{fvg_high:.5f}  |  50%: {fvg_50:.5f}")
             if price < fvg_low:
-                log("Price below FVG — waiting for retracement into gap.", "GUARD")
+                log("Price below FVG -- waiting for retracement into gap.", "GUARD")
                 continue
             if price < fvg_50:
-                log(f"Price in FVG but below 50% ({fvg_50:.5f}) — waiting deeper.",
+                log(f"Price in FVG but below 50% ({fvg_50:.5f}) -- waiting deeper.",
                     "GUARD")
                 continue
             if not check_pre_trade_spread():
@@ -2547,7 +2547,7 @@ def evaluate_silver_bullet(df, fvgs, sweep, sweep_level, price, atr,
 
 
 # =======================================================
-#  SECTION 12 — MAIN SCAN LOOP
+#  SECTION 12 -- MAIN SCAN LOOP
 # =======================================================
 
 def run_agent():
@@ -2563,25 +2563,25 @@ def run_agent():
     reset_daily_sessions()
 
     if not is_market_open():
-        log(f"Weekend — market closed ({sast_now.strftime('%A')}). Ingwe sleeps.")
+        log(f"Weekend -- market closed ({sast_now.strftime('%A')}). Ingwe sleeps.")
         return
     if check_equity_drawdown():
         return
     
     update_consecutive_losses()
     if check_consecutive_losses():
-        log("Consecutive loss limit reached — Ingwe pauses.", "GUARD")
+        log("Consecutive loss limit reached -- Ingwe pauses.", "GUARD")
         return
 
     # ── v3.9.5: Manage open positions every cycle ────────
     manage_open_positions()
 
     if is_in_news_blackout():
-        log("News blackout — Ingwe waits...")
+        log("News blackout -- Ingwe waits...")
         return
     if is_in_dead_zone():
         dz = "13:00-16:00" if not is_eu_summer() else "12:00-15:00"
-        log(f"Dead zone ({dz} SAST) — no strategy hunts here. Ingwe waits.")
+        log(f"Dead zone ({dz} SAST) -- no strategy hunts here. Ingwe waits.")
         return
 
     daily_pnl = get_daily_pnl()
@@ -2597,7 +2597,7 @@ def run_agent():
             log("No Silver Bullet window active. Ingwe watches...")
             return
         s, e = get_active_sb_windows()[active]
-        log(f"SB WINDOW: {active} ({s:02d}:00–{e:02d}:00 SAST)")
+        log(f"SB WINDOW: {active} ({s:02d}:00-{e:02d}:00 SAST)")
     else:
         active = get_current_session()
         if not active:
@@ -2605,7 +2605,7 @@ def run_agent():
             return
         
         s, e = get_active_killzones()[active]
-        log(f"KILLZONE: {active} ({s:02d}:00–{e:02d}:00 SAST)")
+        log(f"KILLZONE: {active} ({s:02d}:00-{e:02d}:00 SAST)")
 
     if active in sessions_traded_today:
         log(f"Already traded {active} today. Ingwe waits.")
@@ -2645,7 +2645,7 @@ def run_agent():
     breakers      = detect_breaker_blocks(df) if STRATEGY == "SILVER_BULLET" else []
     unicorn_zones = detect_unicorn_zone(fvgs, breakers) if breakers else []
     if unicorn_zones:
-        log(f"UNICORN ZONES DETECTED: {len(unicorn_zones)} — highest confluence active.")
+        log(f"UNICORN ZONES DETECTED: {len(unicorn_zones)} -- highest confluence active.")
 
     # ── TICK ─────────────────────────────────────────────
     tick = mt5.symbol_info_tick(SYMBOL)
@@ -2670,7 +2670,7 @@ def run_agent():
 
 
 # =======================================================
-#  SECTION 13 — EXECUTION MODES
+#  SECTION 13 -- EXECUTION MODES
 # =======================================================
 
 def fallback_polling_loop():
@@ -2686,7 +2686,7 @@ def fallback_polling_loop():
 
 
 # =======================================================
-#  SECTION 14 — BOOT SEQUENCE
+#  SECTION 14 -- BOOT SEQUENCE
 # =======================================================
 
 if __name__ == "__main__":
@@ -2706,21 +2706,21 @@ if __name__ == "__main__":
     if SCAN_INTERVAL_SEC < min_scan:
         _errors.append(f"SCAN_INTERVAL_SEC {SCAN_INTERVAL_SEC} dangerously low (min {min_scan}s)")
     if ATR_PERIOD < 5:
-        _errors.append(f"ATR_PERIOD {ATR_PERIOD} too low — minimum 5 for meaningful ATR")
+        _errors.append(f"ATR_PERIOD {ATR_PERIOD} too low -- minimum 5 for meaningful ATR")
     if DATA_STALE_MINUTES < SCAN_INTERVAL_SEC / 60:
         _errors.append(
             f"DATA_STALE_MINUTES ({DATA_STALE_MINUTES}) must be >= scan interval "
             f"({SCAN_INTERVAL_SEC/60:.0f} min)"
         )
     if _errors:
-        print("🔴 CONFIG VALIDATION FAILED:")
+        print("[ERROR] CONFIG VALIDATION FAILED:")
         for e in _errors:
-            print(f"   • {e}")
+            print(f"   - {e}")
         sys.exit(1)
 
     summer = is_eu_summer()
     print("=" * 60)
-    print("   PROJECT VUKA — AGENT INGWE  v4.4")
+    print("   PROJECT VUKA -- AGENT INGWE  v4.4")
     print("   The leopard does not miss because it does not rush.")
     print("=" * 60)
     print()
@@ -2741,11 +2741,11 @@ if __name__ == "__main__":
             ny_offset = -6 if summer else -7
             ny_s = (s + ny_offset) % 24
             ny_e = (e + ny_offset) % 24
-            print(f"     {name:<14} {s:02d}:00–{e:02d}:00 SAST   ({ny_s:02d}:00–{ny_e:02d}:00 NY)")
+            print(f"     {name:<14} {s:02d}:00-{e:02d}:00 SAST   ({ny_s:02d}:00-{ny_e:02d}:00 NY)")
     else:
         print("   ACTIVE KILLZONES (SAST):")
         for name, (s, e) in get_active_killzones().items():
-            print(f"     {name:<18} {s:02d}:00–{e:02d}:00")
+            print(f"     {name:<18} {s:02d}:00-{e:02d}:00")
     print()
 
     if not mt5.initialize():
@@ -2763,7 +2763,7 @@ if __name__ == "__main__":
     log(f"Scan interval:          {SCAN_INTERVAL_SEC // 60} minutes")
     log(f"Daily P&L tracking:     {_instance_tag} only (magic: {_instance_magic})")
     log(f"Trailing SL:            1:1 -> BE  |  1:2 -> 1:1  (v3.9.5)")
-    log(f"Entry mode:            MARKET orders  (v4.2 — reverted from limit)")
+    log(f"Entry mode:            MARKET orders  (v4.2 -- reverted from limit)")
     log(f"Ingwe is awake. [{_instance_tag}] hunting begins.\n")
 
     try:

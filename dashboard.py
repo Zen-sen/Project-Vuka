@@ -75,7 +75,7 @@ class CommandCenter:
                     return
             except (psutil.NoSuchProcess, psutil.AccessDenied):
                 continue
-        logger.info("Supervisor not running — starting in background...")
+        logger.info("Supervisor not running -- starting in background...")
         subprocess.Popen(
             [sys.executable, "supervisor.py"],
             creationflags=DETACHED,

@@ -8,6 +8,7 @@ from enum import Enum
 
 import pandas as pd
 import requests
+from notifier import send as send_notification
 
 LOG_DIR = Path("logs")
 LOG_DIR.mkdir(exist_ok=True)
@@ -69,7 +70,7 @@ class CircuitBreaker:
             if time.time() - self.last_failure_time > self.recovery_timeout:
                 self.state = CircuitBreakerState.HALF_OPEN
                 self.half_open_calls = 0
-                logger.info(f"Circuit breaker: OPEN → HALF_OPEN (recovery test)")
+                logger.info(f"Circuit breaker: OPEN -> HALF_OPEN (recovery test)")
             else:
                 return False, None  # Still open, reject
         
@@ -89,7 +90,7 @@ class CircuitBreaker:
         self.state = CircuitBreakerState.CLOSED
         
         if old_state == CircuitBreakerState.HALF_OPEN:
-            logger.info(f"Circuit breaker: HALF_OPEN → CLOSED (recovered)")
+            logger.info(f"Circuit breaker: HALF_OPEN -> CLOSED (recovered)")
     
     def _on_failure(self):
         """Increment failure count, possibly open circuit"""
@@ -97,13 +98,16 @@ class CircuitBreaker:
         self.last_failure_time = time.time()
         
         if self.state == CircuitBreakerState.HALF_OPEN:
-            logger.warning(f"Circuit breaker: HALF_OPEN → OPEN (recovery failed)")
+            logger.warning(f"Circuit breaker: HALF_OPEN -> OPEN (recovery failed)")
             self.state = CircuitBreakerState.OPEN
+            send_notification("KRONOS CIRCUIT", "HALF_OPEN -> OPEN (recovery failed)", level="ERROR")
         
         elif self.failure_count >= self.failure_threshold:
             old_state = self.state
             self.state = CircuitBreakerState.OPEN
-            logger.warning(f"Circuit breaker: {old_state.value} → OPEN (threshold reached: {self.failure_count})")
+            msg = f"Circuit breaker: {old_state.value} -> OPEN (threshold reached: {self.failure_count})"
+            logger.warning(msg)
+            send_notification("KRONOS CIRCUIT", msg, level="ERROR")
     
     def get_state(self) -> str:
         return self.state.value
@@ -468,7 +472,7 @@ def create_veto_gate(config: Optional[dict] = None) -> KronosVetoGate:
 
 if __name__ == "__main__":
     gate = KronosVetoGate(safety_mode="VETO_SAFE")
-    print(f"✅ Veto Gate initialized:")
+    print(f"[OK] Veto Gate initialized:")
     print(f"   - Enabled: {gate.enabled}")
     print(f"   - Mode: {gate.mode}")
     print(f"   - Safety Mode: {gate.safety_mode}")

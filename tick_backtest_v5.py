@@ -272,7 +272,7 @@ class TickBacktester:
         ed = results["event_driven"]
         print(f"  Entries: {ed['entries_count']}")
         print(f"  Win Rate: {ed['win_rate_pct']:.1f}% ({ed['trades_won']} wins, {ed['trades_lost']} losses)")
-        print(f"  Avg Latency: {ed['avg_latency_ms']:.2f}ms ⭐ (microsecond precision)")
+        print(f"  Avg Latency: {ed['avg_latency_ms']:.2f}ms * (microsecond precision)")
         print(f"  Avg Slippage: {ed['avg_slippage_pips']:.2f} pips (pristine entries)")
         print(f"  Avg RR Achieved: {ed['avg_rr_achieved']:.2f}:1")
         print(f"  Total Pips: +{ed['total_pips_won']:.0f} / -{ed['total_pips_lost']:.0f}")
@@ -301,7 +301,7 @@ class TickBacktester:
             print(f"\n  vs {interval_label}:")
             print(f"    Latency: {latency_improvement:.0f}ms faster ({latency_ratio:.0f}x improvement)")
             print(f"    Slippage: {slippage_improvement:.2f} pips better entry precision")
-            print(f"    Same logic → Same results ✓ (backtest validates)")
+            print(f"    Same logic -> Same results [OK] (backtest validates)")
         
         print("\n" + "="*80)
         print("SUCCESS: Event-driven execution provides same trading logic")
@@ -342,7 +342,7 @@ def test_backtest():
     with open("/tmp/backtest_results.json", "w") as f:
         json.dump(results, f, indent=2, default=str)
     
-    print(f"✓ Backtest complete. Results saved to /tmp/backtest_results.json")
+    print(f"[OK] Backtest complete. Results saved to /tmp/backtest_results.json")
 
 
 if __name__ == "__main__":

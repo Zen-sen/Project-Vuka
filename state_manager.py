@@ -223,5 +223,5 @@ if __name__ == "__main__":
     
     # Test load
     loaded = mgr.load_session()
-    print(f"✅ Loaded: {len(loaded['trades'])} trades")
-    print(f"✅ Backups: {mgr.get_backup_count()}")
+    print(f"[OK] Loaded: {len(loaded['trades'])} trades")
+    print(f"[OK] Backups: {mgr.get_backup_count()}")
