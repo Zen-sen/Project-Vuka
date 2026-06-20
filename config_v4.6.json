@@ -6,9 +6,10 @@
   "veto_gate": {
     "enabled": true,
     "mode": "enforced",
-    "safety_mode": "VETO_SAFE",
+    "safety_mode": "ALLOW_SAFE",
     "endpoint": "http://127.0.0.1:8000/v1/predict-ict",
-    "threshold": 0.40
+    "threshold": 0.45,
+    "buy_threshold": 0.35
   },
   "notifications": {
     "desktop": {
@@ -16,9 +17,13 @@
       "timeout": 5
     },
     "telegram": {
-      "enabled": false,
+      "enabled": true,
       "bot_token": "",
       "chat_id": ""
     }
+  },
+  "heartbeat": {
+    "enabled": true,
+    "interval_seconds": 60
   }
 }

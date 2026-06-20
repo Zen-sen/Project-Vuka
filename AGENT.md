@@ -56,7 +56,10 @@ Daily Loss Limit   : 3% circuit breaker → session lock
 Panic Candle Guard : Detects abnormal volatility, halts entry
 News Blackout      : ±30 min around red-folder events
 Session Lock       : Prevents re-entry after daily limit hit
-Kronos Veto Gate   : AI-powered trade validation (threshold 0.40, mode: enforced)
+Kronos Veto Gate   : AI-powered trade validation (threshold 0.45, mode: enforced)
+  BUY Threshold    : 0.35 (lower bar — AI is SELL-heavy)
+  Safety Mode      : ALLOW_SAFE (Ingwe falls back to own score when Kronos offline)
+Heartbeat Monitor  : Checks Kronos /health every 60s, alerts on state change
 Pattern Sequence   : ICT sequential wave detection (sweep→displacement→retracement)
 Killzone Timing    : Pattern quality scored by session alignment
 ```
@@ -163,6 +166,10 @@ python supervisor.py
 
 ## Recent Structural Changes
 
+- **v6.0 — ALLOW_SAFE + Heartbeat + BUY threshold** — Safety mode switched from VETO_SAFE to ALLOW_SAFE. Trades now proceed on Ingwe's own confluence when Kronos is unreachable. Added background heartbeat monitor (daemon thread, 60s interval) that pings Kronos `/health` and sends desktop/Telegram alerts on up/down state transitions.
+- **v6.0 — BUY HTF bias relaxed** — Hard block on weak HTF bias for BUY changed to soft warning. Kronos decides using a separate `buy_threshold` (0.35) passed via context, allowing more BUY entries through the AI gate.
+- **v6.0 — Confidence threshold raised** — Main threshold 0.40→0.45 after data showed borderline allowed trades (0.40-0.47) were losing. BUY gets its own lower threshold (0.35) for more entry opportunities.
+- **v6.0 — Telegram notifications** — Enabled in config (requires `bot_token` and `chat_id` to be filled in).
 - **v5.5 — Critical datetime fix** — `place_limit_order()` now uses `_server_now()` (naive server-time) instead of timezone-aware Unix timestamps. Expiry passes `datetime` object directly to MT5.
 - **v5.5 — Scoring rebalance** — Trend weight 40→30 (no longer dominant alone), HTF bias 10→15, Zone 20→15. New `SESSION_ASYMMETRY_BONUS` (+10) encodes live SELL/BUY asymmetry (~77% vs ~40%).
 - **v5.5 — ADX backtest decontaminated** — Removed `random.uniform(10,40)` fallback. Candle skipped when ADX unavailable. Proper Wilder cold-start seed in both backtest engines.
@@ -192,4 +199,4 @@ python supervisor.py
 
 ---
 
-*Last updated: 2026-05-29*
+*Last updated: 2026-06-19*

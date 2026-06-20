@@ -59,11 +59,16 @@ if _config_path.exists():
 
 # Initialize Veto Gate
 _veto_cfg = CONFIG.get("veto_gate", {})
+_heartbeat_cfg = CONFIG.get("heartbeat", {"enabled": False, "interval_seconds": 60})
 KRONOS_VETO_GATE = create_veto_gate({
     "enabled": _veto_cfg.get("enabled", True),
     "mode": _veto_cfg.get("mode", "warn"),
     "threshold": _veto_cfg.get("threshold", 0.30),
+    "heartbeat_interval": _heartbeat_cfg.get("interval_seconds", 0) if _heartbeat_cfg.get("enabled", False) else 0,
 })
+
+# BUY threshold: lower bar for entry since Kronos is SELL-heavy
+BUY_THRESHOLD = _veto_cfg.get("buy_threshold", 0.35)
 
 # Database manager for SQLite consolidation
 try:
@@ -2230,13 +2235,12 @@ def evaluate_ingwe(df, fvgs, sweep, sweep_level, price, atr, lot_size, session):
             if plus_di is None or minus_di is None or plus_di <= minus_di:
                 log(f"DI filter: +DI({plus_di}) <= -DI({minus_di}). Skip.", "GUARD")
                 continue
-            # v5.0 FIX: Require strong HTF bias for BUY signals
+            # v6.0: HTF bias is a soft warning, not a hard block.
+            # Kronos will receive the flag and decide based on buy_threshold.
             if not htf_bias_ok:
-                log("HTF bias required for BUY. No D1/H4 confirmation. Skip.", "GUARD")
-                continue
+                log(f"HTF bias ({htf_bias}) not confirmed. Allowing Kronos to decide with BUY threshold {BUY_THRESHOLD}.", "WARN")
             if htf_bias != "BULLISH":
-                log(f"HTF bias ({htf_bias}) not bullish. Skip BUY.", "GUARD")
-                continue
+                log(f"HTF bias ({htf_bias}) not bullish. Flagging for Kronos review.", "WARN")
             log(f"Zone context: {_zone_context(df, price)}")
             bos_aligned = (m15_bos == "BULLISH_BOS")
             score = calculate_confluence_score(
@@ -2272,7 +2276,8 @@ def evaluate_ingwe(df, fvgs, sweep, sweep_level, price, atr, lot_size, session):
                     "atr": atr,
                     "spread_ok": spread_ok,
                     "trend": trend,
-                    "level_sweep": level_sweep
+                    "level_sweep": level_sweep,
+                    "buy_threshold": BUY_THRESHOLD
                 }
                 allowed, reason = KRONOS_VETO_GATE.validate(ctx, df, SYMBOL)
                 log(f"[KRONOS] BUY signal: {reason}", "GUARD")

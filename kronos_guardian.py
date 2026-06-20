@@ -1,6 +1,7 @@
 import json
 import logging
 import time
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional, Tuple, List
@@ -23,6 +24,48 @@ logging.basicConfig(
     ]
 )
 logger = logging.getLogger(__name__)
+
+
+class HeartbeatMonitor:
+    """
+    Periodically checks the Kronos API health endpoint.
+    Sends notifications on state transitions (up->down, down->up).
+    Runs as a daemon thread so it never blocks shutdown.
+    """
+    def __init__(self, endpoint: str, interval_seconds: int = 60):
+        self.health_url = endpoint.replace("/v1/predict-ict", "/health")
+        self.interval = interval_seconds
+        self._last_known_healthy = None
+        self._stop_event = threading.Event()
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+
+    def _run(self):
+        time.sleep(5)
+        while not self._stop_event.is_set():
+            try:
+                resp = requests.get(self.health_url, timeout=5)
+                is_healthy = resp.status_code == 200
+            except Exception:
+                is_healthy = False
+
+            if is_healthy:
+                if self._last_known_healthy is False:
+                    send_notification("KRONOS HEARTBEAT", "API is back online.", level="INFO")
+                    logger.info("Heartbeat: Kronos API recovered.")
+                elif self._last_known_healthy is None:
+                    logger.info("Heartbeat: Kronos API healthy.")
+                self._last_known_healthy = True
+            else:
+                if self._last_known_healthy is not False:
+                    send_notification("KRONOS HEARTBEAT", "API unreachable!", level="ERROR")
+                    logger.warning("Heartbeat: Kronos API unreachable.")
+                self._last_known_healthy = False
+
+            self._stop_event.wait(self.interval)
+
+    def stop(self):
+        self._stop_event.set()
 
 
 class CircuitBreakerState(Enum):
@@ -124,7 +167,8 @@ class KronosVetoGate:
         threshold: float = 0.40,
         enabled: bool = True,
         mode: str = "enforced",
-        safety_mode: str = "VETO_SAFE"  # NEW: "VETO_SAFE" | "ALLOW_SAFE"
+        safety_mode: str = "VETO_SAFE",  # NEW: "VETO_SAFE" | "ALLOW_SAFE"
+        heartbeat_interval: int = 0  # 0 = disabled, otherwise seconds between health checks
     ):
         """
         Args:
@@ -135,6 +179,7 @@ class KronosVetoGate:
             safety_mode: Error handling behavior
                 "VETO_SAFE": Block trades on any error (conservative, misses trades)
                 "ALLOW_SAFE": Allow trades on errors (aggressive, v4.5 behavior)
+            heartbeat_interval: Seconds between health checks (0 = disabled)
         """
         self.endpoint = endpoint
         self.threshold = threshold
@@ -149,6 +194,11 @@ class KronosVetoGate:
             recovery_timeout=30,
             half_open_max_calls=1
         )
+
+        # Heartbeat health monitor
+        self._heartbeat = None
+        if heartbeat_interval > 0:
+            self._heartbeat = HeartbeatMonitor(endpoint, heartbeat_interval)
     
     def _log_veto_decision(
         self,
@@ -321,7 +371,14 @@ class KronosVetoGate:
             confidence = result_data.get("confidence", 0.5)
             reason = result_data.get("reason", "Unknown")
 
-            if confidence < self.threshold:
+            # Per-direction threshold: BUY uses buy_threshold if provided
+            effective_threshold = self.threshold
+            if direction == "BUY":
+                buy_threshold = context.get("buy_threshold", None)
+                if buy_threshold is not None:
+                    effective_threshold = buy_threshold
+
+            if confidence < effective_threshold:
                 kronos_agree = False
                 reason = f"Low Confidence ({confidence:.0%})"
 
@@ -350,6 +407,7 @@ class KronosVetoGate:
             circuit_state = self.circuit_breaker.get_state()
             
             if self.safety_mode == "VETO_SAFE":
+                send_notification("KRONOS ALERT", "API Timeout detected. Trading may be blocked (VETO_SAFE).", level="WARN")
                 self._log_veto_decision(
                     signal=direction,
                     symbol=symbol,
@@ -377,6 +435,7 @@ class KronosVetoGate:
             circuit_state = self.circuit_breaker.get_state()
             
             if self.safety_mode == "VETO_SAFE":
+                send_notification("KRONOS ALERT", "API Unreachable. Trading may be blocked (VETO_SAFE).", level="WARN")
                 self._log_veto_decision(
                     signal=direction,
                     symbol=symbol,
@@ -466,7 +525,8 @@ def create_veto_gate(config: Optional[dict] = None) -> KronosVetoGate:
         threshold=config.get("threshold", 0.75),
         enabled=config.get("enabled", True),
         mode=config.get("mode", "enforced"),
-        safety_mode=config.get("safety_mode", "VETO_SAFE")
+        safety_mode=config.get("safety_mode", "VETO_SAFE"),
+        heartbeat_interval=config.get("heartbeat_interval", 0)
     )
 
 
