@@ -194,5 +194,24 @@
     "comment": "EURIW",
     "position_id": 348289717,
     "pnl_usd": null
+  },
+  {
+    "symbol": "EURUSDc",
+    "time": "2026-06-26 10:45:17",
+    "strategy": "INGWE",
+    "market_mode": "summer",
+    "session": "London Open",
+    "direction": "BUY",
+    "entry_req": 1.14051,
+    "entry_fill": 1.1405900000000002,
+    "slippage": 0.8,
+    "sl": 1.1387,
+    "tp": 1.14593,
+    "lot_size": 0.2,
+    "effective_rr": 2.83,
+    "retcode": 10009,
+    "comment": "EURIW",
+    "position_id": 352523704,
+    "pnl_usd": null
   }
 ]

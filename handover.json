@@ -1,9 +1,11 @@
 {
   "bot": "Ingwe",
-  "instance": "GBPUSD_INGWE",
-  "last_updated": "2026-06-26T03:01:38.665232+00:00",
-  "equity": 4283.91,
-  "daily_pnl": 0,
-  "active_sessions": [],
+  "instance": "EURUSD_INGWE",
+  "last_updated": "2026-06-26T20:45:19.053566+00:00",
+  "equity": 4259.31,
+  "daily_pnl": 0.0,
+  "active_sessions": [
+    "London Open"
+  ],
   "status": "HEALTHY"
 }
