@@ -225,6 +225,7 @@ except ImportError:
 STRATEGY = _arg_strategy
 _arg_check    = "--check" in sys.argv
 _arg_backtest = "--backtest" in sys.argv
+_arg_fast = "--fast" in sys.argv
 _arg_test     = "--test" in sys.argv
 
 _SYMBOL_MAP = {
@@ -300,7 +301,7 @@ elif STRATEGY == "ICT_M1":
 elif STRATEGY == "LONDON_OPEN":
     TIMEFRAME                = mt5.TIMEFRAME_M15
     RISK_PERCENT             = 1.0
-    RISK_REWARD_RATIO        = 1.0   # Backtest-optimized: 43.8% WR, +9.8% return, PF 7.01
+    RISK_REWARD_RATIO        = 1.5   # London Breakout retest pattern supports 1.5-2.0 RRR
     ATR_PERIOD               = 14
     ATR_MULTIPLIER           = 3.0
     MIN_SL_ATR_MULTIPLIER    = 0.8
@@ -367,8 +368,8 @@ PATTERN_BLACKLIST = [
 # BACKTEST MODE (Option B) -- CSV Replay
 # -------------------------------------------------------
 BACKTEST_MODE            = False
-BACKTEST_CSV            = "eurusd_m15_march2026.csv"
-BACKTEST_SPEED          = 1
+BACKTEST_CSV            = os.environ.get("BT_CSV", "eurusd_m15_march2026.csv")
+BACKTEST_SPEED          = int(os.environ.get("BT_SPEED", "1"))
 _backtest_index         = 0
 _backtest_data          = None
 
@@ -1042,18 +1043,20 @@ def check_backtest_limit_fill(direction: str, entry_price: float, expiry_candles
 
 
 def run_backtest_step():
-    """Advance backtest by one candle (call this instead of sleep in backtest mode)."""
+    """Advance backtest by one candle (call this instead of sleep in backtest mode).
+    Returns True if backtest is still running, False when complete."""
     global _backtest_index, _backtest_data, BACKTEST_SPEED
     if not BACKTEST_MODE or _backtest_data is None:
-        return
+        return False
     
     _backtest_index += BACKTEST_SPEED
     if _backtest_index >= len(_backtest_data):
         log("Backtest complete.", "INFO")
-        return
+        return False
     
     current_candle = _backtest_data.iloc[_backtest_index]
     log(f"Backtest: {current_candle['time']} | O:{current_candle['open']} H:{current_candle['high']} L:{current_candle['low']} C:{current_candle['close']}")
+    return True
 
 
 def detect_liquidity_sweep(df: pd.DataFrame):
@@ -2552,6 +2555,315 @@ def evaluate_silver_bullet(df, fvgs, sweep, sweep_level, price, atr,
 
 
 # =======================================================
+#  SECTION 12C -- SETUP EVALUATION: LONDON BREAKOUT MODE
+# =======================================================
+
+def evaluate_london_breakout(df, fvgs, sweep, sweep_level, price, atr,
+                             lot_size, session):
+    """
+    ICT London Breakout pattern.
+    1. Asian range established (00:00-04:00 UTC)
+    2. Breakout of Asian range during London Open killzone
+    3. Retest of the break level (Asian range high/low)
+    4. Entry on retest confirmation near the break level
+
+    Key levels: Asian Range High/Low.
+    No HTF bias or ADX -- breakout direction is the trend.
+    """
+    pdh, pdl = get_pdh_pdl()
+    asian_high, asian_low = get_asian_range(df)
+
+    if not asian_high or not asian_low:
+        log("London Breakout: No Asian range established. Waiting...")
+        return
+
+    if pdh and pdl:
+        log(f"PDH: {pdh:.5f}  |  PDL: {pdl:.5f}")
+    log(f"Asian Range: {asian_low:.5f} - {asian_high:.5f}")
+
+    spread = get_spread()
+    spread_pips = spread * 10000 if spread else 0
+    spread_ok = spread is not None and spread < MIN_SPREAD_PIPS
+    log(f"Price: {price:.5f}  |  ATR: {atr:.5f}  |  "
+        f"Lot: {lot_size}  |  Spread: {spread_pips:.1f}p")
+
+    for fvg_type, fvg_low, fvg_high, fvg_idx, ob, fvg_50 in fvgs:
+        if check_panic_candle(df, atr):
+            continue
+
+        # ── LONDON BREAKOUT: BUY ─────────────────────────
+        # Sweep below Asian low / PDL, then bullish FVG above Asian high = breakout
+        if sweep == "SWEEP_LOW" and fvg_type == "BULLISH_FVG":
+            if fvg_low < asian_high:
+                log("London Breakout: FVG not above Asian high -- not a confirmed breakout. Waiting.", "GUARD")
+                continue
+
+            level_sweep = False
+            if pdl and abs(sweep_level - pdl) < atr * 0.5:
+                level_sweep = True
+                log(f"PDL SWEEP: {sweep_level:.5f} ~ PDL {pdl:.5f}  [+5]")
+            if asian_low and abs(sweep_level - asian_low) < atr * 0.5:
+                level_sweep = True
+                log(f"ASIAN LOW SWEEP: {sweep_level:.5f} ~ AR Low {asian_low:.5f}  [+5]")
+
+            retest_zone_low = asian_high - atr * 0.3
+            retest_zone_high = asian_high + atr * 0.3
+            in_retest = retest_zone_low <= price <= retest_zone_high
+
+            if not in_retest:
+                log(f"London Breakout: Price {price:.5f} outside retest zone "
+                    f"({retest_zone_low:.5f}-{retest_zone_high:.5f}). Waiting for retest.", "GUARD")
+                continue
+
+            if not check_premium_discount_zone(df, price, "BUY"):
+                log("Not in discount zone. Skip.", "GUARD")
+                continue
+
+            score = 70
+            if level_sweep:
+                score += 10
+            if spread_ok:
+                score += 10
+            if fvg_low > asian_high + atr * 0.5:
+                score += 10
+
+            log(f"Confluence [LONDON BREAKOUT BUY]: {score}/100")
+
+            if not check_pre_trade_spread():
+                continue
+
+            if KRONOS_VETO_GATE is not None:
+                ctx = {
+                    "direction": "BUY",
+                    "setup_type": "LONDON_BREAKOUT",
+                    "sweep": sweep,
+                    "fvg_type": fvg_type,
+                    "fvg_position": "below_50" if price <= fvg_50 else ("50%" if abs(price - fvg_50) < atr * 0.1 else "above_50"),
+                    "bos_aligned": False,
+                    "htf_bias_ok": False,
+                    "confluence_score": score,
+                    "session": session,
+                    "atr": atr,
+                    "spread_ok": spread_ok,
+                    "trend": "BULLISH",
+                    "level_sweep": level_sweep,
+                    "asian_high": asian_high,
+                    "asian_low": asian_low
+                }
+                allowed, reason = KRONOS_VETO_GATE.validate(ctx, df, SYMBOL)
+                log(f"[KRONOS] BUY signal: {reason}", "GUARD")
+                if not allowed:
+                    log(f"Kronos vetoed BUY. Skipping trade.", "GUARD")
+                    return
+
+            stop = max(atr * ATR_MULTIPLIER, atr * MIN_SL_ATR_MULTIPLIER)
+            entry = round(price, 5)
+            sl = round(entry - stop, 5)
+            tp = round(entry + stop * RISK_REWARD_RATIO, 5)
+            res = place_trade("BUY", entry, sl, tp, lot_size)
+            if res and res.retcode == mt5.TRADE_RETCODE_DONE:
+                log(f"LONDON BREAKOUT BUY  Entry={entry}  SL={sl}  TP={tp}  Lot={lot_size}", "TRADE")
+                log_trade("BUY", entry, sl, tp, res, lot_size, session)
+                sessions_traded_today.add(session)
+                save_sessions(sessions_traded_today)
+            else:
+                log(f"LONDON BREAKOUT BUY FAILED. Code={res.retcode if res else 'N/A'}.", "ERROR")
+            return
+
+        # ── LONDON BREAKOUT: SELL ────────────────────────
+        # Sweep above Asian high / PDH, then bearish FVG below Asian low = breakout
+        if sweep == "SWEEP_HIGH" and fvg_type == "BEARISH_FVG":
+            if fvg_high > asian_low:
+                log("London Breakout: FVG not below Asian low -- not a confirmed breakout. Waiting.", "GUARD")
+                continue
+
+            level_sweep = False
+            if pdh and abs(sweep_level - pdh) < atr * 0.5:
+                level_sweep = True
+                log(f"PDH SWEEP: {sweep_level:.5f} ~ PDH {pdh:.5f}  [+5]")
+            if asian_high and abs(sweep_level - asian_high) < atr * 0.5:
+                level_sweep = True
+                log(f"ASIAN HIGH SWEEP: {sweep_level:.5f} ~ AR High {asian_high:.5f}  [+5]")
+
+            retest_zone_low = asian_low - atr * 0.3
+            retest_zone_high = asian_low + atr * 0.3
+            in_retest = retest_zone_low <= price <= retest_zone_high
+
+            if not in_retest:
+                log(f"London Breakout: Price {price:.5f} outside retest zone "
+                    f"({retest_zone_low:.5f}-{retest_zone_high:.5f}). Waiting for retest.", "GUARD")
+                continue
+
+            if not check_premium_discount_zone(df, price, "SELL"):
+                log("Not in premium zone. Skip.", "GUARD")
+                continue
+
+            score = 70
+            if level_sweep:
+                score += 10
+            if spread_ok:
+                score += 10
+            if fvg_high < asian_low - atr * 0.5:
+                score += 10
+
+            log(f"Confluence [LONDON BREAKOUT SELL]: {score}/100")
+
+            if not check_pre_trade_spread():
+                continue
+
+            if KRONOS_VETO_GATE is not None:
+                ctx = {
+                    "direction": "SELL",
+                    "setup_type": "LONDON_BREAKOUT",
+                    "sweep": sweep,
+                    "fvg_type": fvg_type,
+                    "fvg_position": "above_50" if price >= fvg_50 else ("50%" if abs(price - fvg_50) < atr * 0.1 else "below_50"),
+                    "bos_aligned": False,
+                    "htf_bias_ok": False,
+                    "confluence_score": score,
+                    "session": session,
+                    "atr": atr,
+                    "spread_ok": spread_ok,
+                    "trend": "BEARISH",
+                    "level_sweep": level_sweep,
+                    "asian_high": asian_high,
+                    "asian_low": asian_low
+                }
+                allowed, reason = KRONOS_VETO_GATE.validate(ctx, df, SYMBOL)
+                log(f"[KRONOS] SELL signal: {reason}", "GUARD")
+                if not allowed:
+                    log(f"Kronos vetoed SELL. Skipping trade.", "GUARD")
+                    return
+
+            stop = max(atr * ATR_MULTIPLIER, atr * MIN_SL_ATR_MULTIPLIER)
+            entry = round(price, 5)
+            sl = round(entry + stop, 5)
+            tp = round(entry - stop * RISK_REWARD_RATIO, 5)
+            res = place_trade("SELL", entry, sl, tp, lot_size)
+            if res and res.retcode == mt5.TRADE_RETCODE_DONE:
+                log(f"LONDON BREAKOUT SELL  Entry={entry}  SL={sl}  TP={tp}  Lot={lot_size}", "TRADE")
+                log_trade("SELL", entry, sl, tp, res, lot_size, session)
+                sessions_traded_today.add(session)
+                save_sessions(sessions_traded_today)
+            else:
+                log(f"LONDON BREAKOUT SELL FAILED. Code={res.retcode if res else 'N/A'}.", "ERROR")
+            return
+
+    log("London Breakout: No valid setup. Ingwe waits...")
+
+
+# =======================================================
+#  SECTION 12D -- SETUP EVALUATION: ICT M1 SCALPER MODE
+# =======================================================
+
+def evaluate_ict_m1(df, fvgs, sweep, sweep_level, price, atr,
+                    lot_size, session):
+    """
+    ICT M1 Scalper pattern.
+    - M1 timeframe, tight SL, quick entries
+    - Sweep + FVG on M1 candles
+    - No trend/ADX/HTF bias -- pure price action on M1
+    - Scans every 15 seconds across all killzones
+    """
+    spread = get_spread()
+    spread_pips = spread * 10000 if spread else 0
+    log(f"Price: {price:.5f}  |  ATR: {atr:.5f}  |  "
+        f"Lot: {lot_size}  |  Spread: {spread_pips:.1f}p")
+
+    for fvg_type, fvg_low, fvg_high, fvg_idx, ob, fvg_50 in fvgs:
+        if check_panic_candle(df, atr):
+            continue
+
+        # ── M1 BUY: sweep low + bullish FVG ──────────────
+        if sweep == "SWEEP_LOW" and fvg_type == "BULLISH_FVG":
+            if not check_pre_trade_spread():
+                continue
+
+            log(f"M1 Bullish FVG: {fvg_low:.5f}-{fvg_high:.5f}  |  50%: {fvg_50:.5f}")
+
+            if KRONOS_VETO_GATE is not None:
+                ctx = {
+                    "direction": "BUY",
+                    "setup_type": "ICT_M1",
+                    "sweep": sweep,
+                    "fvg_type": fvg_type,
+                    "fvg_position": "below_50" if price <= fvg_50 else ("50%" if abs(price - fvg_50) < atr * 0.1 else "above_50"),
+                    "bos_aligned": False,
+                    "htf_bias_ok": False,
+                    "confluence_score": 75,
+                    "session": session,
+                    "atr": atr,
+                    "spread_ok": spread is not None and spread < MIN_SPREAD_PIPS,
+                    "trend": "BULLISH",
+                    "level_sweep": True
+                }
+                allowed, reason = KRONOS_VETO_GATE.validate(ctx, df, SYMBOL)
+                log(f"[KRONOS] BUY signal: {reason}", "GUARD")
+                if not allowed:
+                    log(f"Kronos vetoed BUY. Skipping trade.", "GUARD")
+                    return
+
+            stop = max(atr * ATR_MULTIPLIER, atr * MIN_SL_ATR_MULTIPLIER)
+            entry = round(price, 5)
+            sl = round(entry - stop, 5)
+            tp = round(entry + stop * RISK_REWARD_RATIO, 5)
+            res = place_trade("BUY", entry, sl, tp, lot_size)
+            if res and res.retcode == mt5.TRADE_RETCODE_DONE:
+                log(f"M1 BUY  Entry={entry}  SL={sl}  TP={tp}  Lot={lot_size}", "TRADE")
+                log_trade("BUY", entry, sl, tp, res, lot_size, session)
+                sessions_traded_today.add(session)
+                save_sessions(sessions_traded_today)
+            else:
+                log(f"M1 BUY FAILED. Code={res.retcode if res else 'N/A'}.", "ERROR")
+            return
+
+        # ── M1 SELL: sweep high + bearish FVG ─────────────
+        if sweep == "SWEEP_HIGH" and fvg_type == "BEARISH_FVG":
+            if not check_pre_trade_spread():
+                continue
+
+            log(f"M1 Bearish FVG: {fvg_low:.5f}-{fvg_high:.5f}  |  50%: {fvg_50:.5f}")
+
+            if KRONOS_VETO_GATE is not None:
+                ctx = {
+                    "direction": "SELL",
+                    "setup_type": "ICT_M1",
+                    "sweep": sweep,
+                    "fvg_type": fvg_type,
+                    "fvg_position": "above_50" if price >= fvg_50 else ("50%" if abs(price - fvg_50) < atr * 0.1 else "below_50"),
+                    "bos_aligned": False,
+                    "htf_bias_ok": False,
+                    "confluence_score": 75,
+                    "session": session,
+                    "atr": atr,
+                    "spread_ok": spread is not None and spread < MIN_SPREAD_PIPS,
+                    "trend": "BEARISH",
+                    "level_sweep": True
+                }
+                allowed, reason = KRONOS_VETO_GATE.validate(ctx, df, SYMBOL)
+                log(f"[KRONOS] SELL signal: {reason}", "GUARD")
+                if not allowed:
+                    log(f"Kronos vetoed SELL. Skipping trade.", "GUARD")
+                    return
+
+            stop = max(atr * ATR_MULTIPLIER, atr * MIN_SL_ATR_MULTIPLIER)
+            entry = round(price, 5)
+            sl = round(entry + stop, 5)
+            tp = round(entry - stop * RISK_REWARD_RATIO, 5)
+            res = place_trade("SELL", entry, sl, tp, lot_size)
+            if res and res.retcode == mt5.TRADE_RETCODE_DONE:
+                log(f"M1 SELL  Entry={entry}  SL={sl}  TP={tp}  Lot={lot_size}", "TRADE")
+                log_trade("SELL", entry, sl, tp, res, lot_size, session)
+                sessions_traded_today.add(session)
+                save_sessions(sessions_traded_today)
+            else:
+                log(f"M1 SELL FAILED. Code={res.retcode if res else 'N/A'}.", "ERROR")
+            return
+
+    log("M1: No valid FVG sweep. Ingwe waits...")
+
+
+# =======================================================
 #  SECTION 12 -- MAIN SCAN LOOP
 # =======================================================
 
@@ -2670,6 +2982,12 @@ def run_agent():
     if STRATEGY == "SILVER_BULLET":
         evaluate_silver_bullet(df, fvgs, sweep, sweep_level, price, atr,
                                lot_size, active, unicorn_zones)
+    elif STRATEGY == "LONDON_OPEN":
+        evaluate_london_breakout(df, fvgs, sweep, sweep_level, price, atr,
+                                 lot_size, active)
+    elif STRATEGY == "ICT_M1":
+        evaluate_ict_m1(df, fvgs, sweep, sweep_level, price, atr,
+                        lot_size, active)
     else:
         evaluate_ingwe(df, fvgs, sweep, sweep_level, price, atr, lot_size, active)
 
@@ -2780,11 +3098,16 @@ if __name__ == "__main__":
             log("Check complete. Ingwe stands down.")
         elif _arg_backtest:
             log("BACKTEST MODE: Polling loop active.")
+            if _arg_fast:
+                log("FAST MODE: No real-time delay. Processing at maximum speed.")
             while True:
                 run_agent()
-                run_backtest_step()
                 print(); import sys; sys.stdout.flush()
-                time.sleep(SCAN_INTERVAL_SEC)
+                if not run_backtest_step():
+                    break
+                if not _arg_fast:
+                    time.sleep(SCAN_INTERVAL_SEC)
+            log("Backtest finished. See trade log and JSON results.")
         else:
             # Phase 1: Event-driven tick engine (production)
             if TICK_ENGINE_AVAILABLE:

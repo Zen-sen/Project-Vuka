@@ -19,7 +19,7 @@ if sys.platform == "win32":
     sys.stdout = codecs.getwriter('utf-8')(sys.stdout.buffer, 'strict')
     sys.stderr = codecs.getwriter('utf-8')(sys.stderr.buffer, 'strict')
 
-
+sys.path.insert(0, str(Path(__file__).parent.parent))
 from indicators import calculate_adx_wilder as _calculate_adx_wilder
 
 def calculate_adx_wilder(candles: list, period: int = 14):
@@ -29,6 +29,60 @@ def calculate_adx_wilder(candles: list, period: int = 14):
     low = np.array([c["low"] for c in candles])
     close = np.array([c["close"] for c in candles])
     return _calculate_adx_wilder(high, low, close, period)
+
+def precompute_adx_values(candles: list, period: int = 14) -> list:
+    """Efficient ADX precomputation: one pass to build arrays, then incremental Wilder calc."""
+    n = len(candles)
+    if n < period * 2 + 1:
+        return [None] * n
+
+    high = np.array([c["high"] for c in candles])
+    low = np.array([c["low"] for c in candles])
+    close = np.array([c["close"] for c in candles])
+    result = [None] * n
+
+    tr_arr = np.zeros(n)
+    plus_dm_arr = np.zeros(n)
+    minus_dm_arr = np.zeros(n)
+
+    for i in range(1, n):
+        tr_arr[i] = max(high[i] - low[i], abs(high[i] - close[i-1]), abs(low[i] - close[i-1]))
+        hd = high[i] - high[i-1]
+        ld = low[i-1] - low[i]
+        plus_dm_arr[i] = hd if (hd > ld and hd > 0) else 0.0
+        minus_dm_arr[i] = ld if (ld > hd and ld > 0) else 0.0
+
+    atr_s = float(np.sum(tr_arr[1:period + 1]))
+    pdm_s = float(np.sum(plus_dm_arr[1:period + 1]))
+    mdm_s = float(np.sum(minus_dm_arr[1:period + 1]))
+    dx_arr = np.zeros(n)
+
+    if atr_s > 0:
+        pdi = 100.0 * pdm_s / atr_s
+        mdi = 100.0 * mdm_s / atr_s
+        di_sum = pdi + mdi
+        dx_arr[period] = 100.0 * abs(pdi - mdi) / di_sum if di_sum else 0.0
+
+    for i in range(period + 1, n):
+        atr_s += -atr_s / period + tr_arr[i]
+        pdm_s += -pdm_s / period + plus_dm_arr[i]
+        mdm_s += -mdm_s / period + minus_dm_arr[i]
+        if atr_s == 0:
+            dx_arr[i] = 0.0
+            continue
+        pdi = 100.0 * pdm_s / atr_s
+        mdi = 100.0 * mdm_s / atr_s
+        di_sum = pdi + mdi
+        dx_arr[i] = 100.0 * abs(pdi - mdi) / di_sum if di_sum else 0.0
+
+    adx_s = float(np.mean(dx_arr[period:period * 2]))
+    result[period * 2 - 1] = adx_s
+
+    for i in range(period * 2, n):
+        adx_s = (adx_s * (period - 1) + dx_arr[i]) / period
+        result[i] = adx_s
+
+    return result
 
 
 BASE_DIR = Path(__file__).parent.parent
@@ -262,16 +316,15 @@ def simulate_ingwe(candles: list, config: dict, strategy: str = "INGWE", use_rea
     strategy_params = {
         "INGWE": {"fvg_chance": 0.65, "ob_chance": 0.55, "base_wr": 0.71, "sl_pips": (8, 20)},
         "SILVER_BULLET": {"fvg_chance": 0.50, "ob_chance": 0.40, "base_wr": 0.65, "sl_pips": (10, 25)},
+        "LONDON_OPEN": {"fvg_chance": 0.60, "ob_chance": 0.50, "base_wr": 0.63, "sl_pips": (8, 18)},
+        "ICT_M1": {"fvg_chance": 0.50, "ob_chance": 0.40, "base_wr": 0.55, "sl_pips": (4, 10)},
     }
     params = strategy_params.get(strategy, strategy_params["INGWE"])
 
-    adx_values = [None] * len(candles)
     min_adx_bars = 29
     if use_real_adx and len(candles) >= min_adx_bars:
         print(f"  Calculating real ADX for {len(candles)} candles...")
-        for i in range(min_adx_bars, len(candles)):
-            adx, _, _ = calculate_adx_wilder(candles[:i+1])
-            adx_values[i] = adx
+        adx_values = precompute_adx_values(candles)
 
     i = 0
     while i < len(candles) - 4:
@@ -624,7 +677,7 @@ Examples:
     action.add_argument("--results", action="store_true", help="Show last backtest results")
 
     parser.add_argument("--symbol", default="EURUSD", choices=["EURUSD", "GBPUSD"])
-    parser.add_argument("--strategy", default="INGWE", choices=["INGWE", "SILVER_BULLET", "BOTH"])
+    parser.add_argument("--strategy", default="INGWE", choices=["INGWE", "SILVER_BULLET", "LONDON_OPEN", "ICT_M1", "BOTH"])
     parser.add_argument("--from", dest="from_date", default="2025-01-01")
     parser.add_argument("--to", dest="to_date", default=datetime.now().strftime("%Y-%m-%d"))
     parser.add_argument("--export", action="store_true", help="Save results to file")

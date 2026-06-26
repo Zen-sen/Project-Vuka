@@ -1,0 +1,21 @@
+[
+  {
+    "symbol": "GBPUSDc",
+    "time": "2026-06-12 09:16:14",
+    "strategy": "SILVER_BULLET",
+    "market_mode": "summer",
+    "session": "SB_Window1",
+    "direction": "BUY",
+    "entry_req": 1.3397,
+    "entry_fill": 1.33979,
+    "slippage": 0.9,
+    "sl": 1.33873,
+    "tp": 1.34261,
+    "lot_size": 0.2,
+    "effective_rr": 2.66,
+    "retcode": 10009,
+    "comment": "GBPSB",
+    "position_id": 338777755,
+    "pnl_usd": null
+  }
+]
