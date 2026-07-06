@@ -283,7 +283,7 @@ class DatabaseManager:
                     trade_dict.get("slippage")
                 ))
                 
-                return cursor.lastrowid
+                return cursor.lastrowid or -1
         except sqlite3.IntegrityError:
             logger.debug(f"Trade already exists (duplicate): {trade_dict.get('time')}")
             return -1
@@ -387,12 +387,13 @@ class DatabaseManager:
                     sl_move_dict.get("movement"),
                     sl_move_dict.get("label")
                 ))
-                return cursor.lastrowid
+                lid = cursor.lastrowid
+                return lid if lid is not None else -1
         except Exception as e:
             logger.error(f"Error inserting SL movement: {e}")
             raise
     
-    def get_trades(self, symbol: str = None, strategy: str = None, days: int = 1, limit: int = 100) -> List[Dict]:
+    def get_trades(self, symbol: Optional[str] = None, strategy: Optional[str] = None, days: int = 1, limit: int = 100) -> List[Dict]:
         """Query trades with optional filtering."""
         try:
             conn = self._get_connection()
@@ -428,7 +429,7 @@ class DatabaseManager:
             logger.error(f"Error querying trades: {e}")
             return []
     
-    def get_daily_trades_count(self, date: str, symbol: str = None, strategy: str = None) -> int:
+    def get_daily_trades_count(self, date: str, symbol: Optional[str] = None, strategy: Optional[str] = None) -> int:
         """Get count of trades for a specific day."""
         try:
             conn = self._get_connection()
@@ -454,8 +455,8 @@ class DatabaseManager:
             return 0
     
     def log_event(self, level: str, component: str, message: str, 
-                     symbol: str = None, strategy: str = None, 
-                     trace_id: str = None, metadata: Dict = None):
+                     symbol: Optional[str] = None, strategy: Optional[str] = None, 
+                     trace_id: Optional[str] = None, metadata: Optional[Dict] = None):
         """
         Log a system event to the database.
         
@@ -487,7 +488,7 @@ class DatabaseManager:
             # Fallback to standard python logging if DB logging fails
             logger.error(f"Critical failure writing to system_logs: {e}")
     
-    def push_command(self, command: str, target: str = None, params: Dict = None):
+    def push_command(self, command: str, target: Optional[str] = None, params: Optional[Dict] = None):
         """Push a command to the queue for the Supervisor."""
         try:
             with self._transaction() as conn:

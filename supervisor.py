@@ -28,8 +28,6 @@ logger = get_logger("Supervisor")
 BOT_SCRIPTS = [
     ("EURUSD", "INGWE"),
     ("GBPUSD", "INGWE"),
-    ("EURUSD", "SILVER_BULLET"),
-    ("GBPUSD", "SILVER_BULLET"),
 ]
 RESTART_DELAY = 60  # seconds to wait before restarting crashed bot
 HEALTH_CHECK_INTERVAL = 30  # seconds between health checks

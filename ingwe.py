@@ -9,6 +9,7 @@ import os
 import sys
 import hashlib
 import codecs
+from typing import Optional
 
 
 # ── ARGUMENT PARSING (Moved to top for Logger) ────────────────
@@ -578,7 +579,7 @@ def mt5_fetch_with_retry(fetch_fn, *args, **kwargs):
     return None
 
 
-def is_data_fresh(df: pd.DataFrame, session: str = None) -> bool:
+def is_data_fresh(df: pd.DataFrame, session: Optional[str] = None) -> bool:
     if df is None or df.empty:
         return False
     last_utc = df["time"].iloc[-1]
@@ -604,7 +605,7 @@ def has_frozen_prices(df: pd.DataFrame, lookback: int = 4) -> bool:
     return False
 
 
-def validate_candles(df: pd.DataFrame, session: str = None) -> bool:
+def validate_candles(df: pd.DataFrame, session: Optional[str] = None) -> bool:
     if df is None or len(df) < 50:
         log("Insufficient candle data (need 50+).", "WARN")
         return False

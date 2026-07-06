@@ -18,15 +18,10 @@ start "Kronos Server" "%PYTHON%" kronos_server.py
 echo       Waiting 15s for Kronos to be ready (model download + load)...
 timeout /t 15 /nobreak > nul
 
-REM [2/3] Supervisor — launches all 4 bot instances into a live Kronos
+REM [2/3] Supervisor — launches 2 INGWE bot instances
 echo [2/3] Starting Supervisor (manages all bots)...
 start "Vuka Supervisor" /min "%PYTHON%" supervisor.py
 timeout /t 3 /nobreak > nul
-
-REM [2b/3] GBPUSD LONDON_OPEN — standalone visible window
-echo [--] Spawning: GBPUSD - LONDON_OPEN
-start "Ingwe - GBPUSD LondonOpen" cmd /k "%PYTHON%" ingwe.py GBPUSD LONDON_OPEN
-timeout /t 2 /nobreak > nul
 
 REM [3/3] Dashboard
 echo [3/3] Opening Dashboard...
@@ -38,8 +33,7 @@ echo  ALL SYSTEMS STARTED
 echo ==========================================
 echo.
 echo  Kronos           : Visible window — AI trade validation (check it's running)
-echo  Supervisor       : Manages 4 bots (EURUSD/GBPUSD x INGWE/SB)
-echo  LondonOpen       : GBPUSD London Open standalone window
+echo  Supervisor       : Manages 2 bots (EURUSD/GBPUSD - INGWE only)
 echo  Dashboard        : Live fleet monitor
 echo.
 echo  Commands:
