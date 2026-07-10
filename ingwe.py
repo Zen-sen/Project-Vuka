@@ -292,19 +292,18 @@ elif STRATEGY == "ICT_M1":
     ADX_MIN_THRESHOLD        = 25
     MIN_SPREAD_PIPS          = 0.0002
     MAX_DAILY_LOSS           = 50.0
-    MAX_DRAWDOWN_PCT         = 10.0
     HARD_LOT_CAP             = 0.20
-    SCAN_INTERVAL_SEC        = 15
-    DATA_STALE_MINUTES       = 2
-    DATA_STALE_MINUTES_ASIAN = 5
+    SCAN_INTERVAL_SEC        = 60
+    DATA_STALE_MINUTES       = 5
+    DATA_STALE_MINUTES_ASIAN = 10
     MT5_RETRY_ATTEMPTS       = 3
     MT5_RETRY_DELAY_SEC      = 10
-elif STRATEGY == "LONDON_OPEN":
+elif STRATEGY == "SILVER_BULLET":
     TIMEFRAME                = mt5.TIMEFRAME_M15
     RISK_PERCENT             = 1.0
-    RISK_REWARD_RATIO        = 1.5   # London Breakout retest pattern supports 1.5-2.0 RRR
+    RISK_REWARD_RATIO        = 2.0
     ATR_PERIOD               = 14
-    ATR_MULTIPLIER           = 3.0
+    ATR_MULTIPLIER           = 1.5
     MIN_SL_ATR_MULTIPLIER    = 0.8
     LIMIT_ORDER_EXPIRY_CANDLES = 4
     ADX_PERIOD               = 14
@@ -455,6 +454,9 @@ ICT_M1_SESSIONS = {
 initial_equity        = None
 consecutive_losses    = 0
 sessions_traded_today = set()
+
+# HTF bias cache — refreshed at most once per hour to prevent MT5 throttling
+_htf_bias_cache: dict = {"bias": None, "timestamp": 0.0}
 
 
 # =======================================================
@@ -871,9 +873,16 @@ def get_htf_bias() -> str | None:
     D1 + H4 EMA10/30 must agree for a confirmed bias.
     Returns 'BULLISH', 'BEARISH', or None (conflicted).
     v5.5: BACKTEST_MODE guard -- skips live MT5 calls during backtest.
+    v6.0: HTF data cached for 1 hour to prevent MT5 throttling.
     """
+    global _htf_bias_cache
     if BACKTEST_MODE:
         return None
+
+    now = time.time()
+    cache_age = now - _htf_bias_cache["timestamp"]
+    if cache_age < 3600 and _htf_bias_cache["bias"] is not None:
+        return _htf_bias_cache["bias"]
 
     d1_rates = mt5_fetch_with_retry(
         mt5.copy_rates_from_pos, SYMBOL, mt5.TIMEFRAME_D1, 0, 50
@@ -901,9 +910,11 @@ def get_htf_bias() -> str | None:
     h4_bias = "BULLISH" if h4_ema10 > h4_ema30 else ("BEARISH" if h4_ema10 < h4_ema30 else None)
     
     if d1_bias and h4_bias and d1_bias == h4_bias:
+        _htf_bias_cache = {"bias": d1_bias, "timestamp": now}
         return d1_bias
     
     log(f"HTF bias split -- D1: {d1_bias}  H4: {h4_bias}. No HTF confirmation.")
+    _htf_bias_cache = {"bias": None, "timestamp": now}
     return None
 
 def get_draw_on_liquidity(direction: str) -> tuple[str, float] | tuple[None, None]:
@@ -1337,7 +1348,7 @@ def check_premium_discount_zone(df: pd.DataFrame, price: float, direction: str) 
     return price >= (hi - rng * 0.50)
 
 
-def check_pre_trade_spread() -> bool:
+def check_pre_trade_spread(atr: float | None = None) -> bool:
     spread = get_spread()
     if spread is None:
         log("Spread unavailable.", "WARN")
@@ -1349,9 +1360,15 @@ def check_pre_trade_spread() -> bool:
             log(f"Spread too wide: ${spread:.2f} (max: ${max_spread})", "GUARD")
             return False
     else:
-        if spread > MIN_SPREAD_PIPS * 2:
-            log(f"Spread too wide: {spread*10000:.1f}p.", "GUARD")
-            return False
+        if atr is not None:
+            max_spread = atr * 0.3
+            if spread > max_spread:
+                log(f"Spread too wide: {spread*10000:.1f}p (ATR={atr:.5f}, max={max_spread:.5f}).", "GUARD")
+                return False
+        else:
+            if spread > MIN_SPREAD_PIPS * 2:
+                log(f"Spread too wide: {spread*10000:.1f}p.", "GUARD")
+                return False
     return True
 
 
@@ -2066,7 +2083,7 @@ def evaluate_ingwe(df, fvgs, sweep, sweep_level, price, atr, lot_size, session):
                 score_ok = False
             else:
                 score_ok = True
-            if not check_pre_trade_spread():
+            if not check_pre_trade_spread(atr):
                 continue
             
             def _build_context(dir, setup_type, fvg_t, fvg_50_val):
@@ -2133,7 +2150,7 @@ def evaluate_ingwe(df, fvgs, sweep, sweep_level, price, atr, lot_size, session):
             if score < threshold:
                 log(f"Score {score} < {threshold}. Waiting.", "GUARD")
                 continue
-            if not check_pre_trade_spread():
+            if not check_pre_trade_spread(atr):
                 continue
             if KRONOS_VETO_GATE is not None:
                 ctx = {
@@ -2193,7 +2210,7 @@ def evaluate_ingwe(df, fvgs, sweep, sweep_level, price, atr, lot_size, session):
             if score < threshold:
                 log(f"Score {score} < {threshold}. Waiting.", "GUARD")
                 continue
-            if not check_pre_trade_spread():
+            if not check_pre_trade_spread(atr):
                 continue
             
             if KRONOS_VETO_GATE is not None:
@@ -2241,8 +2258,12 @@ def evaluate_ingwe(df, fvgs, sweep, sweep_level, price, atr, lot_size, session):
                 continue
             # v6.0: HTF bias is a soft warning, not a hard block.
             # Kronos will receive the flag and decide based on buy_threshold.
+            effective_buy_threshold = BUY_THRESHOLD
             if not htf_bias_ok:
-                log(f"HTF bias ({htf_bias}) not confirmed. Allowing Kronos to decide with BUY threshold {BUY_THRESHOLD}.", "WARN")
+                if session and "asian" in session.lower():
+                    effective_buy_threshold = 0.60
+                    log(f"Asian split HTF -- raising Kronos threshold to {effective_buy_threshold}.", "GUARD")
+                log(f"HTF bias ({htf_bias}) not confirmed. Allowing Kronos to decide with BUY threshold {effective_buy_threshold}.", "WARN")
             if htf_bias != "BULLISH":
                 log(f"HTF bias ({htf_bias}) not bullish. Flagging for Kronos review.", "WARN")
             log(f"Zone context: {_zone_context(df, price)}")
@@ -2261,7 +2282,7 @@ def evaluate_ingwe(df, fvgs, sweep, sweep_level, price, atr, lot_size, session):
             if score < threshold:
                 log(f"Score {score} < {threshold}. Waiting.", "GUARD")
                 continue
-            if not check_pre_trade_spread():
+            if not check_pre_trade_spread(atr):
                 continue
             
             if KRONOS_VETO_GATE is not None:
@@ -2281,7 +2302,7 @@ def evaluate_ingwe(df, fvgs, sweep, sweep_level, price, atr, lot_size, session):
                     "spread_ok": spread_ok,
                     "trend": trend,
                     "level_sweep": level_sweep,
-                    "buy_threshold": BUY_THRESHOLD
+                    "buy_threshold": effective_buy_threshold
                 }
                 allowed, reason = KRONOS_VETO_GATE.validate(ctx, df, SYMBOL)
                 log(f"[KRONOS] BUY signal: {reason}", "GUARD")
@@ -2346,7 +2367,7 @@ def evaluate_silver_bullet(df, fvgs, sweep, sweep_level, price, atr,
                     continue
                 if check_panic_candle(df, atr):
                     continue
-                if not check_pre_trade_spread():
+                if not check_pre_trade_spread(atr):
                     continue
                 
                 if KRONOS_VETO_GATE is not None:
@@ -2361,7 +2382,7 @@ def evaluate_silver_bullet(df, fvgs, sweep, sweep_level, price, atr,
                         "confluence_score": 80,
                         "session": window,
                         "atr": atr,
-                        "spread_ok": check_pre_trade_spread(),
+                        "spread_ok": check_pre_trade_spread(atr),
                         "trend": "BULLISH",
                         "level_sweep": True
                     }
@@ -2398,7 +2419,7 @@ def evaluate_silver_bullet(df, fvgs, sweep, sweep_level, price, atr,
                     continue
                 if check_panic_candle(df, atr):
                     continue
-                if not check_pre_trade_spread():
+                if not check_pre_trade_spread(atr):
                     continue
                 
                 if KRONOS_VETO_GATE is not None:
@@ -2413,7 +2434,7 @@ def evaluate_silver_bullet(df, fvgs, sweep, sweep_level, price, atr,
                         "confluence_score": 80,
                         "session": window,
                         "atr": atr,
-                        "spread_ok": check_pre_trade_spread(),
+                        "spread_ok": check_pre_trade_spread(atr),
                         "trend": "BEARISH",
                         "level_sweep": True
                     }
@@ -2455,7 +2476,7 @@ def evaluate_silver_bullet(df, fvgs, sweep, sweep_level, price, atr,
                 log(f"Price in FVG but above 50% ({fvg_50:.5f}) -- waiting deeper.",
                     "GUARD")
                 continue
-            if not check_pre_trade_spread():
+            if not check_pre_trade_spread(atr):
                 continue
 
             if KRONOS_VETO_GATE is not None:
@@ -2471,7 +2492,7 @@ def evaluate_silver_bullet(df, fvgs, sweep, sweep_level, price, atr,
                     "confluence_score": 70,
                     "session": window,
                     "atr": atr,
-                    "spread_ok": check_pre_trade_spread(),
+                    "spread_ok": check_pre_trade_spread(atr),
                     "trend": "BULLISH",
                     "level_sweep": True,
                     "draw_on_liquidity": dol_name,
@@ -2508,7 +2529,7 @@ def evaluate_silver_bullet(df, fvgs, sweep, sweep_level, price, atr,
                 log(f"Price in FVG but below 50% ({fvg_50:.5f}) -- waiting deeper.",
                     "GUARD")
                 continue
-            if not check_pre_trade_spread():
+            if not check_pre_trade_spread(atr):
                 continue
 
             if KRONOS_VETO_GATE is not None:
@@ -2524,7 +2545,7 @@ def evaluate_silver_bullet(df, fvgs, sweep, sweep_level, price, atr,
                     "confluence_score": 70,
                     "session": window,
                     "atr": atr,
-                    "spread_ok": check_pre_trade_spread(),
+                    "spread_ok": check_pre_trade_spread(atr),
                     "trend": "BEARISH",
                     "level_sweep": True,
                     "draw_on_liquidity": dol_name,
@@ -2630,7 +2651,7 @@ def evaluate_london_breakout(df, fvgs, sweep, sweep_level, price, atr,
 
             log(f"Confluence [LONDON BREAKOUT BUY]: {score}/100")
 
-            if not check_pre_trade_spread():
+            if not check_pre_trade_spread(atr):
                 continue
 
             if KRONOS_VETO_GATE is not None:
@@ -2661,6 +2682,9 @@ def evaluate_london_breakout(df, fvgs, sweep, sweep_level, price, atr,
             entry = round(price, 5)
             sl = round(entry - stop, 5)
             tp = round(entry + stop * RISK_REWARD_RATIO, 5)
+            print(f"[DEBUG_ENG] Symbol={SYMBOL} | Strategy=LONDON_OPEN | "
+                  f"Dir=BUY | Entry={entry} | SL={sl} | TP={tp} | "
+                  f"Stop={stop} | Active_RRR={RISK_REWARD_RATIO}")
             res = place_trade("BUY", entry, sl, tp, lot_size)
             if res and res.retcode == mt5.TRADE_RETCODE_DONE:
                 log(f"LONDON BREAKOUT BUY  Entry={entry}  SL={sl}  TP={tp}  Lot={lot_size}", "TRADE")
@@ -2709,7 +2733,7 @@ def evaluate_london_breakout(df, fvgs, sweep, sweep_level, price, atr,
 
             log(f"Confluence [LONDON BREAKOUT SELL]: {score}/100")
 
-            if not check_pre_trade_spread():
+            if not check_pre_trade_spread(atr):
                 continue
 
             if KRONOS_VETO_GATE is not None:
@@ -2740,6 +2764,9 @@ def evaluate_london_breakout(df, fvgs, sweep, sweep_level, price, atr,
             entry = round(price, 5)
             sl = round(entry + stop, 5)
             tp = round(entry - stop * RISK_REWARD_RATIO, 5)
+            print(f"[DEBUG_ENG] Symbol={SYMBOL} | Strategy=LONDON_OPEN | "
+                  f"Dir=SELL | Entry={entry} | SL={sl} | TP={tp} | "
+                  f"Stop={stop} | Active_RRR={RISK_REWARD_RATIO}")
             res = place_trade("SELL", entry, sl, tp, lot_size)
             if res and res.retcode == mt5.TRADE_RETCODE_DONE:
                 log(f"LONDON BREAKOUT SELL  Entry={entry}  SL={sl}  TP={tp}  Lot={lot_size}", "TRADE")
@@ -2777,7 +2804,7 @@ def evaluate_ict_m1(df, fvgs, sweep, sweep_level, price, atr,
 
         # ── M1 BUY: sweep low + bullish FVG ──────────────
         if sweep == "SWEEP_LOW" and fvg_type == "BULLISH_FVG":
-            if not check_pre_trade_spread():
+            if not check_pre_trade_spread(atr):
                 continue
 
             log(f"M1 Bullish FVG: {fvg_low:.5f}-{fvg_high:.5f}  |  50%: {fvg_50:.5f}")
@@ -2820,7 +2847,7 @@ def evaluate_ict_m1(df, fvgs, sweep, sweep_level, price, atr,
 
         # ── M1 SELL: sweep high + bearish FVG ─────────────
         if sweep == "SWEEP_HIGH" and fvg_type == "BEARISH_FVG":
-            if not check_pre_trade_spread():
+            if not check_pre_trade_spread(atr):
                 continue
 
             log(f"M1 Bearish FVG: {fvg_low:.5f}-{fvg_high:.5f}  |  50%: {fvg_50:.5f}")
@@ -2945,7 +2972,7 @@ def run_agent():
 
     # ── FVG ──────────────────────────────────────────────
     if STRATEGY == "SILVER_BULLET":
-        fvg_lookback = 4
+        fvg_lookback = 8
     elif STRATEGY == "ICT_M1":
         fvg_lookback = 40
     else:
@@ -3123,6 +3150,7 @@ if __name__ == "__main__":
                         callback=on_candle_open,
                         verbose=False,
                         max_idle_seconds=CONFIG.get("tick_engine", {}).get("heartbeat_seconds", 180),
+                        api_timeout=CONFIG.get("tick_engine", {}).get("api_timeout", 30),
                     )
                     log(f"Starting event-driven loop: {SYMBOL} @ {TIMEFRAME}")
                     engine.run()  # Blocks forever, executes on candle events
