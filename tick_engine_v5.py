@@ -17,6 +17,7 @@ Performance:
 - Entry price improvement: ±15-900 pips → ±0-1 pips
 """
 
+import concurrent.futures
 import MetaTrader5 as mt5
 from datetime import datetime, timedelta, timezone
 import time
@@ -37,7 +38,7 @@ class TickEngine:
     Handles multiple symbols and timeframes with automatic throttling.
     """
     
-    def __init__(self, symbol, timeframe, callback=None, verbose=True, max_idle_seconds=300):
+    def __init__(self, symbol, timeframe, callback=None, verbose=True, max_idle_seconds=300, api_timeout=30):
         """
         Args:
             symbol: MT5 symbol (e.g., 'EURUSDc')
@@ -45,12 +46,14 @@ class TickEngine:
             callback: Function to call on new candle: callback(candle_open_time)
             verbose: Print tick debug output
             max_idle_seconds: Fall back to time-based polling after N seconds without ticks
+            api_timeout: Max seconds to wait for mt5.copy_ticks_from before treating as hang
         """
         self.symbol = symbol
         self.timeframe = timeframe
         self.callback = callback
         self.verbose = verbose
         self.max_idle_seconds = max_idle_seconds
+        self.api_timeout = api_timeout
         
         # State tracking
         self.last_candle_open = None
@@ -77,9 +80,11 @@ class TickEngine:
         
         self.candle_duration = self.timeframe_seconds[timeframe]
         
+        self._executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+
         if verbose:
             print(f"[TickEngine] Initialized: {symbol} @ {self._timeframe_name()} "
-                  f"({self.candle_duration}s candles)")
+                  f"({self.candle_duration}s candles, api_timeout={api_timeout}s)")
     
     def _timeframe_name(self):
         """Convert MT5 timeframe constant to readable name"""
@@ -174,10 +179,27 @@ class TickEngine:
         """
         time_from = datetime.now() - timedelta(milliseconds=timeout_ms)
         idle_start = datetime.now()
+        _consecutive_timeouts = 0
         
         while True:
             try:
-                ticks = mt5.copy_ticks_from(self.symbol, time_from, mt5.COPY_TICKS_ALL)
+                future = self._executor.submit(
+                    mt5.copy_ticks_from, self.symbol, time_from, mt5.COPY_TICKS_ALL
+                )
+                try:
+                    ticks = future.result(timeout=self.api_timeout)
+                    _consecutive_timeouts = 0
+                except concurrent.futures.TimeoutError:
+                    _consecutive_timeouts += 1
+                    if self.verbose:
+                        print(f"[TickEngine] mt5.copy_ticks_from() timed out "
+                              f"({self.api_timeout}s) -- #{_consecutive_timeouts}")
+                    if _consecutive_timeouts >= 3:
+                        raise RuntimeError(
+                            f"MT5 API hung {_consecutive_timeouts}x in a row "
+                            f"({self.api_timeout}s each). Falling back to polling."
+                        )
+                    ticks = None
                 
                 if ticks is not None and len(ticks) > 0:
                     for tick in ticks:
