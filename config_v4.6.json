@@ -25,5 +25,15 @@
   "heartbeat": {
     "enabled": true,
     "interval_seconds": 60
+  },
+  "trading_governor": {
+    "enabled": true,
+    "blocked_sessions": ["London Open"],
+    "allowed_sessions": ["Asian", "London Close"],
+    "allowed_directions": ["SELL"],
+    "htf_aligned_exception": true,
+    "daily_loss_limit": 50.0,
+    "weekly_trade_cap": 10,
+    "log_rejections": true
   }
 }

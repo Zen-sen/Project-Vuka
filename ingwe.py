@@ -34,6 +34,7 @@ from kronos_guardian import KronosVetoGate, create_veto_gate
 from database_manager import get_db
 from unified_logger import get_logger
 from memory_manager import MemoryManager
+from skills.trading_governor import TradingGovernor
 
 # Initialize Unified Logger
 logger = get_logger(_instance_tag)
@@ -70,6 +71,9 @@ KRONOS_VETO_GATE = create_veto_gate({
 
 # BUY threshold: lower bar for entry since Kronos is SELL-heavy
 BUY_THRESHOLD = _veto_cfg.get("buy_threshold", 0.35)
+
+# Initialize Trading Governor (P0-FULL filter system)
+TRADING_GOVERNOR = TradingGovernor(CONFIG)
 
 # Database manager for SQLite consolidation
 try:
@@ -1502,11 +1506,12 @@ def calculate_confluence_score(trend, fvg_ok, zone_ok, spread_ok, adx_ok,
 #  SECTION 10 -- TRADE EXECUTION & LOGGING
 # =======================================================
 
-def log_trade(direction, entry, sl, tp, result, lot_size, session):
+def log_trade(direction, entry, sl, tp, result, lot_size, session, context=None, kronos_gate=None):
     """
     Log trade to database (primary) or JSON fallback.
     Tracks: fill price, slippage, effective RR based on actual execution.
     v5.5: Pulls actual fill from MT5 deal history when available.
+    v4.6.1: Accepts optional context dict and kronos gate for enrichment fields.
     """
     actual_fill = entry
     position_id = 0
@@ -1534,6 +1539,35 @@ def log_trade(direction, entry, sl, tp, result, lot_size, session):
     
     effective_rr = tp_dist_actual / sl_dist_actual if sl_dist_actual > 0 else 0
     
+    # Enrichment fields from live context dict
+    htf_bias_val = "SPLIT"
+    if context:
+        trend_val = context.get("trend", "")
+        htf_ok = context.get("htf_bias_ok", False)
+        if trend_val and htf_ok:
+            htf_bias_val = trend_val
+        elif trend_val:
+            htf_bias_val = f"{trend_val}_SPLIT"
+    
+    kronos_decision_val = "ALLOW"
+    kronos_confidence_val = 0.0
+    circuit_breaker_val = "CLOSED"
+    api_latency_val = 0.0
+    if kronos_gate and kronos_gate.last_decision:
+        kd = kronos_gate.last_decision
+        kronos_decision_val = kd.get("decision", "ALLOW")
+        kronos_confidence_val = kd.get("confidence", 0.0)
+        circuit_breaker_val = kd.get("circuit_breaker_state", "CLOSED")
+        api_latency_val = kd.get("api_latency_ms", 0.0)
+    
+    spread_val = None
+    try:
+        spread_raw = get_spread()
+        if spread_raw is not None:
+            spread_val = round(spread_raw * 10000, 1)
+    except Exception:
+        pass
+    
     trade_entry = {
         "symbol":      SYMBOL,
         "time":        datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -1551,10 +1585,24 @@ def log_trade(direction, entry, sl, tp, result, lot_size, session):
         "retcode":     result.retcode,
         "comment":     getattr(result, "comment", ""),
         "position_id": position_id,
-        "pnl_usd":     None
+        "pnl_usd":     None,
+        "htf_bias":    htf_bias_val,
+        "kronos_decision": kronos_decision_val,
+        "kronos_confidence": kronos_confidence_val,
+        "circuit_breaker": circuit_breaker_val,
+        "api_latency_ms": api_latency_val,
+        "spread_at_entry": spread_val,
     }
     
+    if context:
+        trade_entry["fvg_confirmed"] = context.get("fvg_type") is not None and context["fvg_type"] not in ("", "UNKNOWN", None)
+        trade_entry["ob_present"] = context.get("ob_present", False)
+        trade_entry["confluence_score"] = context.get("confluence_score", 0)
+        trade_entry["setup_type"] = context.get("setup_type", "")
+    
     log(f"[FILL] req={entry} fill={actual_fill} slip={slippage_pips:.1f}p eff_RR={effective_rr:.2f}", "TRADE")
+    
+    TRADING_GOVERNOR.record_trade()
     
     if DB_AVAILABLE:
         try:
@@ -2053,6 +2101,11 @@ def evaluate_ingwe(df, fvgs, sweep, sweep_level, price, atr, lot_size, session):
 
         # ── PATH A: BUY REVERSAL ─────────────────────────
         if sweep == "SWEEP_LOW" and fvg_type == "BULLISH_FVG" and trend == "BULLISH":
+            # P0-B: Direction filter gate (SELL default, HTF exception)
+            dir_allowed, dir_reason = TRADING_GOVERNOR.check_direction("BUY", htf_bias, _instance_tag)
+            if not dir_allowed:
+                log(f"Direction blocked: BUY ({dir_reason}).", "GUARD")
+                continue
             if plus_di is None or minus_di is None or plus_di <= minus_di:
                 log(f"DI filter: +DI({plus_di}) <= -DI({minus_di}). Skip.", "GUARD")
                 continue
@@ -2102,11 +2155,15 @@ def evaluate_ingwe(df, fvgs, sweep, sweep_level, price, atr, lot_size, session):
                     "atr": atr,
                     "spread_ok": spread_ok,
                     "trend": trend,
-                    "level_sweep": level_sweep
+                    "level_sweep": level_sweep,
+                    "ob_present": ob is not None,
+                    "fvg_low": fvg_low,
+                    "fvg_high": fvg_high,
+                    "fvg_50": fvg_50_val
                 }
             
+            ctx = _build_context("BUY", "REVERSAL", fvg_type, fvg_50)
             if KRONOS_VETO_GATE is not None:
-                ctx = _build_context("BUY", "REVERSAL", fvg_type, fvg_50)
                 allowed, reason = KRONOS_VETO_GATE.validate(ctx, df, SYMBOL)
                 log(f"[KRONOS] BUY signal: {reason}", "GUARD")
                 if not allowed:
@@ -2120,7 +2177,7 @@ def evaluate_ingwe(df, fvgs, sweep, sweep_level, price, atr, lot_size, session):
             res   = place_trade("BUY", entry, sl, tp, lot_size)
             if res and res.retcode == mt5.TRADE_RETCODE_DONE:
                 log(f"BUY MARKET  Entry={entry}  SL={sl}  TP={tp}  Lot={lot_size}", "TRADE")
-                log_trade("BUY", entry, sl, tp, res, lot_size, session)
+                log_trade("BUY", entry, sl, tp, res, lot_size, session, context=ctx, kronos_gate=KRONOS_VETO_GATE)
                 sessions_traded_today.add(session)
                 save_sessions(sessions_traded_today)
             else:
@@ -2152,24 +2209,28 @@ def evaluate_ingwe(df, fvgs, sweep, sweep_level, price, atr, lot_size, session):
                 continue
             if not check_pre_trade_spread(atr):
                 continue
+            ctx = {
+                "direction": "SELL",
+                "setup_type": "REVERSAL",
+                "sweep": sweep,
+                "fvg_type": fvg_type,
+                "fvg_position": "above_50" if price >= fvg_50 else ("50%" if abs(price - fvg_50) < atr * 0.1 else "below_50"),
+                "bos_aligned": bos_aligned,
+                "htf_bias_ok": htf_bias_ok,
+                "adx_ok": True,
+                "score_ok": True,
+                "confluence_score": score,
+                "session": session,
+                "atr": atr,
+                "spread_ok": spread_ok,
+                "trend": trend,
+                "level_sweep": level_sweep,
+                "ob_present": ob is not None,
+                "fvg_low": fvg_low,
+                "fvg_high": fvg_high,
+                "fvg_50": fvg_50
+            }
             if KRONOS_VETO_GATE is not None:
-                ctx = {
-                    "direction": "SELL",
-                    "setup_type": "REVERSAL",
-                    "sweep": sweep,
-                    "fvg_type": fvg_type,
-                    "fvg_position": "above_50" if price >= fvg_50 else ("50%" if abs(price - fvg_50) < atr * 0.1 else "below_50"),
-                    "bos_aligned": bos_aligned,
-                    "htf_bias_ok": htf_bias_ok,
-                    "adx_ok": True,
-                    "score_ok": True,
-                    "confluence_score": score,
-                    "session": session,
-                    "atr": atr,
-                    "spread_ok": spread_ok,
-                    "trend": trend,
-                    "level_sweep": level_sweep
-                }
                 allowed, reason = KRONOS_VETO_GATE.validate(ctx, df, SYMBOL)
                 log(f"[KRONOS] SELL signal: {reason}", "GUARD")
                 if not allowed:
@@ -2182,7 +2243,7 @@ def evaluate_ingwe(df, fvgs, sweep, sweep_level, price, atr, lot_size, session):
             res   = place_trade("SELL", entry, sl, tp, lot_size)
             if res and res.retcode == mt5.TRADE_RETCODE_DONE:
                 log(f"SELL MARKET  Entry={entry}  SL={sl}  TP={tp}  Lot={lot_size}", "TRADE")
-                log_trade("SELL", entry, sl, tp, res, lot_size, session)
+                log_trade("SELL", entry, sl, tp, res, lot_size, session, context=ctx, kronos_gate=KRONOS_VETO_GATE)
                 sessions_traded_today.add(session)
                 save_sessions(sessions_traded_today)
             else:
@@ -2213,24 +2274,28 @@ def evaluate_ingwe(df, fvgs, sweep, sweep_level, price, atr, lot_size, session):
             if not check_pre_trade_spread(atr):
                 continue
             
+            ctx = {
+                "direction": "SELL",
+                "setup_type": "CONTINUATION",
+                "sweep": sweep,
+                "fvg_type": fvg_type,
+                "fvg_position": "above_50" if price >= fvg_50 else ("50%" if abs(price - fvg_50) < atr * 0.1 else "below_50"),
+                "bos_aligned": bos_aligned,
+                "htf_bias_ok": htf_bias_ok,
+                "adx_ok": True,
+                "score_ok": True,
+                "confluence_score": score,
+                "session": session,
+                "atr": atr,
+                "spread_ok": spread_ok,
+                "trend": trend,
+                "level_sweep": level_sweep,
+                "ob_present": ob is not None,
+                "fvg_low": fvg_low,
+                "fvg_high": fvg_high,
+                "fvg_50": fvg_50
+            }
             if KRONOS_VETO_GATE is not None:
-                ctx = {
-                    "direction": "SELL",
-                    "setup_type": "CONTINUATION",
-                    "sweep": sweep,
-                    "fvg_type": fvg_type,
-                    "fvg_position": "above_50" if price >= fvg_50 else ("50%" if abs(price - fvg_50) < atr * 0.1 else "below_50"),
-                    "bos_aligned": bos_aligned,
-                    "htf_bias_ok": htf_bias_ok,
-                    "adx_ok": True,
-                    "score_ok": True,
-                    "confluence_score": score,
-                    "session": session,
-                    "atr": atr,
-                    "spread_ok": spread_ok,
-                    "trend": trend,
-                    "level_sweep": level_sweep
-                }
                 allowed, reason = KRONOS_VETO_GATE.validate(ctx, df, SYMBOL)
                 log(f"[KRONOS] SELL signal: {reason}", "GUARD")
                 if not allowed:
@@ -2244,7 +2309,7 @@ def evaluate_ingwe(df, fvgs, sweep, sweep_level, price, atr, lot_size, session):
             res   = place_trade("SELL", entry, sl, tp, lot_size)
             if res and res.retcode == mt5.TRADE_RETCODE_DONE:
                 log(f"SELL MARKET  Entry={entry}  SL={sl}  TP={tp}  Lot={lot_size}", "TRADE")
-                log_trade("SELL", entry, sl, tp, res, lot_size, session)
+                log_trade("SELL", entry, sl, tp, res, lot_size, session, context=ctx, kronos_gate=KRONOS_VETO_GATE)
                 sessions_traded_today.add(session)
                 save_sessions(sessions_traded_today)
             else:
@@ -2253,6 +2318,11 @@ def evaluate_ingwe(df, fvgs, sweep, sweep_level, price, atr, lot_size, session):
 
         # ── PATH D: BUY CONTINUATION (v3.9.1) ───────────
         if sweep == "SWEEP_HIGH" and fvg_type == "BULLISH_FVG" and trend == "BULLISH":
+            # P0-B: Direction filter gate (SELL default, HTF exception)
+            dir_allowed, dir_reason = TRADING_GOVERNOR.check_direction("BUY", htf_bias, _instance_tag)
+            if not dir_allowed:
+                log(f"Direction blocked: BUY ({dir_reason}).", "GUARD")
+                continue
             if plus_di is None or minus_di is None or plus_di <= minus_di:
                 log(f"DI filter: +DI({plus_di}) <= -DI({minus_di}). Skip.", "GUARD")
                 continue
@@ -2285,25 +2355,29 @@ def evaluate_ingwe(df, fvgs, sweep, sweep_level, price, atr, lot_size, session):
             if not check_pre_trade_spread(atr):
                 continue
             
+            ctx = {
+                "direction": "BUY",
+                "setup_type": "CONTINUATION",
+                "sweep": sweep,
+                "fvg_type": fvg_type,
+                "fvg_position": "below_50" if price <= fvg_50 else ("50%" if abs(price - fvg_50) < atr * 0.1 else "above_50"),
+                "bos_aligned": bos_aligned,
+                "htf_bias_ok": htf_bias_ok,
+                "adx_ok": True,
+                "score_ok": True,
+                "confluence_score": score,
+                "session": session,
+                "atr": atr,
+                "spread_ok": spread_ok,
+                "trend": trend,
+                "level_sweep": level_sweep,
+                "ob_present": ob is not None,
+                "fvg_low": fvg_low,
+                "fvg_high": fvg_high,
+                "fvg_50": fvg_50,
+                "buy_threshold": effective_buy_threshold
+            }
             if KRONOS_VETO_GATE is not None:
-                ctx = {
-                    "direction": "BUY",
-                    "setup_type": "CONTINUATION",
-                    "sweep": sweep,
-                    "fvg_type": fvg_type,
-                    "fvg_position": "below_50" if price <= fvg_50 else ("50%" if abs(price - fvg_50) < atr * 0.1 else "above_50"),
-                    "bos_aligned": bos_aligned,
-                    "htf_bias_ok": htf_bias_ok,
-                    "adx_ok": True,
-                    "score_ok": True,
-                    "confluence_score": score,
-                    "session": session,
-                    "atr": atr,
-                    "spread_ok": spread_ok,
-                    "trend": trend,
-                    "level_sweep": level_sweep,
-                    "buy_threshold": effective_buy_threshold
-                }
                 allowed, reason = KRONOS_VETO_GATE.validate(ctx, df, SYMBOL)
                 log(f"[KRONOS] BUY signal: {reason}", "GUARD")
                 if not allowed:
@@ -2317,7 +2391,7 @@ def evaluate_ingwe(df, fvgs, sweep, sweep_level, price, atr, lot_size, session):
             res   = place_trade("BUY", entry, sl, tp, lot_size)
             if res and res.retcode == mt5.TRADE_RETCODE_DONE:
                 log(f"BUY MARKET  Entry={entry}  SL={sl}  TP={tp}  Lot={lot_size}", "TRADE")
-                log_trade("BUY", entry, sl, tp, res, lot_size, session)
+                log_trade("BUY", entry, sl, tp, res, lot_size, session, context=ctx, kronos_gate=KRONOS_VETO_GATE)
                 sessions_traded_today.add(session)
                 save_sessions(sessions_traded_today)
             else:
@@ -2370,22 +2444,26 @@ def evaluate_silver_bullet(df, fvgs, sweep, sweep_level, price, atr,
                 if not check_pre_trade_spread(atr):
                     continue
                 
+                ctx = {
+                    "direction": "BUY",
+                    "setup_type": "UNICORN",
+                    "sweep": sweep,
+                    "fvg_type": u_type,
+                    "fvg_position": "in_zone",
+                    "bos_aligned": False,
+                    "htf_bias_ok": False,
+                    "confluence_score": 80,
+                    "session": window,
+                    "atr": atr,
+                    "spread_ok": check_pre_trade_spread(atr),
+                    "trend": "BULLISH",
+                    "level_sweep": True,
+                    "ob_present": False,
+                    "fvg_low": 0,
+                    "fvg_high": 0,
+                    "fvg_50": 0
+                }
                 if KRONOS_VETO_GATE is not None:
-                    ctx = {
-                        "direction": "BUY",
-                        "setup_type": "UNICORN",
-                        "sweep": sweep,
-                        "fvg_type": u_type,
-                        "fvg_position": "in_zone",
-                        "bos_aligned": False,
-                        "htf_bias_ok": False,
-                        "confluence_score": 80,
-                        "session": window,
-                        "atr": atr,
-                        "spread_ok": check_pre_trade_spread(atr),
-                        "trend": "BULLISH",
-                        "level_sweep": True
-                    }
                     allowed, reason = KRONOS_VETO_GATE.validate(ctx, df, SYMBOL)
                     log(f"[KRONOS] BUY signal: {reason}", "GUARD")
                     if not allowed:
@@ -2400,7 +2478,7 @@ def evaluate_silver_bullet(df, fvgs, sweep, sweep_level, price, atr,
                 if res and res.retcode == mt5.TRADE_RETCODE_DONE:
                     log(f"[UNICORN] UNICORN BUY  Entry={entry}  SL={sl}  TP={tp}  "
                         f"Lot={lot_size}", "TRADE")
-                    log_trade("BUY", entry, sl, tp, res, lot_size, window)
+                    log_trade("BUY", entry, sl, tp, res, lot_size, window, context=ctx, kronos_gate=KRONOS_VETO_GATE)
                     sessions_traded_today.add(window)
                     save_sessions(sessions_traded_today)
                 else:
@@ -2422,22 +2500,26 @@ def evaluate_silver_bullet(df, fvgs, sweep, sweep_level, price, atr,
                 if not check_pre_trade_spread(atr):
                     continue
                 
+                ctx = {
+                    "direction": "SELL",
+                    "setup_type": "UNICORN",
+                    "sweep": sweep,
+                    "fvg_type": u_type,
+                    "fvg_position": "in_zone",
+                    "bos_aligned": False,
+                    "htf_bias_ok": False,
+                    "confluence_score": 80,
+                    "session": window,
+                    "atr": atr,
+                    "spread_ok": check_pre_trade_spread(atr),
+                    "trend": "BEARISH",
+                    "level_sweep": True,
+                    "ob_present": False,
+                    "fvg_low": 0,
+                    "fvg_high": 0,
+                    "fvg_50": 0
+                }
                 if KRONOS_VETO_GATE is not None:
-                    ctx = {
-                        "direction": "SELL",
-                        "setup_type": "UNICORN",
-                        "sweep": sweep,
-                        "fvg_type": u_type,
-                        "fvg_position": "in_zone",
-                        "bos_aligned": False,
-                        "htf_bias_ok": False,
-                        "confluence_score": 80,
-                        "session": window,
-                        "atr": atr,
-                        "spread_ok": check_pre_trade_spread(atr),
-                        "trend": "BEARISH",
-                        "level_sweep": True
-                    }
                     allowed, reason = KRONOS_VETO_GATE.validate(ctx, df, SYMBOL)
                     log(f"[KRONOS] SELL signal: {reason}", "GUARD")
                     if not allowed:
@@ -2452,7 +2534,7 @@ def evaluate_silver_bullet(df, fvgs, sweep, sweep_level, price, atr,
                 if res and res.retcode == mt5.TRADE_RETCODE_DONE:
                     log(f"[UNICORN] UNICORN SELL  Entry={entry}  SL={sl}  TP={tp}  "
                         f"Lot={lot_size}", "TRADE")
-                    log_trade("SELL", entry, sl, tp, res, lot_size, window)
+                    log_trade("SELL", entry, sl, tp, res, lot_size, window, context=ctx, kronos_gate=KRONOS_VETO_GATE)
                     sessions_traded_today.add(window)
                     save_sessions(sessions_traded_today)
                 else:
@@ -2479,27 +2561,31 @@ def evaluate_silver_bullet(df, fvgs, sweep, sweep_level, price, atr,
             if not check_pre_trade_spread(atr):
                 continue
 
+            dol_name, dol_price = get_draw_on_liquidity("BUY")
+            ctx = {
+                "direction": "BUY",
+                "setup_type": "SILVER_BULLET",
+                "sweep": sweep,
+                "fvg_type": fvg_type,
+                "fvg_position": "below_50" if price <= fvg_50 else ("50%" if abs(price - fvg_50) < atr * 0.1 else "above_50"),
+                "bos_aligned": False,
+                "htf_bias_ok": False,
+                "confluence_score": 70,
+                "session": window,
+                "atr": atr,
+                "spread_ok": check_pre_trade_spread(atr),
+                "trend": "BULLISH",
+                "level_sweep": True,
+                "draw_on_liquidity": dol_name,
+                "dol_price": dol_price,
+                "distance_to_dol": abs(dol_price - price) if dol_price else None,
+                "sb_window": window,
+                "ob_present": ob is not None,
+                "fvg_low": fvg_low,
+                "fvg_high": fvg_high,
+                "fvg_50": fvg_50
+            }
             if KRONOS_VETO_GATE is not None:
-                dol_name, dol_price = get_draw_on_liquidity("BUY")
-                ctx = {
-                    "direction": "BUY",
-                    "setup_type": "SILVER_BULLET",
-                    "sweep": sweep,
-                    "fvg_type": fvg_type,
-                    "fvg_position": "below_50" if price <= fvg_50 else ("50%" if abs(price - fvg_50) < atr * 0.1 else "above_50"),
-                    "bos_aligned": False,
-                    "htf_bias_ok": False,
-                    "confluence_score": 70,
-                    "session": window,
-                    "atr": atr,
-                    "spread_ok": check_pre_trade_spread(atr),
-                    "trend": "BULLISH",
-                    "level_sweep": True,
-                    "draw_on_liquidity": dol_name,
-                    "dol_price": dol_price,
-                    "distance_to_dol": abs(dol_price - price) if dol_price else None,
-                    "sb_window": window
-                }
                 allowed, reason = KRONOS_VETO_GATE.validate(ctx, df, SYMBOL)
                 log(f"[KRONOS] BUY signal: {reason}", "GUARD")
                 if not allowed:
@@ -2513,7 +2599,7 @@ def evaluate_silver_bullet(df, fvgs, sweep, sweep_level, price, atr,
             res     = place_trade("BUY", entry, sl, tp, lot_size)
             if res and res.retcode == mt5.TRADE_RETCODE_DONE:
                 log(f"SB BUY  Entry={entry}  SL={sl}  TP={tp}  Lot={lot_size}", "TRADE")
-                log_trade("BUY", entry, sl, tp, res, lot_size, window)
+                log_trade("BUY", entry, sl, tp, res, lot_size, window, context=ctx, kronos_gate=KRONOS_VETO_GATE)
                 sessions_traded_today.add(window)
                 save_sessions(sessions_traded_today)
             else:
@@ -2532,27 +2618,31 @@ def evaluate_silver_bullet(df, fvgs, sweep, sweep_level, price, atr,
             if not check_pre_trade_spread(atr):
                 continue
 
+            dol_name, dol_price = get_draw_on_liquidity("SELL")
+            ctx = {
+                "direction": "SELL",
+                "setup_type": "SILVER_BULLET",
+                "sweep": sweep,
+                "fvg_type": fvg_type,
+                "fvg_position": "above_50" if price >= fvg_50 else ("50%" if abs(price - fvg_50) < atr * 0.1 else "below_50"),
+                "bos_aligned": False,
+                "htf_bias_ok": False,
+                "confluence_score": 70,
+                "session": window,
+                "atr": atr,
+                "spread_ok": check_pre_trade_spread(atr),
+                "trend": "BEARISH",
+                "level_sweep": True,
+                "draw_on_liquidity": dol_name,
+                "dol_price": dol_price,
+                "distance_to_dol": abs(dol_price - price) if dol_price else None,
+                "sb_window": window,
+                "ob_present": ob is not None,
+                "fvg_low": fvg_low,
+                "fvg_high": fvg_high,
+                "fvg_50": fvg_50
+            }
             if KRONOS_VETO_GATE is not None:
-                dol_name, dol_price = get_draw_on_liquidity("SELL")
-                ctx = {
-                    "direction": "SELL",
-                    "setup_type": "SILVER_BULLET",
-                    "sweep": sweep,
-                    "fvg_type": fvg_type,
-                    "fvg_position": "above_50" if price >= fvg_50 else ("50%" if abs(price - fvg_50) < atr * 0.1 else "below_50"),
-                    "bos_aligned": False,
-                    "htf_bias_ok": False,
-                    "confluence_score": 70,
-                    "session": window,
-                    "atr": atr,
-                    "spread_ok": check_pre_trade_spread(atr),
-                    "trend": "BEARISH",
-                    "level_sweep": True,
-                    "draw_on_liquidity": dol_name,
-                    "dol_price": dol_price,
-                    "distance_to_dol": abs(dol_price - price) if dol_price else None,
-                    "sb_window": window
-                }
                 allowed, reason = KRONOS_VETO_GATE.validate(ctx, df, SYMBOL)
                 log(f"[KRONOS] SELL signal: {reason}", "GUARD")
                 if not allowed:
@@ -2566,7 +2656,7 @@ def evaluate_silver_bullet(df, fvgs, sweep, sweep_level, price, atr,
             res     = place_trade("SELL", entry, sl, tp, lot_size)
             if res and res.retcode == mt5.TRADE_RETCODE_DONE:
                 log(f"SB SELL  Entry={entry}  SL={sl}  TP={tp}  Lot={lot_size}", "TRADE")
-                log_trade("SELL", entry, sl, tp, res, lot_size, window)
+                log_trade("SELL", entry, sl, tp, res, lot_size, window, context=ctx, kronos_gate=KRONOS_VETO_GATE)
                 sessions_traded_today.add(window)
                 save_sessions(sessions_traded_today)
             else:
@@ -2654,24 +2744,28 @@ def evaluate_london_breakout(df, fvgs, sweep, sweep_level, price, atr,
             if not check_pre_trade_spread(atr):
                 continue
 
+            ctx = {
+                "direction": "BUY",
+                "setup_type": "LONDON_BREAKOUT",
+                "sweep": sweep,
+                "fvg_type": fvg_type,
+                "fvg_position": "below_50" if price <= fvg_50 else ("50%" if abs(price - fvg_50) < atr * 0.1 else "above_50"),
+                "bos_aligned": False,
+                "htf_bias_ok": False,
+                "confluence_score": score,
+                "session": session,
+                "atr": atr,
+                "spread_ok": spread_ok,
+                "trend": "BULLISH",
+                "level_sweep": level_sweep,
+                "asian_high": asian_high,
+                "asian_low": asian_low,
+                "ob_present": ob is not None,
+                "fvg_low": fvg_low,
+                "fvg_high": fvg_high,
+                "fvg_50": fvg_50
+            }
             if KRONOS_VETO_GATE is not None:
-                ctx = {
-                    "direction": "BUY",
-                    "setup_type": "LONDON_BREAKOUT",
-                    "sweep": sweep,
-                    "fvg_type": fvg_type,
-                    "fvg_position": "below_50" if price <= fvg_50 else ("50%" if abs(price - fvg_50) < atr * 0.1 else "above_50"),
-                    "bos_aligned": False,
-                    "htf_bias_ok": False,
-                    "confluence_score": score,
-                    "session": session,
-                    "atr": atr,
-                    "spread_ok": spread_ok,
-                    "trend": "BULLISH",
-                    "level_sweep": level_sweep,
-                    "asian_high": asian_high,
-                    "asian_low": asian_low
-                }
                 allowed, reason = KRONOS_VETO_GATE.validate(ctx, df, SYMBOL)
                 log(f"[KRONOS] BUY signal: {reason}", "GUARD")
                 if not allowed:
@@ -2688,7 +2782,7 @@ def evaluate_london_breakout(df, fvgs, sweep, sweep_level, price, atr,
             res = place_trade("BUY", entry, sl, tp, lot_size)
             if res and res.retcode == mt5.TRADE_RETCODE_DONE:
                 log(f"LONDON BREAKOUT BUY  Entry={entry}  SL={sl}  TP={tp}  Lot={lot_size}", "TRADE")
-                log_trade("BUY", entry, sl, tp, res, lot_size, session)
+                log_trade("BUY", entry, sl, tp, res, lot_size, session, context=ctx, kronos_gate=KRONOS_VETO_GATE)
                 sessions_traded_today.add(session)
                 save_sessions(sessions_traded_today)
             else:
@@ -2736,24 +2830,28 @@ def evaluate_london_breakout(df, fvgs, sweep, sweep_level, price, atr,
             if not check_pre_trade_spread(atr):
                 continue
 
+            ctx = {
+                "direction": "SELL",
+                "setup_type": "LONDON_BREAKOUT",
+                "sweep": sweep,
+                "fvg_type": fvg_type,
+                "fvg_position": "above_50" if price >= fvg_50 else ("50%" if abs(price - fvg_50) < atr * 0.1 else "below_50"),
+                "bos_aligned": False,
+                "htf_bias_ok": False,
+                "confluence_score": score,
+                "session": session,
+                "atr": atr,
+                "spread_ok": spread_ok,
+                "trend": "BEARISH",
+                "level_sweep": level_sweep,
+                "asian_high": asian_high,
+                "asian_low": asian_low,
+                "ob_present": ob is not None,
+                "fvg_low": fvg_low,
+                "fvg_high": fvg_high,
+                "fvg_50": fvg_50
+            }
             if KRONOS_VETO_GATE is not None:
-                ctx = {
-                    "direction": "SELL",
-                    "setup_type": "LONDON_BREAKOUT",
-                    "sweep": sweep,
-                    "fvg_type": fvg_type,
-                    "fvg_position": "above_50" if price >= fvg_50 else ("50%" if abs(price - fvg_50) < atr * 0.1 else "below_50"),
-                    "bos_aligned": False,
-                    "htf_bias_ok": False,
-                    "confluence_score": score,
-                    "session": session,
-                    "atr": atr,
-                    "spread_ok": spread_ok,
-                    "trend": "BEARISH",
-                    "level_sweep": level_sweep,
-                    "asian_high": asian_high,
-                    "asian_low": asian_low
-                }
                 allowed, reason = KRONOS_VETO_GATE.validate(ctx, df, SYMBOL)
                 log(f"[KRONOS] SELL signal: {reason}", "GUARD")
                 if not allowed:
@@ -2770,7 +2868,7 @@ def evaluate_london_breakout(df, fvgs, sweep, sweep_level, price, atr,
             res = place_trade("SELL", entry, sl, tp, lot_size)
             if res and res.retcode == mt5.TRADE_RETCODE_DONE:
                 log(f"LONDON BREAKOUT SELL  Entry={entry}  SL={sl}  TP={tp}  Lot={lot_size}", "TRADE")
-                log_trade("SELL", entry, sl, tp, res, lot_size, session)
+                log_trade("SELL", entry, sl, tp, res, lot_size, session, context=ctx, kronos_gate=KRONOS_VETO_GATE)
                 sessions_traded_today.add(session)
                 save_sessions(sessions_traded_today)
             else:
@@ -2809,22 +2907,26 @@ def evaluate_ict_m1(df, fvgs, sweep, sweep_level, price, atr,
 
             log(f"M1 Bullish FVG: {fvg_low:.5f}-{fvg_high:.5f}  |  50%: {fvg_50:.5f}")
 
+            ctx = {
+                "direction": "BUY",
+                "setup_type": "ICT_M1",
+                "sweep": sweep,
+                "fvg_type": fvg_type,
+                "fvg_position": "below_50" if price <= fvg_50 else ("50%" if abs(price - fvg_50) < atr * 0.1 else "above_50"),
+                "bos_aligned": False,
+                "htf_bias_ok": False,
+                "confluence_score": 75,
+                "session": session,
+                "atr": atr,
+                "spread_ok": spread is not None and spread < MIN_SPREAD_PIPS,
+                "trend": "BULLISH",
+                "level_sweep": True,
+                "ob_present": ob is not None,
+                "fvg_low": fvg_low,
+                "fvg_high": fvg_high,
+                "fvg_50": fvg_50
+            }
             if KRONOS_VETO_GATE is not None:
-                ctx = {
-                    "direction": "BUY",
-                    "setup_type": "ICT_M1",
-                    "sweep": sweep,
-                    "fvg_type": fvg_type,
-                    "fvg_position": "below_50" if price <= fvg_50 else ("50%" if abs(price - fvg_50) < atr * 0.1 else "above_50"),
-                    "bos_aligned": False,
-                    "htf_bias_ok": False,
-                    "confluence_score": 75,
-                    "session": session,
-                    "atr": atr,
-                    "spread_ok": spread is not None and spread < MIN_SPREAD_PIPS,
-                    "trend": "BULLISH",
-                    "level_sweep": True
-                }
                 allowed, reason = KRONOS_VETO_GATE.validate(ctx, df, SYMBOL)
                 log(f"[KRONOS] BUY signal: {reason}", "GUARD")
                 if not allowed:
@@ -2838,7 +2940,7 @@ def evaluate_ict_m1(df, fvgs, sweep, sweep_level, price, atr,
             res = place_trade("BUY", entry, sl, tp, lot_size)
             if res and res.retcode == mt5.TRADE_RETCODE_DONE:
                 log(f"M1 BUY  Entry={entry}  SL={sl}  TP={tp}  Lot={lot_size}", "TRADE")
-                log_trade("BUY", entry, sl, tp, res, lot_size, session)
+                log_trade("BUY", entry, sl, tp, res, lot_size, session, context=ctx, kronos_gate=KRONOS_VETO_GATE)
                 sessions_traded_today.add(session)
                 save_sessions(sessions_traded_today)
             else:
@@ -2852,22 +2954,26 @@ def evaluate_ict_m1(df, fvgs, sweep, sweep_level, price, atr,
 
             log(f"M1 Bearish FVG: {fvg_low:.5f}-{fvg_high:.5f}  |  50%: {fvg_50:.5f}")
 
+            ctx = {
+                "direction": "SELL",
+                "setup_type": "ICT_M1",
+                "sweep": sweep,
+                "fvg_type": fvg_type,
+                "fvg_position": "above_50" if price >= fvg_50 else ("50%" if abs(price - fvg_50) < atr * 0.1 else "below_50"),
+                "bos_aligned": False,
+                "htf_bias_ok": False,
+                "confluence_score": 75,
+                "session": session,
+                "atr": atr,
+                "spread_ok": spread is not None and spread < MIN_SPREAD_PIPS,
+                "trend": "BEARISH",
+                "level_sweep": True,
+                "ob_present": ob is not None,
+                "fvg_low": fvg_low,
+                "fvg_high": fvg_high,
+                "fvg_50": fvg_50
+            }
             if KRONOS_VETO_GATE is not None:
-                ctx = {
-                    "direction": "SELL",
-                    "setup_type": "ICT_M1",
-                    "sweep": sweep,
-                    "fvg_type": fvg_type,
-                    "fvg_position": "above_50" if price >= fvg_50 else ("50%" if abs(price - fvg_50) < atr * 0.1 else "below_50"),
-                    "bos_aligned": False,
-                    "htf_bias_ok": False,
-                    "confluence_score": 75,
-                    "session": session,
-                    "atr": atr,
-                    "spread_ok": spread is not None and spread < MIN_SPREAD_PIPS,
-                    "trend": "BEARISH",
-                    "level_sweep": True
-                }
                 allowed, reason = KRONOS_VETO_GATE.validate(ctx, df, SYMBOL)
                 log(f"[KRONOS] SELL signal: {reason}", "GUARD")
                 if not allowed:
@@ -2881,7 +2987,7 @@ def evaluate_ict_m1(df, fvgs, sweep, sweep_level, price, atr,
             res = place_trade("SELL", entry, sl, tp, lot_size)
             if res and res.retcode == mt5.TRADE_RETCODE_DONE:
                 log(f"M1 SELL  Entry={entry}  SL={sl}  TP={tp}  Lot={lot_size}", "TRADE")
-                log_trade("SELL", entry, sl, tp, res, lot_size, session)
+                log_trade("SELL", entry, sl, tp, res, lot_size, session, context=ctx, kronos_gate=KRONOS_VETO_GATE)
                 sessions_traded_today.add(session)
                 save_sessions(sessions_traded_today)
             else:
@@ -2934,6 +3040,12 @@ def run_agent():
     if daily_pnl <= -MAX_DAILY_LOSS:
         log(f"Daily loss limit reached. Ingwe rests.", "GUARD")
         return
+    
+    # P0-FULL: Circuit breaker check (weekly cap)
+    cb_allowed, cb_reason = TRADING_GOVERNOR.check_circuit_breakers(daily_pnl, _instance_tag)
+    if not cb_allowed:
+        log(f"Circuit breaker: {cb_reason}. Ingwe rests.", "GUARD")
+        return
 
     # ── ACTIVE WINDOW (strategy-aware) ──────────────────
     if STRATEGY == "SILVER_BULLET":
@@ -2947,6 +3059,12 @@ def run_agent():
         active = get_current_session()
         if not active:
             log("No killzone active. Ingwe watches...")
+            return
+        
+        # P0-A / P0-C: Session filter gate
+        allowed, reason = TRADING_GOVERNOR.check_session(active, _instance_tag)
+        if not allowed:
+            log(f"Session filtered: {active} ({reason}). Ingwe waits.", "GUARD")
             return
         
         s, e = get_active_killzones()[active]
