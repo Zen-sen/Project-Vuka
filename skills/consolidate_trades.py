@@ -12,8 +12,10 @@ TRADE_LOG = BASE_DIR / "data" / "trade_log.json"
 SOURCE_FILES = [
     BASE_DIR / "trades_EURUSD_INGWE.json",
     BASE_DIR / "trades_EURUSD_SILVER_BULLET.json",
+    BASE_DIR / "trades_EURUSD_ICT_M1.json",
     BASE_DIR / "trades_GBPUSD_INGWE.json",
     BASE_DIR / "trades_GBPUSD_SILVER_BULLET.json",
+    BASE_DIR / "trades_GBPUSD_LONDON_OPEN.json",
 ]
 
 def extract_symbol(filename: str) -> str:
@@ -25,8 +27,14 @@ def extract_symbol(filename: str) -> str:
 def transform_trade(trade: dict, filename: str) -> dict:
     symbol = extract_symbol(filename)
     
+    # Enrichment fields from source
+    use_position_id = trade.get("position_id")
+    trade_id = f"{symbol}_{use_position_id}" if use_position_id else (
+        f"{symbol}_{trade.get('time', '').replace(':', '').replace('-', '').replace(' ', '_')}"
+    )
+    
     return {
-        "trade_id": f"{symbol}_{trade.get('time', '').replace(':', '').replace('-', '').replace(' ', '_')}",
+        "trade_id": trade_id,
         "entry_time": trade.get("time", ""),
         "exit_time": "",
         "symbol": symbol,
@@ -43,7 +51,22 @@ def transform_trade(trade: dict, filename: str) -> dict:
         "rr_achieved": 0,
         "comment": trade.get("comment", ""),
         "retcode": trade.get("retcode", 0),
-        "source_file": filename
+        "source_file": filename,
+        "slippage": trade.get("slippage"),
+        "entry_req": trade.get("entry_req"),
+        "entry_fill": trade.get("entry_fill"),
+        "effective_rr": trade.get("effective_rr"),
+        "position_id": use_position_id,
+        "htf_bias": trade.get("htf_bias"),
+        "kronos_decision": trade.get("kronos_decision"),
+        "kronos_confidence": trade.get("kronos_confidence"),
+        "circuit_breaker": trade.get("circuit_breaker"),
+        "api_latency_ms": trade.get("api_latency_ms"),
+        "fvg_confirmed": trade.get("fvg_confirmed"),
+        "ob_present": trade.get("ob_present"),
+        "confluence_score": trade.get("confluence_score"),
+        "spread_at_entry": trade.get("spread_at_entry"),
+        "setup_type": trade.get("setup_type")
     }
 
 def main():

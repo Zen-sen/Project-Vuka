@@ -8,7 +8,7 @@
     "mode": "enforced",
     "safety_mode": "ALLOW_SAFE",
     "endpoint": "http://127.0.0.1:8000/v1/predict-ict",
-    "threshold": 0.45,
+    "threshold": 0.40,
     "buy_threshold": 0.35
   },
   "notifications": {
@@ -28,12 +28,19 @@
   },
   "trading_governor": {
     "enabled": true,
-    "blocked_sessions": ["London Open"],
-    "allowed_sessions": ["Asian", "London Close"],
-    "allowed_directions": ["SELL"],
+    "blocked_sessions": [],
+    "allowed_sessions": ["Asian", "London Close", "London Open"],
+    "allowed_directions": ["SELL", "BUY"],
     "htf_aligned_exception": true,
     "daily_loss_limit": 50.0,
     "weekly_trade_cap": 10,
-    "log_rejections": true
+    "log_rejections": true,
+    "data_driven": {
+      "enabled": true,
+      "min_samples": 15,
+      "veto_win_rate": 0.40,
+      "approve_win_rate": 0.60,
+      "min_buy_win_rate": 0.45
+    }
   }
 }

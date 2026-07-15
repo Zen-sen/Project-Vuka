@@ -11,9 +11,13 @@ import pandas as pd
 import requests
 from notifier import send as send_notification
 
-LOG_DIR = Path("logs")
+BASE_DIR = Path(__file__).parent
+LOG_DIR = BASE_DIR / "logs"
 LOG_DIR.mkdir(exist_ok=True)
+DATA_DIR = BASE_DIR / "data"
+DATA_DIR.mkdir(exist_ok=True)
 VETO_LOG_FILE = LOG_DIR / "kronos_veto.log"
+KRONOS_DECISIONS_FILE = DATA_DIR / "kronos_decisions.json"
 
 logging.basicConfig(
     level=logging.INFO,
@@ -188,6 +192,9 @@ class KronosVetoGate:
         self.safety_mode = safety_mode
         self.request_timeout = 2.5
         
+        # Last decision (consumed by enrichment pipeline)
+        self.last_decision: Optional[dict] = None
+        
         # Circuit breaker
         self.circuit_breaker = CircuitBreaker(
             failure_threshold=3,
@@ -208,7 +215,8 @@ class KronosVetoGate:
         confidence: float,
         decision: str,
         reason: str,
-        circuit_state: str = "CLOSED"
+        circuit_state: str = "CLOSED",
+        api_latency_ms: float = 0.0
     ):
         """Log veto decision in JSON format"""
         entry = {
@@ -222,9 +230,25 @@ class KronosVetoGate:
             "mode": self.mode,
             "safety_mode": self.safety_mode,
             "circuit_breaker_state": circuit_state,
+            "api_latency_ms": round(api_latency_ms, 1),
             "reason": reason
         }
         logger.info(json.dumps(entry))
+        self.last_decision = entry
+        self._persist_decision(entry)
+
+    def _persist_decision(self, entry: dict):
+        """Append decision to structured JSON array for enrichment pipeline."""
+        try:
+            decisions = []
+            if KRONOS_DECISIONS_FILE.exists():
+                with open(KRONOS_DECISIONS_FILE) as f:
+                    decisions = json.load(f)
+            decisions.append(entry)
+            with open(KRONOS_DECISIONS_FILE, "w") as f:
+                json.dump(decisions, f, indent=2)
+        except Exception:
+            pass
     
     def _prepare_ohlcv_payload(self, df: pd.DataFrame) -> dict:
         """
@@ -282,7 +306,45 @@ class KronosVetoGate:
         direction = context.get("direction", "BUY")
         if direction not in ("BUY", "SELL"):
             return True, f"Ignored non-trade signal: {direction}"
-        
+
+        # Phase 4b: Pattern-based veto from concept_tracker (before API call)
+        try:
+            from skills.concept_tracker import should_auto_veto
+            session = context.get("session", "unknown")
+            setup_type = context.get("setup_type", "UNKNOWN")
+            if session and setup_type:
+                veto, reason = should_auto_veto(
+                    symbol, session, setup_type, direction,
+                    min_samples=15, veto_threshold=0.40
+                )
+                if veto:
+                    self._log_veto_decision(
+                        signal=direction,
+                        symbol=symbol,
+                        kronos_agree=False,
+                        confidence=0.0,
+                        decision="VETO_PATTERN",
+                        reason=f"Pattern veto: {reason}",
+                        circuit_state="CLOSED"
+                    )
+                    return False, f"Pattern veto: {reason}"
+                if "ABOVE 65%" in reason:
+                    # Boost: pattern has strong history, reduce API dependency
+                    self._log_veto_decision(
+                        signal=direction,
+                        symbol=symbol,
+                        kronos_agree=True,
+                        confidence=0.85,
+                        decision="ALLOW_HISTORICAL",
+                        reason=f"Historical approval: {reason}",
+                        circuit_state="CLOSED"
+                    )
+                    return True, f"Historical approval: {reason}"
+        except ImportError:
+            pass
+        except Exception:
+            pass
+
         circuit_state = self.circuit_breaker.get_state()
         
         # Check circuit breaker state
@@ -352,12 +414,14 @@ class KronosVetoGate:
                 }
             }
 
+            api_start = time.time()
             success, result = self.circuit_breaker.call(
                 requests.post,
                 self.endpoint,
                 json=payload,
                 timeout=self.request_timeout
             )
+            api_latency_ms = (time.time() - api_start) * 1000
 
             if not success:
                 raise Exception(f"Circuit breaker blocked: {result}")
@@ -394,7 +458,8 @@ class KronosVetoGate:
                 confidence=confidence,
                 decision=decision,
                 reason=reason,
-                circuit_state=circuit_state
+                circuit_state=circuit_state,
+                api_latency_ms=api_latency_ms
             )
 
             if self.mode == "advisory":

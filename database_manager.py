@@ -91,6 +91,11 @@ class DatabaseManager:
                 session TEXT,
                 market_mode TEXT,
                 slippage REAL,
+                pnl_usd REAL,
+                exit_price REAL,
+                exit_reason TEXT,
+                exit_time DATETIME,
+                position_id INTEGER,
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                 UNIQUE(symbol, strategy, time, direction)
             )
@@ -129,6 +134,19 @@ class DatabaseManager:
             cursor.execute("ALTER TABLE loss_tracking ADD COLUMN last_counted_ticket INTEGER DEFAULT 0")
         except:
             pass
+
+        # Migration: Add PnL/exit/position_id columns to trades table for existing databases
+        for col_sql in [
+            "ALTER TABLE trades ADD COLUMN pnl_usd REAL",
+            "ALTER TABLE trades ADD COLUMN exit_price REAL",
+            "ALTER TABLE trades ADD COLUMN exit_reason TEXT",
+            "ALTER TABLE trades ADD COLUMN exit_time DATETIME",
+            "ALTER TABLE trades ADD COLUMN position_id INTEGER",
+        ]:
+            try:
+                cursor.execute(col_sql)
+            except:
+                pass
         
         # SL movements table
         cursor.execute("""
@@ -263,8 +281,9 @@ class DatabaseManager:
                     INSERT INTO trades (
                         symbol, strategy, time, direction,
                         entry_req, entry_fill, sl, tp, lot_size,
-                        effective_rr, retcode, comment, session, market_mode, slippage
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        effective_rr, retcode, comment, session, market_mode, slippage,
+                        position_id
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
                     symbol,
                     strategy,
@@ -280,7 +299,8 @@ class DatabaseManager:
                     trade_dict.get("comment"),
                     trade_dict.get("session"),
                     trade_dict.get("market_mode"),
-                    trade_dict.get("slippage")
+                    trade_dict.get("slippage"),
+                    trade_dict.get("position_id")
                 ))
                 
                 return cursor.lastrowid or -1
@@ -291,6 +311,75 @@ class DatabaseManager:
             logger.error(f"Error inserting trade: {e}")
             raise
     
+    def update_trade_pnl(self, symbol: str, strategy: str, time_str: str, direction: str,
+                          pnl_usd: float, exit_price: Optional[float] = None,
+                          exit_reason: Optional[str] = None,
+                          exit_time: Optional[str] = None) -> bool:
+        """
+        Update PnL and exit info for a closed trade identified by unique constraint.
+
+        Args:
+            symbol: Trading symbol
+            strategy: Strategy name
+            time_str: Trade open time
+            direction: BUY or SELL
+            pnl_usd: Realized P&L in USD
+            exit_price: Price at which trade was closed
+            exit_reason: Reason for exit (SL_HIT, TP_HIT, BE_SCRATCH, MANUAL)
+            exit_time: Timestamp when trade closed
+
+        Returns:
+            True if updated, False if not found
+        """
+        try:
+            with self._transaction() as conn:
+                cursor = conn.execute("""
+                    UPDATE trades SET
+                        pnl_usd = ?,
+                        exit_price = COALESCE(?, exit_price),
+                        exit_reason = COALESCE(?, exit_reason),
+                        exit_time = COALESCE(?, exit_time)
+                    WHERE symbol = ? AND strategy = ? AND time = ? AND direction = ?
+                """, (pnl_usd, exit_price, exit_reason, exit_time,
+                      symbol, strategy, time_str, direction))
+                return cursor.rowcount > 0
+        except Exception as e:
+            logger.error(f"Error updating trade PnL: {e}")
+            return False
+
+    def update_trade_pnl_by_position_id(self, position_id: int, pnl_usd: float,
+                                         exit_price: Optional[float] = None,
+                                         exit_reason: Optional[str] = None,
+                                         exit_time: Optional[str] = None) -> bool:
+        """Update PnL/exit info by position_id (used by P&L backfill)."""
+        try:
+            with self._transaction() as conn:
+                cursor = conn.execute("""
+                    UPDATE trades SET
+                        pnl_usd = ?,
+                        exit_price = COALESCE(?, exit_price),
+                        exit_reason = COALESCE(?, exit_reason),
+                        exit_time = COALESCE(?, exit_time)
+                    WHERE position_id = ?
+                """, (pnl_usd, exit_price, exit_reason, exit_time, position_id))
+                return cursor.rowcount > 0
+        except Exception as e:
+            logger.error(f"Error updating trade PnL by position_id: {e}")
+            return False
+
+    def get_trade_by_position_id(self, position_id: int) -> Optional[Dict]:
+        try:
+            conn = self._get_connection()
+            cursor = conn.execute(
+                "SELECT * FROM trades WHERE comment = ? ORDER BY time DESC LIMIT 1",
+                (str(position_id),)
+            )
+            row = cursor.fetchone()
+            return dict(row) if row else None
+        except Exception as e:
+            logger.error(f"Error getting trade by position_id: {e}")
+            return None
+
     def insert_session(self, date: str, symbol: str, strategy: str, session_name: str, traded: bool = False):
         """Insert session record."""
         try:
@@ -518,6 +607,44 @@ class DatabaseManager:
         except Exception as e:
             logger.error(f"Error popping commands: {e}")
             return []
+
+    def dedup_check_and_lock(self, symbol: str, session: str, strategy: str,
+                              date_str: str = None, lock_minutes: int = 60) -> bool:
+        """
+        Phase 5a: Per-symbol-per-session dedup lock.
+        Prevents multiple strategies from trading the same symbol+session combination.
+
+        Args:
+            symbol: Trading symbol
+            session: Session name (e.g. "London Open")
+            strategy: Strategy name
+            date_str: Date string (defaults to today)
+            lock_minutes: How long the lock remains valid
+
+        Returns:
+            True if lock acquired (no duplicate), False if already locked
+        """
+        if date_str is None:
+            date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        lock_tag = f"dedup:{symbol}:{session}:{date_str}"
+        expires_at = datetime.now(timezone.utc) + timedelta(minutes=lock_minutes)
+        try:
+            with self._transaction() as conn:
+                cur = conn.execute(
+                    "SELECT 1 FROM instance_locks WHERE instance_tag = ? AND expires_at > ?",
+                    (lock_tag, datetime.now(timezone.utc))
+                )
+                if cur.fetchone():
+                    return False
+                conn.execute("""
+                    INSERT OR REPLACE INTO instance_locks
+                    (instance_tag, locked_at, expires_at)
+                    VALUES (?, ?, ?)
+                """, (lock_tag, datetime.now(timezone.utc), expires_at))
+                return True
+        except Exception as e:
+            logger.error(f"Error in dedup lock for {lock_tag}: {e}")
+            return True  # Allow on error (fail open)
 
     def close(self):
         """Close database connection."""

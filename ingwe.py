@@ -35,6 +35,7 @@ from database_manager import get_db
 from unified_logger import get_logger
 from memory_manager import MemoryManager
 from skills.trading_governor import TradingGovernor
+from skills.concept_tracker import record_concept_trade, record_concept_outcome
 
 # Initialize Unified Logger
 logger = get_logger(_instance_tag)
@@ -1628,8 +1629,46 @@ def log_trade(direction, entry, sl, tp, result, lot_size, session, context=None,
     os.replace(tmp, LOG_FILE)
     log(f"Trade logged -> {LOG_FILE}", "TRADE")
 
+    # Phase 1c: Enrich concept tracker with full trade context
+    try:
+        concepts_used = []
+        if context:
+            fvg = context.get("fvg_type", "")
+            if fvg and fvg not in ("", "UNKNOWN", None):
+                concepts_used.append(f"fvg_{fvg.lower()}")
+            swp = context.get("sweep", "")
+            if swp and swp not in ("", "UNKNOWN", None):
+                concepts_used.append(f"sweep_{swp.lower()}")
+            st = context.get("setup_type", "")
+            if st and st not in ("", "UNKNOWN", None):
+                concepts_used.append(f"setup_{st.lower()}")
+            sess = context.get("session", "")
+            if sess and sess not in ("", "UNKNOWN", None):
+                concepts_used.append(f"session_{sess.lower().replace(' ', '_')}")
+            tr = context.get("trend", "")
+            if tr and tr not in ("", "UNKNOWN", None):
+                concepts_used.append(f"trend_{tr.lower()}")
+        if not concepts_used:
+            concepts_used.append("unknown")
+        record_concept_trade(
+            str(position_id) if position_id else trade_entry.get("time", "unknown"),
+            direction,
+            concepts_used,
+            kronos_decision_val,
+            setup_type=context.get("setup_type", "UNKNOWN") if context else "UNKNOWN"
+        )
+        # Phase 2b: Store data-driven trail config in trade entry
+        from skills.concept_tracker import ConceptTracker
+        _ct = ConceptTracker()
+        _conf_score = _ct.get_confidence_score(concepts_used[0]) if concepts_used else 0.25
+        trade_entry["concept_confidence"] = round(_conf_score, 2)
+        # High confidence (>0.6) → trail BE at 2:1; otherwise BE at 1:1
+        trade_entry["trail_be_at"] = 2.0 if _conf_score > 0.6 else 1.0
+    except Exception as e:
+        log(f"Concept tracker record_trade error: {e}", "WARN")
 
-def place_trade(direction, entry, sl, tp, lot_size):
+
+def place_trade(direction, entry, sl, tp, lot_size, session="unknown"):
     if BACKTEST_MODE:
         class MockResult:
             retcode = mt5.TRADE_RETCODE_DONE
@@ -1639,6 +1678,13 @@ def place_trade(direction, entry, sl, tp, lot_size):
     if has_open_position():
         log(f"Position already open for {_instance_tag} -- skipping duplicate entry.", "GUARD")
         return None
+
+    # Phase 5a: Per-symbol-per-session dedup lock (prevents double-firing)
+    if DB_AVAILABLE and session != "unknown":
+        dedup_ok = DB.dedup_check_and_lock(SYMBOL, session, STRATEGY)
+        if not dedup_ok:
+            log(f"Session '{session}' already traded for {SYMBOL} today. Dedup lock active.", "GUARD")
+            return None
     
     order_type = mt5.ORDER_TYPE_BUY if direction == "BUY" else mt5.ORDER_TYPE_SELL
 
@@ -1849,6 +1895,22 @@ def manage_open_positions():
     if not positions:
         return
 
+    # Phase 2b: Load trade log for data-driven trail config
+    _trail_config = {}
+    if os.path.exists(LOG_FILE):
+        try:
+            with open(LOG_FILE, "r") as _f:
+                _trade_log = json.load(_f)
+            for _t in _trade_log:
+                _pid = _t.get("position_id", 0)
+                if _pid:
+                    _trail_config[_pid] = {
+                        "trail_be_at": _t.get("trail_be_at", 1.0),
+                        "concept_confidence": _t.get("concept_confidence", 0.25)
+                    }
+        except Exception:
+            pass
+
     for pos in positions:
         if pos.magic != _instance_magic:
             continue
@@ -1861,56 +1923,76 @@ def manage_open_positions():
         if sl_dist == 0:
             continue
 
+        # Look up trail config for this position
+        _tc = _trail_config.get(pos.identifier, {})
+        trail_be_at = _tc.get("trail_be_at", 1.0)
+        conf_score = _tc.get("concept_confidence", 0.25)
+        trail_label = f"BE@{trail_be_at:.1f}R" if trail_be_at > 1.0 else "BE"
+
         if pos.type == mt5.ORDER_TYPE_BUY:
+            at_be_target = current >= entry + sl_dist * trail_be_at
             at_2r = current >= entry + sl_dist * 2
-            at_05r = current >= entry + sl_dist * 0.5
             at_1r = current >= entry + sl_dist
             sl_below_1r = sl < entry + sl_dist
             sl_below_be = sl < entry
-            sl_below_05r = sl < entry + sl_dist * 0.5
 
-            if at_2r and sl_below_1r:
-                new_sl = round(entry + sl_dist, 5)
-                if new_sl > sl:
-                    _modify_sl(pos, new_sl, "1:2 -> SL to 1:1")
-            elif at_1r and sl_below_be:
-                new_sl = round(entry, 5)
-                if new_sl > sl:
-                    _modify_sl(pos, new_sl, "1:1 -> SL to BE")
-            elif at_05r and sl_below_be and SYMBOL != "GBPUSDc":
-                new_sl = round(entry, 5)
-                if new_sl > sl:
-                    _modify_sl(pos, new_sl, "0.5:1 -> SL to BE")
+            if trail_be_at > 1.0:
+                # High confidence: trail BE at N:1, secure profits later
+                if at_be_target and sl_below_be:
+                    new_sl = round(entry, 5)
+                    if new_sl > sl:
+                        _modify_sl(pos, new_sl, f"{trail_label} -> SL to BE")
+                elif at_2r and sl_below_1r:
+                    new_sl = round(entry + sl_dist, 5)
+                    if new_sl > sl:
+                        _modify_sl(pos, new_sl, "1:2 -> SL to 1:1")
+            else:
+                # Standard: trail BE at 1:1, secure 1:1 at 2:1
+                if at_2r and sl_below_1r:
+                    new_sl = round(entry + sl_dist, 5)
+                    if new_sl > sl:
+                        _modify_sl(pos, new_sl, "1:2 -> SL to 1:1")
+                elif at_1r and sl_below_be:
+                    new_sl = round(entry, 5)
+                    if new_sl > sl:
+                        _modify_sl(pos, new_sl, "1:1 -> SL to BE")
 
         elif pos.type == mt5.ORDER_TYPE_SELL:
+            at_be_target = current <= entry - sl_dist * trail_be_at
             at_2r = current <= entry - sl_dist * 2
-            at_05r = current <= entry - sl_dist * 0.5
             at_1r = current <= entry - sl_dist
             sl_above_1r = sl > entry - sl_dist
             sl_above_be = sl > entry
-            sl_above_05r = sl > entry + sl_dist * 0.5
 
-            if at_2r and sl_above_1r:
-                new_sl = round(entry - sl_dist, 5)
-                if new_sl < sl:
-                    _modify_sl(pos, new_sl, "1:2 -> SL to 1:1")
-            elif at_1r and sl_above_be:
-                new_sl = round(entry, 5)
-                if new_sl < sl:
-                    _modify_sl(pos, new_sl, "1:1 -> SL to BE")
-            elif at_05r and sl_above_be and SYMBOL != "GBPUSDc":
-                new_sl = round(entry, 5)
-                if new_sl < sl:
-                    _modify_sl(pos, new_sl, "0.5:1 -> SL to BE")
+            if trail_be_at > 1.0:
+                if at_be_target and sl_above_be:
+                    new_sl = round(entry, 5)
+                    if new_sl < sl:
+                        _modify_sl(pos, new_sl, f"{trail_label} -> SL to BE")
+                elif at_2r and sl_above_1r:
+                    new_sl = round(entry - sl_dist, 5)
+                    if new_sl < sl:
+                        _modify_sl(pos, new_sl, "1:2 -> SL to 1:1")
+            else:
+                if at_2r and sl_above_1r:
+                    new_sl = round(entry - sl_dist, 5)
+                    if new_sl < sl:
+                        _modify_sl(pos, new_sl, "1:2 -> SL to 1:1")
+                elif at_1r and sl_above_be:
+                    new_sl = round(entry, 5)
+                    if new_sl < sl:
+                        _modify_sl(pos, new_sl, "1:1 -> SL to BE")
 
     # ── P&L backfill for closed trades ───────────────────
     if not BACKTEST_MODE:
         closed = mt5.history_deals_get(_server_midnight(), _server_now())
         if closed:
             pnl_by_pos = {}
+            exit_price_by_pos = {}
             for d in closed:
                 if d.magic == _instance_magic and d.profit != 0:
                     pnl_by_pos[d.position_id] = d.profit
+                    exit_price_by_pos[d.position_id] = d.price
             if pnl_by_pos:
                 if not os.path.exists(LOG_FILE):
                     return
@@ -1919,18 +2001,77 @@ def manage_open_positions():
                         trade_log_data = json.load(f)
                 except (json.JSONDecodeError, IOError):
                     return
-                updated = 0
+                updated = []
                 for t in trade_log_data:
                     pos_id = t.get("position_id", 0)
                     if pos_id in pnl_by_pos and t.get("pnl_usd") is None:
-                        t["pnl_usd"] = round(pnl_by_pos[pos_id], 2)
-                        updated += 1
+                        pnl_val = round(pnl_by_pos[pos_id], 2)
+                        t["pnl_usd"] = pnl_val
+                        t["exit_price"] = round(exit_price_by_pos.get(pos_id, 0), 5)
+                        exit_time_str = datetime.now().isoformat()
+                        t["exit_time"] = exit_time_str
+                        # Determine exit reason
+                        if pnl_val > 0:
+                            t["exit_reason"] = "TP_HIT"
+                        elif pnl_val < 0:
+                            t["exit_reason"] = "SL_HIT"
+                        else:
+                            t["exit_reason"] = "BE_SCRATCH"
+                        updated.append(t)
                 if updated:
                     tmp = LOG_FILE + ".tmp"
                     with open(tmp, "w") as f:
                         json.dump(trade_log_data, f, indent=2)
                     os.replace(tmp, LOG_FILE)
-                    log(f"P&L updated for {updated} closed trade(s)", "TRADE")
+                    log(f"P&L updated for {len(updated)} closed trade(s)", "TRADE")
+
+                    # Phase 1a: Wire record_outcome() — close the feedback loop
+                    for t in updated:
+                        try:
+                            t_pos_id = t.get("position_id", 0)
+                            pnl_val = t["pnl_usd"]
+                            if pnl_val > 0:
+                                outcome = "win"
+                            elif pnl_val < 0:
+                                outcome = "loss"
+                            else:
+                                outcome = "breakeven"
+                            rr_achieved = t.get("effective_rr", 0) or 0
+                            market_context = {
+                                "symbol": t.get("symbol", SYMBOL),
+                                "session": t.get("session", "unknown"),
+                                "direction": t.get("direction", "unknown"),
+                                "setup_type": t.get("setup_type", "UNKNOWN"),
+                                "confluence_score": t.get("confluence_score", 0),
+                                "volatility": "normal",
+                                "exit_reason": t.get("exit_reason", "UNKNOWN"),
+                            }
+                            record_concept_outcome(
+                                str(t_pos_id) if t_pos_id else t.get("time", "unknown"),
+                                outcome,
+                                rr_achieved,
+                                pnl_val,
+                                market_context
+                            )
+                            log(f"Concept outcome recorded: {outcome} PnL={pnl_val}", "TRADE")
+                        except Exception as e:
+                            log(f"Concept tracker record_outcome error: {e}", "WARN")
+
+                    # Phase 1b: Update DB with PnL and exit info
+                    if DB_AVAILABLE:
+                        for t in updated:
+                            try:
+                                t_pos_id = t.get("position_id", 0)
+                                if t_pos_id:
+                                    DB.update_trade_pnl_by_position_id(
+                                        t_pos_id,
+                                        t["pnl_usd"],
+                                        exit_price=t.get("exit_price"),
+                                        exit_reason=t.get("exit_reason"),
+                                        exit_time=t.get("exit_time")
+                                    )
+                            except Exception as e:
+                                log(f"DB PnL update error for trade: {e}", "WARN")
 
 
 # =======================================================
@@ -2101,8 +2242,11 @@ def evaluate_ingwe(df, fvgs, sweep, sweep_level, price, atr, lot_size, session):
 
         # ── PATH A: BUY REVERSAL ─────────────────────────
         if sweep == "SWEEP_LOW" and fvg_type == "BULLISH_FVG" and trend == "BULLISH":
-            # P0-B: Direction filter gate (SELL default, HTF exception)
-            dir_allowed, dir_reason = TRADING_GOVERNOR.check_direction("BUY", htf_bias, _instance_tag)
+            # P0-B: Direction filter gate (data-driven)
+            dir_allowed, dir_reason = TRADING_GOVERNOR.check_direction(
+                "BUY", htf_bias, _instance_tag,
+                symbol=SYMBOL, session=session, setup_type="REVERSAL"
+            )
             if not dir_allowed:
                 log(f"Direction blocked: BUY ({dir_reason}).", "GUARD")
                 continue
@@ -2174,7 +2318,7 @@ def evaluate_ingwe(df, fvgs, sweep, sweep_level, price, atr, lot_size, session):
             entry = round(price, 5)
             sl    = round(entry - stop, 5)
             tp    = round(entry + stop * RISK_REWARD_RATIO, 5)
-            res   = place_trade("BUY", entry, sl, tp, lot_size)
+            res   = place_trade("BUY", entry, sl, tp, lot_size, session=session)
             if res and res.retcode == mt5.TRADE_RETCODE_DONE:
                 log(f"BUY MARKET  Entry={entry}  SL={sl}  TP={tp}  Lot={lot_size}", "TRADE")
                 log_trade("BUY", entry, sl, tp, res, lot_size, session, context=ctx, kronos_gate=KRONOS_VETO_GATE)
@@ -2240,7 +2384,7 @@ def evaluate_ingwe(df, fvgs, sweep, sweep_level, price, atr, lot_size, session):
             entry = round(price, 5)
             sl    = round(entry + stop, 5)
             tp    = round(entry - stop * RISK_REWARD_RATIO, 5)
-            res   = place_trade("SELL", entry, sl, tp, lot_size)
+            res   = place_trade("SELL", entry, sl, tp, lot_size, session=session)
             if res and res.retcode == mt5.TRADE_RETCODE_DONE:
                 log(f"SELL MARKET  Entry={entry}  SL={sl}  TP={tp}  Lot={lot_size}", "TRADE")
                 log_trade("SELL", entry, sl, tp, res, lot_size, session, context=ctx, kronos_gate=KRONOS_VETO_GATE)
@@ -2306,7 +2450,7 @@ def evaluate_ingwe(df, fvgs, sweep, sweep_level, price, atr, lot_size, session):
             entry = round(price, 5)
             sl    = round(entry + stop, 5)
             tp    = round(entry - stop * RISK_REWARD_RATIO, 5)
-            res   = place_trade("SELL", entry, sl, tp, lot_size)
+            res   = place_trade("SELL", entry, sl, tp, lot_size, session=session)
             if res and res.retcode == mt5.TRADE_RETCODE_DONE:
                 log(f"SELL MARKET  Entry={entry}  SL={sl}  TP={tp}  Lot={lot_size}", "TRADE")
                 log_trade("SELL", entry, sl, tp, res, lot_size, session, context=ctx, kronos_gate=KRONOS_VETO_GATE)
@@ -2318,8 +2462,11 @@ def evaluate_ingwe(df, fvgs, sweep, sweep_level, price, atr, lot_size, session):
 
         # ── PATH D: BUY CONTINUATION (v3.9.1) ───────────
         if sweep == "SWEEP_HIGH" and fvg_type == "BULLISH_FVG" and trend == "BULLISH":
-            # P0-B: Direction filter gate (SELL default, HTF exception)
-            dir_allowed, dir_reason = TRADING_GOVERNOR.check_direction("BUY", htf_bias, _instance_tag)
+            # P0-B: Direction filter gate (data-driven)
+            dir_allowed, dir_reason = TRADING_GOVERNOR.check_direction(
+                "BUY", htf_bias, _instance_tag,
+                symbol=SYMBOL, session=session, setup_type="CONTINUATION"
+            )
             if not dir_allowed:
                 log(f"Direction blocked: BUY ({dir_reason}).", "GUARD")
                 continue
@@ -2388,7 +2535,7 @@ def evaluate_ingwe(df, fvgs, sweep, sweep_level, price, atr, lot_size, session):
             entry = round(price, 5)
             sl    = round(entry - stop, 5)
             tp    = round(entry + stop * RISK_REWARD_RATIO, 5)
-            res   = place_trade("BUY", entry, sl, tp, lot_size)
+            res   = place_trade("BUY", entry, sl, tp, lot_size, session=session)
             if res and res.retcode == mt5.TRADE_RETCODE_DONE:
                 log(f"BUY MARKET  Entry={entry}  SL={sl}  TP={tp}  Lot={lot_size}", "TRADE")
                 log_trade("BUY", entry, sl, tp, res, lot_size, session, context=ctx, kronos_gate=KRONOS_VETO_GATE)
@@ -2398,10 +2545,9 @@ def evaluate_ingwe(df, fvgs, sweep, sweep_level, price, atr, lot_size, session):
                 log(f"BUY MARKET FAILED. Code={res.retcode if res else 'N/A'}.", "ERROR")
             return
 
-    log("Ingwe conditions not aligned. Waiting...")
-
-
-# =======================================================
+    # =======================================================
+    #  SECTION 13 -- SILVER BULLET SETUP EVALUATION
+    # =======================================================
 #  SECTION 12B -- SETUP EVALUATION: SILVER BULLET MODE
 # =======================================================
 
@@ -2474,7 +2620,7 @@ def evaluate_silver_bullet(df, fvgs, sweep, sweep_level, price, atr,
                 sl      = round(bb_low - atr * ATR_MULTIPLIER, 5)
                 sl_dist = abs(entry - sl)
                 tp      = round(entry + sl_dist * RISK_REWARD_RATIO, 5)
-                res     = place_trade("BUY", entry, sl, tp, lot_size)
+                res     = place_trade("BUY", entry, sl, tp, lot_size, session=window)
                 if res and res.retcode == mt5.TRADE_RETCODE_DONE:
                     log(f"[UNICORN] UNICORN BUY  Entry={entry}  SL={sl}  TP={tp}  "
                         f"Lot={lot_size}", "TRADE")
@@ -2530,7 +2676,7 @@ def evaluate_silver_bullet(df, fvgs, sweep, sweep_level, price, atr,
                 sl      = round(bb_high + atr * ATR_MULTIPLIER, 5)
                 sl_dist = abs(sl - entry)
                 tp      = round(entry - sl_dist * RISK_REWARD_RATIO, 5)
-                res     = place_trade("SELL", entry, sl, tp, lot_size)
+                res     = place_trade("SELL", entry, sl, tp, lot_size, session=window)
                 if res and res.retcode == mt5.TRADE_RETCODE_DONE:
                     log(f"[UNICORN] UNICORN SELL  Entry={entry}  SL={sl}  TP={tp}  "
                         f"Lot={lot_size}", "TRADE")
@@ -2596,7 +2742,7 @@ def evaluate_silver_bullet(df, fvgs, sweep, sweep_level, price, atr,
             sl      = round(sweep_level - atr * ATR_MULTIPLIER, 5)
             sl_dist = abs(entry - sl)
             tp      = round(entry + sl_dist * RISK_REWARD_RATIO, 5)
-            res     = place_trade("BUY", entry, sl, tp, lot_size)
+            res     = place_trade("BUY", entry, sl, tp, lot_size, session=window)
             if res and res.retcode == mt5.TRADE_RETCODE_DONE:
                 log(f"SB BUY  Entry={entry}  SL={sl}  TP={tp}  Lot={lot_size}", "TRADE")
                 log_trade("BUY", entry, sl, tp, res, lot_size, window, context=ctx, kronos_gate=KRONOS_VETO_GATE)
@@ -2653,7 +2799,7 @@ def evaluate_silver_bullet(df, fvgs, sweep, sweep_level, price, atr,
             sl      = round(sweep_level + atr * ATR_MULTIPLIER, 5)
             sl_dist = abs(sl - entry)
             tp      = round(entry - sl_dist * RISK_REWARD_RATIO, 5)
-            res     = place_trade("SELL", entry, sl, tp, lot_size)
+            res     = place_trade("SELL", entry, sl, tp, lot_size, session=window)
             if res and res.retcode == mt5.TRADE_RETCODE_DONE:
                 log(f"SB SELL  Entry={entry}  SL={sl}  TP={tp}  Lot={lot_size}", "TRADE")
                 log_trade("SELL", entry, sl, tp, res, lot_size, window, context=ctx, kronos_gate=KRONOS_VETO_GATE)
@@ -2779,7 +2925,7 @@ def evaluate_london_breakout(df, fvgs, sweep, sweep_level, price, atr,
             print(f"[DEBUG_ENG] Symbol={SYMBOL} | Strategy=LONDON_OPEN | "
                   f"Dir=BUY | Entry={entry} | SL={sl} | TP={tp} | "
                   f"Stop={stop} | Active_RRR={RISK_REWARD_RATIO}")
-            res = place_trade("BUY", entry, sl, tp, lot_size)
+            res = place_trade("BUY", entry, sl, tp, lot_size, session=session)
             if res and res.retcode == mt5.TRADE_RETCODE_DONE:
                 log(f"LONDON BREAKOUT BUY  Entry={entry}  SL={sl}  TP={tp}  Lot={lot_size}", "TRADE")
                 log_trade("BUY", entry, sl, tp, res, lot_size, session, context=ctx, kronos_gate=KRONOS_VETO_GATE)
@@ -2865,7 +3011,7 @@ def evaluate_london_breakout(df, fvgs, sweep, sweep_level, price, atr,
             print(f"[DEBUG_ENG] Symbol={SYMBOL} | Strategy=LONDON_OPEN | "
                   f"Dir=SELL | Entry={entry} | SL={sl} | TP={tp} | "
                   f"Stop={stop} | Active_RRR={RISK_REWARD_RATIO}")
-            res = place_trade("SELL", entry, sl, tp, lot_size)
+            res = place_trade("SELL", entry, sl, tp, lot_size, session=session)
             if res and res.retcode == mt5.TRADE_RETCODE_DONE:
                 log(f"LONDON BREAKOUT SELL  Entry={entry}  SL={sl}  TP={tp}  Lot={lot_size}", "TRADE")
                 log_trade("SELL", entry, sl, tp, res, lot_size, session, context=ctx, kronos_gate=KRONOS_VETO_GATE)
@@ -2937,7 +3083,7 @@ def evaluate_ict_m1(df, fvgs, sweep, sweep_level, price, atr,
             entry = round(price, 5)
             sl = round(entry - stop, 5)
             tp = round(entry + stop * RISK_REWARD_RATIO, 5)
-            res = place_trade("BUY", entry, sl, tp, lot_size)
+            res = place_trade("BUY", entry, sl, tp, lot_size, session=session)
             if res and res.retcode == mt5.TRADE_RETCODE_DONE:
                 log(f"M1 BUY  Entry={entry}  SL={sl}  TP={tp}  Lot={lot_size}", "TRADE")
                 log_trade("BUY", entry, sl, tp, res, lot_size, session, context=ctx, kronos_gate=KRONOS_VETO_GATE)
@@ -2984,7 +3130,7 @@ def evaluate_ict_m1(df, fvgs, sweep, sweep_level, price, atr,
             entry = round(price, 5)
             sl = round(entry + stop, 5)
             tp = round(entry - stop * RISK_REWARD_RATIO, 5)
-            res = place_trade("SELL", entry, sl, tp, lot_size)
+            res = place_trade("SELL", entry, sl, tp, lot_size, session=session)
             if res and res.retcode == mt5.TRADE_RETCODE_DONE:
                 log(f"M1 SELL  Entry={entry}  SL={sl}  TP={tp}  Lot={lot_size}", "TRADE")
                 log_trade("SELL", entry, sl, tp, res, lot_size, session, context=ctx, kronos_gate=KRONOS_VETO_GATE)

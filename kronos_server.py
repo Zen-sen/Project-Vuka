@@ -294,28 +294,23 @@ def run_inference(ohlcv_tensor: torch.Tensor, direction_hint: str = None) -> tup
             if device and str(device).startswith("cuda"):
                 torch.cuda.empty_cache()
             
-            # Simple but REALISTIC confidence calculation
-            # Instead of just means, we use a simple momentum-based trend follow
+            # Phase 4a: Expand confidence to full 0.25-0.90 range (was 0.5-0.7)
+            # Momentum-based trend follow as base fallback
             n = len(valid_prices)
             if n < 2:
-                return True, 0.5
+                return True, 0.40
                 
-            # Calculate a simple linear trend (slope)
             x = np.arange(n)
             y = valid_prices
             slope = np.polyfit(x, y, 1)[0]
-            
-            # Normalize slope by average price movement (ATR-like)
             avg_move = np.mean(np.abs(np.diff(valid_prices))) if n > 1 else 1e-8
             normalized_slope = slope / (avg_move + 1e-8)
             
-            # Direction: slope > 0 is UP
             direction = slope > 0
             
-            # Confidence based on slope strength and consistency
-            # Slope between -1 and 1 is typical; > 1 is strong
+            # Phase 4a: Full range 0.25-1.0 (was 0.5-0.7)
             conf_score = min(1.0, abs(normalized_slope) / 2.0)
-            confidence = 0.5 + (conf_score * 0.2) # Range 0.5 - 0.7
+            confidence = 0.25 + (conf_score * 0.65)  # Range 0.25 - 0.90
             
             if direction_hint:
                 ingwe_wants_up = direction_hint.upper() == "BUY"
@@ -335,7 +330,7 @@ def run_inference(ohlcv_tensor: torch.Tensor, direction_hint: str = None) -> tup
         log_json("ERROR", f"Inference error: {str(e)}")
         if device and str(device).startswith("cuda"):
             torch.cuda.empty_cache()
-        return True, 0.60  # Conservative default
+        return True, 0.45  # Phase 4a: Lower default from 0.60 to 0.45
 
 
 @app.post("/v1/predict", response_model=PredictResponse)
@@ -752,6 +747,31 @@ async def predict_ict(request: ICTPredictRequest):
         ohlcv_tensor = tokenize_ohlcv(df)
 
         agree, confidence = run_inference(ohlcv_tensor, direction)
+
+        # Phase 4a: Boost confidence with concept_tracker pattern stats
+        try:
+            from skills.concept_tracker import get_pattern_win_rate
+            if ctx.get("session") and ctx.get("setup_type"):
+                _wr, _samples = get_pattern_win_rate(
+                    ctx.get("symbol", "EURUSD"),
+                    ctx.get("session", "unknown"),
+                    ctx.get("setup_type", "UNKNOWN"),
+                    direction, min_samples=5
+                )
+                if _samples >= 5:
+                    # Boost confidence based on historical WR
+                    # WR < 40% penalize, WR > 60% boost, WR > 80% strong boost
+                    if _wr < 0.40:
+                        confidence *= 0.75
+                    elif _wr > 0.80:
+                        confidence = min(confidence * 1.25, 0.95)
+                    elif _wr > 0.60:
+                        confidence = min(confidence * 1.15, 0.95)
+                    log_json("INFO", "Concept tracker confidence adjustment",
+                             win_rate=round(_wr, 2), samples=_samples,
+                             adjusted_confidence=round(confidence, 2))
+        except Exception:
+            pass
 
         # ── v5.5: Pattern Sequence Confidence Adjustment ──
         reason_detail = []
