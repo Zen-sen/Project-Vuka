@@ -243,7 +243,7 @@ _SYMBOL_MAP = {
 SYMBOL = _SYMBOL_MAP[_arg_symbol]
 
 _instance_tag   = f"{_arg_symbol}_{STRATEGY}"
-_instance_short = f"{_arg_symbol[:3]}{'SB' if STRATEGY == 'SILVER_BULLET' else ('M1' if STRATEGY == 'ICT_M1' else 'IW')}"
+_instance_short = f"{_arg_symbol[:3]}{'SB' if STRATEGY == 'SILVER_BULLET' else ('M1' if STRATEGY == 'ICT_M1' else ('LO' if STRATEGY == 'LONDON_OPEN' else 'IW'))}"
 
 # Initialize Unified Logger
 logger = get_logger(_instance_tag)
@@ -322,6 +322,25 @@ elif STRATEGY == "SILVER_BULLET":
     DATA_STALE_MINUTES_ASIAN = 10
     MT5_RETRY_ATTEMPTS       = 3
     MT5_RETRY_DELAY_SEC      = 10
+elif STRATEGY == "LONDON_OPEN":
+    TIMEFRAME                = mt5.TIMEFRAME_M15
+    RISK_PERCENT             = 1.0
+    RISK_REWARD_RATIO        = 2.5
+    ATR_PERIOD               = 14
+    ATR_MULTIPLIER           = 2.0
+    MIN_SL_ATR_MULTIPLIER    = 1.0
+    LIMIT_ORDER_EXPIRY_CANDLES = 4
+    ADX_PERIOD               = 14
+    ADX_MIN_THRESHOLD        = 25
+    MIN_SPREAD_PIPS          = 0.0002
+    MAX_DAILY_LOSS           = 50.0
+    MAX_DRAWDOWN_PCT         = 10.0
+    HARD_LOT_CAP             = 0.20
+    SCAN_INTERVAL_SEC        = 900
+    DATA_STALE_MINUTES       = 30
+    DATA_STALE_MINUTES_ASIAN = 90
+    MT5_RETRY_ATTEMPTS       = 3
+    MT5_RETRY_DELAY_SEC      = 30
 elif _arg_symbol in ("EURUSD", "USDJPY"):
     TIMEFRAME                = mt5.TIMEFRAME_M15
     RISK_PERCENT             = 1.0
@@ -2920,11 +2939,20 @@ def evaluate_london_breakout(df, fvgs, sweep, sweep_level, price, atr,
 
             stop = max(atr * ATR_MULTIPLIER, atr * MIN_SL_ATR_MULTIPLIER)
             entry = round(price, 5)
-            sl = round(entry - stop, 5)
-            tp = round(entry + stop * RISK_REWARD_RATIO, 5)
+            if asian_low:
+                sl = round(max(entry - stop, asian_low - atr * 0.3), 5)
+            else:
+                sl = round(entry - stop, 5)
+            if score >= 90:
+                dynamic_rr = RISK_REWARD_RATIO
+            elif score >= 80:
+                dynamic_rr = RISK_REWARD_RATIO - 0.5
+            else:
+                dynamic_rr = RISK_REWARD_RATIO - 1.0
+            tp = round(entry + stop * dynamic_rr, 5)
             print(f"[DEBUG_ENG] Symbol={SYMBOL} | Strategy=LONDON_OPEN | "
                   f"Dir=BUY | Entry={entry} | SL={sl} | TP={tp} | "
-                  f"Stop={stop} | Active_RRR={RISK_REWARD_RATIO}")
+                  f"Stop={stop} | Active_RRR={dynamic_rr}")
             res = place_trade("BUY", entry, sl, tp, lot_size, session=session)
             if res and res.retcode == mt5.TRADE_RETCODE_DONE:
                 log(f"LONDON BREAKOUT BUY  Entry={entry}  SL={sl}  TP={tp}  Lot={lot_size}", "TRADE")
@@ -3006,11 +3034,20 @@ def evaluate_london_breakout(df, fvgs, sweep, sweep_level, price, atr,
 
             stop = max(atr * ATR_MULTIPLIER, atr * MIN_SL_ATR_MULTIPLIER)
             entry = round(price, 5)
-            sl = round(entry + stop, 5)
-            tp = round(entry - stop * RISK_REWARD_RATIO, 5)
+            if asian_high:
+                sl = round(min(entry + stop, asian_high + atr * 0.3), 5)
+            else:
+                sl = round(entry + stop, 5)
+            if score >= 90:
+                dynamic_rr = RISK_REWARD_RATIO
+            elif score >= 80:
+                dynamic_rr = RISK_REWARD_RATIO - 0.5
+            else:
+                dynamic_rr = RISK_REWARD_RATIO - 1.0
+            tp = round(entry - stop * dynamic_rr, 5)
             print(f"[DEBUG_ENG] Symbol={SYMBOL} | Strategy=LONDON_OPEN | "
                   f"Dir=SELL | Entry={entry} | SL={sl} | TP={tp} | "
-                  f"Stop={stop} | Active_RRR={RISK_REWARD_RATIO}")
+                  f"Stop={stop} | Active_RRR={dynamic_rr}")
             res = place_trade("SELL", entry, sl, tp, lot_size, session=session)
             if res and res.retcode == mt5.TRADE_RETCODE_DONE:
                 log(f"LONDON BREAKOUT SELL  Entry={entry}  SL={sl}  TP={tp}  Lot={lot_size}", "TRADE")
