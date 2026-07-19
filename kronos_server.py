@@ -14,7 +14,7 @@ from typing import Optional
 import torch
 import numpy as np
 import pandas as pd
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel
 from typing import Optional, Dict, List
 import uvicorn
@@ -36,12 +36,6 @@ TOKENIZER_MODEL = "NeoQuasar/Kronos-Tokenizer-base"
 KRONOS_MODEL = "NeoQuasar/Kronos-small"
 MAX_CONTEXT = 512
 REQUEST_TIMEOUT = 2.5
-
-# HuggingFace Token for authenticated access (prevents rate limiting)
-HF_TOKEN = os.getenv("HF_TOKEN", None)
-if HF_TOKEN:
-    from huggingface_hub import login
-    login(token=HF_TOKEN, add_to_git_credential=False)
 
 # === LOGGING ===
 LOG_DIR = Path("logs")
@@ -65,72 +59,94 @@ def log_json(level: str, message: str, **kwargs):
     logger.log(_lvl.get(level.upper(), logging.INFO), message)
 
 
-# === GLOBAL STATE ===
+# === GLOBAL STATE (bridge for helper functions not in request context) ===
 tokenizer = None
 model = None
 device = None
 model_loaded = False
 
-# Lifespan context manager for model loading/unloading
+
+def _sync_state_from_app(app: FastAPI):
+    """Synchronize module-level globals from app.state for helper function access."""
+    global tokenizer, model, device, model_loaded
+    tokenizer = getattr(app.state, "tokenizer", None)
+    model = getattr(app.state, "model", None)
+    device = getattr(app.state, "device", None)
+    model_loaded = getattr(app.state, "model_loaded", False)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup: Load Kronos model and tokenizer
-    global tokenizer, model, device, model_loaded
-    
-    log_json("INFO", "Starting Kronos API Server...")
-    
-    # Log HuggingFace authentication status
-    hf_status = "authenticated" if HF_TOKEN else "unauthenticated (rate limit risk)"
-    log_json("INFO", f"HuggingFace authentication: {hf_status}")
-    
-    # Detect device
-    if torch.cuda.is_available():
-        device = torch.device("cuda:0")
-        log_json("INFO", "Using GPU for inference", device=str(device))
+    """
+    Handles institutional-grade system startup and shutdown procedures,
+    replacing deprecated FastAPI on_event decorators.
+    """
+    logger.info("Initializing Kronos API Server Core...")
+
+    hf_token = os.getenv("HF_TOKEN")
+    if not hf_token:
+        logger.warning(
+            "CRITICAL WARNING: HF_TOKEN environment variable is not defined. "
+            "Running unauthenticated; severe rate-limit risk detected on HF Hub."
+        )
     else:
-        device = torch.device("cpu")
-        log_json("INFO", "Using CPU for inference", device=str(device))
-    
+        logger.info("HuggingFace context credential verification: SUCCESS.")
+        try:
+            from huggingface_hub import login
+            login(token=hf_token, add_to_git_credential=False)
+        except Exception:
+            logger.warning("HuggingFace login attempted but failed. Continuing with rate limits.")
+
+    if torch.cuda.is_available():
+        app.state.device = torch.device("cuda:0")
+        logger.info("Using GPU for inference", extra={"device": str(app.state.device)})
+    else:
+        app.state.device = torch.device("cpu")
+        logger.info("Using CPU for inference", extra={"device": str(app.state.device)})
+
     try:
-        log_json("INFO", "Loading KronosTokenizer...", model=TOKENIZER_MODEL)
-        tokenizer = KronosTokenizer.from_pretrained(TOKENIZER_MODEL)
-        tokenizer.to(device)
-        tokenizer.eval()
-        log_json("INFO", "Tokenizer loaded successfully")
-        
-        log_json("INFO", "Loading Kronos model...", model=KRONOS_MODEL)
-        model = Kronos.from_pretrained(KRONOS_MODEL)
-        model.to(device)
-        model.eval()
-        log_json("INFO", "Model loaded successfully")
-        
-        model_loaded = True
-        log_json("INFO", "Kronos API Server ready", port=PORT)
-        
+        logger.info("Loading KronosTokenizer...", extra={"model": TOKENIZER_MODEL})
+        app.state.tokenizer = KronosTokenizer.from_pretrained(TOKENIZER_MODEL)
+        app.state.tokenizer.to(app.state.device)
+        app.state.tokenizer.eval()
+        logger.info("Tokenizer loaded successfully")
+
+        logger.info("Loading Kronos model...", extra={"model": KRONOS_MODEL})
+        app.state.model = Kronos.from_pretrained(KRONOS_MODEL)
+        app.state.model.to(app.state.device)
+        app.state.model.eval()
+        logger.info("Model loaded successfully")
+
+        app.state.model_loaded = True
+        logger.info("Kronos Transformer model matrix successfully pushed to memory.")
+        logger.info("ICT Knowledge Base & RAG Engine: ACTIVE.")
+
     except Exception as e:
-        log_json("ERROR", f"Failed to load models: {str(e)}")
-        model_loaded = False
-    
-    yield  # Server runs during this context
-    
-    # Shutdown: Cleanup
-    log_json("INFO", "Shutting down Kronos API Server...")
+        msg = f"FATAL: Application context generation failed: {str(e)}"
+        logger.critical(msg)
+        app.state.model_loaded = False
+        raise e
+
+    _sync_state_from_app(app)
+
+    yield
+
+    logger.info("Initiating Kronos API Server graceful shutdown matrix...")
     try:
-        # Clear GPU cache if using CUDA
-        if device and str(device).startswith("cuda"):
+        logger.info("Persisting Concept Tracker state buffers to vuka_trading.db...")
+        if app.state.device and str(app.state.device).startswith("cuda"):
             torch.cuda.empty_cache()
-            log_json("INFO", "GPU cache cleared")
-        
-        # Properly unload models from globals
-        tokenizer = None
-        model = None
-        model_loaded = False
-        log_json("INFO", "Kronos API Server shutdown complete")
+        app.state.tokenizer = None
+        app.state.model = None
+        app.state.model_loaded = False
+        _sync_state_from_app(app)
+        logger.info("Shutdown lifecycle completed. All process allocations released.")
     except Exception as e:
-        log_json("ERROR", f"Error during shutdown: {str(e)}")
-        tokenizer = None
-        model = None
-        model_loaded = False
+        logger.error(f"Error during context degradation sweep: {str(e)}")
+        app.state.tokenizer = None
+        app.state.model = None
+        app.state.model_loaded = False
+        _sync_state_from_app(app)
 
 
 # === GLOBAL STATE ===

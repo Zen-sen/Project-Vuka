@@ -6,7 +6,7 @@
   "veto_gate": {
     "enabled": true,
     "mode": "enforced",
-    "safety_mode": "ALLOW_SAFE",
+    "safety_mode": "VETO_SAFE",
     "endpoint": "http://127.0.0.1:8000/v1/predict-ict",
     "threshold": 0.40,
     "buy_threshold": 0.35

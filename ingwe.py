@@ -1909,6 +1909,21 @@ def log_sl_move(ticket: int, entry: float, old_sl: float, new_sl: float, label: 
         json.dump(moves, f, indent=2)
 
 
+def round_to_tick(price: float, symbol: str) -> float:
+    symbol_info = mt5.symbol_info(symbol)
+    if symbol_info is None:
+        return round(price, 5)
+    tick_size = symbol_info.trade_tick_size
+    if tick_size <= 0:
+        return round(price, symbol_info.digits)
+    remainder = price % tick_size
+    if remainder < (tick_size / 2):
+        normalized_price = price - remainder
+    else:
+        normalized_price = price + (tick_size - remainder)
+    return round(normalized_price, symbol_info.digits)
+
+
 def manage_open_positions():
     """
     v3.9.5 FIX-2: Trailing SL manager.
@@ -2190,12 +2205,10 @@ def evaluate_ingwe(df, fvgs, sweep, sweep_level, price, atr, lot_size, session):
         return
     log(f"ADX: {adx:.1f}  |  +DI: {plus_di:.1f}  |  -DI: {minus_di:.1f}")
 
-    # ── FIX-1: ADX GATE (v5.2 - Weighted Context) ──────────────────────
-    # Instead of blocking, we flag low ADX for Kronos to decide.
-    adx_ok = True
+    # ── ADX GATE ──────────────────────────────────────────
     if adx < ADX_MIN_THRESHOLD:
-        log(f"ADX {adx} below minimum ({ADX_MIN_THRESHOLD}) -- Range-bound risk.", "WARN")
-        adx_ok = False
+        log(f"ADX {adx} below minimum ({ADX_MIN_THRESHOLD}) -- Extreme chop. Standing down.", "GUARD")
+        return
     
     # ── PATTERN BLACKLIST CHECK (STILL A HARD GATE) ────────────────────────────
     # Block toxic patterns identified in backtest (win rate <35%)
@@ -2224,13 +2237,6 @@ def evaluate_ingwe(df, fvgs, sweep, sweep_level, price, atr, lot_size, session):
     
     if blacklist_blocked:
         return
-    
-    # ── ADX_MIN_THRESHOLD GATE ──────────────────────────────────────────────
-    # Single threshold from config. Below it = extreme chop, hard block.
-    if adx < ADX_MIN_THRESHOLD:
-        log(f"ADX {adx} below threshold ({ADX_MIN_THRESHOLD}) -- Extreme chop. Standing down.", "GUARD")
-        return
-
 
     spread      = get_spread()
     spread_pips = spread * 10000 if spread else 0
@@ -2371,7 +2377,7 @@ def evaluate_ingwe(df, fvgs, sweep, sweep_level, price, atr, lot_size, session):
                     "fvg_position": "below_50" if price <= fvg_50_val else ("50%" if abs(price - fvg_50_val) < atr * 0.1 else "above_50"),
                     "bos_aligned": bos_aligned,
                     "htf_bias_ok": htf_bias_ok,
-                    "adx_ok": adx_ok,
+                    "adx_ok": True,
                     "score_ok": score_ok,
                     "confluence_score": score,
                     "session": session,
@@ -2394,9 +2400,9 @@ def evaluate_ingwe(df, fvgs, sweep, sweep_level, price, atr, lot_size, session):
                     return
             
             stop  = max(atr * ATR_MULTIPLIER, min_sl)
-            entry = round(price, 5)
-            sl    = round(entry - stop, 5)
-            tp    = round(entry + stop * RISK_REWARD_RATIO, 5)
+            entry = round_to_tick(price, SYMBOL)
+            sl    = round_to_tick(entry - stop, SYMBOL)
+            tp    = round_to_tick(entry + stop * RISK_REWARD_RATIO, SYMBOL)
             res   = place_trade("BUY", entry, sl, tp, lot_size, session=session)
             if res and res.retcode == mt5.TRADE_RETCODE_DONE:
                 log(f"BUY MARKET  Entry={entry}  SL={sl}  TP={tp}  Lot={lot_size}", "TRADE")
@@ -2460,9 +2466,9 @@ def evaluate_ingwe(df, fvgs, sweep, sweep_level, price, atr, lot_size, session):
                     log(f"Kronos vetoed SELL. Skipping trade.", "GUARD")
                     return
             stop  = max(atr * ATR_MULTIPLIER, min_sl)
-            entry = round(price, 5)
-            sl    = round(entry + stop, 5)
-            tp    = round(entry - stop * RISK_REWARD_RATIO, 5)
+            entry = round_to_tick(price, SYMBOL)
+            sl    = round_to_tick(entry + stop, SYMBOL)
+            tp    = round_to_tick(entry - stop * RISK_REWARD_RATIO, SYMBOL)
             res   = place_trade("SELL", entry, sl, tp, lot_size, session=session)
             if res and res.retcode == mt5.TRADE_RETCODE_DONE:
                 log(f"SELL MARKET  Entry={entry}  SL={sl}  TP={tp}  Lot={lot_size}", "TRADE")
@@ -2526,9 +2532,9 @@ def evaluate_ingwe(df, fvgs, sweep, sweep_level, price, atr, lot_size, session):
                     return
             
             stop  = max(atr * ATR_MULTIPLIER, min_sl)
-            entry = round(price, 5)
-            sl    = round(entry + stop, 5)
-            tp    = round(entry - stop * RISK_REWARD_RATIO, 5)
+            entry = round_to_tick(price, SYMBOL)
+            sl    = round_to_tick(entry + stop, SYMBOL)
+            tp    = round_to_tick(entry - stop * RISK_REWARD_RATIO, SYMBOL)
             res   = place_trade("SELL", entry, sl, tp, lot_size, session=session)
             if res and res.retcode == mt5.TRADE_RETCODE_DONE:
                 log(f"SELL MARKET  Entry={entry}  SL={sl}  TP={tp}  Lot={lot_size}", "TRADE")
@@ -2611,9 +2617,9 @@ def evaluate_ingwe(df, fvgs, sweep, sweep_level, price, atr, lot_size, session):
                     return
             
             stop  = max(atr * ATR_MULTIPLIER, min_sl)
-            entry = round(price, 5)
-            sl    = round(entry - stop, 5)
-            tp    = round(entry + stop * RISK_REWARD_RATIO, 5)
+            entry = round_to_tick(price, SYMBOL)
+            sl    = round_to_tick(entry - stop, SYMBOL)
+            tp    = round_to_tick(entry + stop * RISK_REWARD_RATIO, SYMBOL)
             res   = place_trade("BUY", entry, sl, tp, lot_size, session=session)
             if res and res.retcode == mt5.TRADE_RETCODE_DONE:
                 log(f"BUY MARKET  Entry={entry}  SL={sl}  TP={tp}  Lot={lot_size}", "TRADE")
@@ -2695,10 +2701,10 @@ def evaluate_silver_bullet(df, fvgs, sweep, sweep_level, price, atr,
                         log(f"Kronos vetoed BUY. Skipping trade.", "GUARD")
                         return
                 
-                entry   = round(price, 5)
-                sl      = round(bb_low - atr * ATR_MULTIPLIER, 5)
+                entry   = round_to_tick(price, SYMBOL)
+                sl      = round_to_tick(bb_low - atr * ATR_MULTIPLIER, SYMBOL)
                 sl_dist = abs(entry - sl)
-                tp      = round(entry + sl_dist * RISK_REWARD_RATIO, 5)
+                tp      = round_to_tick(entry + sl_dist * RISK_REWARD_RATIO, SYMBOL)
                 res     = place_trade("BUY", entry, sl, tp, lot_size, session=window)
                 if res and res.retcode == mt5.TRADE_RETCODE_DONE:
                     log(f"[UNICORN] UNICORN BUY  Entry={entry}  SL={sl}  TP={tp}  "
@@ -2751,10 +2757,10 @@ def evaluate_silver_bullet(df, fvgs, sweep, sweep_level, price, atr,
                         log(f"Kronos vetoed SELL. Skipping trade.", "GUARD")
                         return
                 
-                entry   = round(price, 5)
-                sl      = round(bb_high + atr * ATR_MULTIPLIER, 5)
+                entry   = round_to_tick(price, SYMBOL)
+                sl      = round_to_tick(bb_high + atr * ATR_MULTIPLIER, SYMBOL)
                 sl_dist = abs(sl - entry)
-                tp      = round(entry - sl_dist * RISK_REWARD_RATIO, 5)
+                tp      = round_to_tick(entry - sl_dist * RISK_REWARD_RATIO, SYMBOL)
                 res     = place_trade("SELL", entry, sl, tp, lot_size, session=window)
                 if res and res.retcode == mt5.TRADE_RETCODE_DONE:
                     log(f"[UNICORN] UNICORN SELL  Entry={entry}  SL={sl}  TP={tp}  "
@@ -2817,10 +2823,15 @@ def evaluate_silver_bullet(df, fvgs, sweep, sweep_level, price, atr,
                     log(f"Kronos vetoed BUY. Skipping trade.", "GUARD")
                     return
 
-            entry   = round(price, 5)
-            sl      = round(sweep_level - atr * ATR_MULTIPLIER, 5)
+            entry   = round_to_tick(price, SYMBOL)
+            calculated_sl = sweep_level - atr * ATR_MULTIPLIER
+            min_sl_distance = atr * MIN_SL_ATR_MULTIPLIER
+            if (entry - calculated_sl) < min_sl_distance:
+                sl = round_to_tick(entry - min_sl_distance, SYMBOL)
+            else:
+                sl = round_to_tick(calculated_sl, SYMBOL)
             sl_dist = abs(entry - sl)
-            tp      = round(entry + sl_dist * RISK_REWARD_RATIO, 5)
+            tp      = round_to_tick(entry + sl_dist * RISK_REWARD_RATIO, SYMBOL)
             res     = place_trade("BUY", entry, sl, tp, lot_size, session=window)
             if res and res.retcode == mt5.TRADE_RETCODE_DONE:
                 log(f"SB BUY  Entry={entry}  SL={sl}  TP={tp}  Lot={lot_size}", "TRADE")
@@ -2874,10 +2885,15 @@ def evaluate_silver_bullet(df, fvgs, sweep, sweep_level, price, atr,
                     log(f"Kronos vetoed SELL. Skipping trade.", "GUARD")
                     return
 
-            entry   = round(price, 5)
-            sl      = round(sweep_level + atr * ATR_MULTIPLIER, 5)
+            entry   = round_to_tick(price, SYMBOL)
+            calculated_sl = sweep_level + atr * ATR_MULTIPLIER
+            min_sl_distance = atr * MIN_SL_ATR_MULTIPLIER
+            if (calculated_sl - entry) < min_sl_distance:
+                sl = round_to_tick(entry + min_sl_distance, SYMBOL)
+            else:
+                sl = round_to_tick(calculated_sl, SYMBOL)
             sl_dist = abs(sl - entry)
-            tp      = round(entry - sl_dist * RISK_REWARD_RATIO, 5)
+            tp      = round_to_tick(entry - sl_dist * RISK_REWARD_RATIO, SYMBOL)
             res     = place_trade("SELL", entry, sl, tp, lot_size, session=window)
             if res and res.retcode == mt5.TRADE_RETCODE_DONE:
                 log(f"SB SELL  Entry={entry}  SL={sl}  TP={tp}  Lot={lot_size}", "TRADE")
@@ -2998,18 +3014,18 @@ def evaluate_london_breakout(df, fvgs, sweep, sweep_level, price, atr,
                     return
 
             stop = max(atr * ATR_MULTIPLIER, atr * MIN_SL_ATR_MULTIPLIER)
-            entry = round(price, 5)
+            entry = round_to_tick(price, SYMBOL)
             if asian_low:
-                sl = round(max(entry - stop, asian_low - atr * 0.3), 5)
+                sl = round_to_tick(max(entry - stop, asian_low - atr * 0.3), SYMBOL)
             else:
-                sl = round(entry - stop, 5)
+                sl = round_to_tick(entry - stop, SYMBOL)
             if score >= 90:
                 dynamic_rr = RISK_REWARD_RATIO
             elif score >= 80:
                 dynamic_rr = RISK_REWARD_RATIO - 0.5
             else:
                 dynamic_rr = RISK_REWARD_RATIO - 1.0
-            tp = round(entry + stop * dynamic_rr, 5)
+            tp = round_to_tick(entry + stop * dynamic_rr, SYMBOL)
             print(f"[DEBUG_ENG] Symbol={SYMBOL} | Strategy=LONDON_OPEN | "
                   f"Dir=BUY | Entry={entry} | SL={sl} | TP={tp} | "
                   f"Stop={stop} | Active_RRR={dynamic_rr}")
@@ -3093,18 +3109,18 @@ def evaluate_london_breakout(df, fvgs, sweep, sweep_level, price, atr,
                     return
 
             stop = max(atr * ATR_MULTIPLIER, atr * MIN_SL_ATR_MULTIPLIER)
-            entry = round(price, 5)
+            entry = round_to_tick(price, SYMBOL)
             if asian_high:
-                sl = round(min(entry + stop, asian_high + atr * 0.3), 5)
+                sl = round_to_tick(min(entry + stop, asian_high + atr * 0.3), SYMBOL)
             else:
-                sl = round(entry + stop, 5)
+                sl = round_to_tick(entry + stop, SYMBOL)
             if score >= 90:
                 dynamic_rr = RISK_REWARD_RATIO
             elif score >= 80:
                 dynamic_rr = RISK_REWARD_RATIO - 0.5
             else:
                 dynamic_rr = RISK_REWARD_RATIO - 1.0
-            tp = round(entry - stop * dynamic_rr, 5)
+            tp = round_to_tick(entry - stop * dynamic_rr, SYMBOL)
             print(f"[DEBUG_ENG] Symbol={SYMBOL} | Strategy=LONDON_OPEN | "
                   f"Dir=SELL | Entry={entry} | SL={sl} | TP={tp} | "
                   f"Stop={stop} | Active_RRR={dynamic_rr}")
@@ -3177,9 +3193,9 @@ def evaluate_ict_m1(df, fvgs, sweep, sweep_level, price, atr,
                     return
 
             stop = max(atr * ATR_MULTIPLIER, atr * MIN_SL_ATR_MULTIPLIER)
-            entry = round(price, 5)
-            sl = round(entry - stop, 5)
-            tp = round(entry + stop * RISK_REWARD_RATIO, 5)
+            entry = round_to_tick(price, SYMBOL)
+            sl = round_to_tick(entry - stop, SYMBOL)
+            tp = round_to_tick(entry + stop * RISK_REWARD_RATIO, SYMBOL)
             res = place_trade("BUY", entry, sl, tp, lot_size, session=session)
             if res and res.retcode == mt5.TRADE_RETCODE_DONE:
                 log(f"M1 BUY  Entry={entry}  SL={sl}  TP={tp}  Lot={lot_size}", "TRADE")
@@ -3224,9 +3240,9 @@ def evaluate_ict_m1(df, fvgs, sweep, sweep_level, price, atr,
                     return
 
             stop = max(atr * ATR_MULTIPLIER, atr * MIN_SL_ATR_MULTIPLIER)
-            entry = round(price, 5)
-            sl = round(entry + stop, 5)
-            tp = round(entry - stop * RISK_REWARD_RATIO, 5)
+            entry = round_to_tick(price, SYMBOL)
+            sl = round_to_tick(entry + stop, SYMBOL)
+            tp = round_to_tick(entry - stop * RISK_REWARD_RATIO, SYMBOL)
             res = place_trade("SELL", entry, sl, tp, lot_size, session=session)
             if res and res.retcode == mt5.TRADE_RETCODE_DONE:
                 log(f"M1 SELL  Entry={entry}  SL={sl}  TP={tp}  Lot={lot_size}", "TRADE")

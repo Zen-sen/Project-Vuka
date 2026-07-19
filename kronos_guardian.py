@@ -103,7 +103,10 @@ class CircuitBreaker:
         self.failure_count = 0
         self.state = CircuitBreakerState.CLOSED
         self.last_failure_time = None
+        self.last_state_change = time.time()
         self.half_open_calls = 0
+        self.current_half_open_calls = 0
+        self._lock = threading.Lock()
     
     def call(self, func, *args, **kwargs) -> Tuple[bool, any]:
         """
@@ -112,14 +115,21 @@ class CircuitBreaker:
         Returns:
             (success: bool, result: any)
         """
-        if self.state == CircuitBreakerState.OPEN:
-            # Check if recovery timeout has passed
-            if time.time() - self.last_failure_time > self.recovery_timeout:
-                self.state = CircuitBreakerState.HALF_OPEN
-                self.half_open_calls = 0
-                logger.info(f"Circuit breaker: OPEN -> HALF_OPEN (recovery test)")
-            else:
-                return False, None  # Still open, reject
+        with self._lock:
+            if self.state == CircuitBreakerState.OPEN:
+                if time.time() - self.last_state_change > self.recovery_timeout:
+                    self.state = CircuitBreakerState.HALF_OPEN
+                    self.half_open_calls = 0
+                    self.current_half_open_calls = 0
+                    self.last_state_change = time.time()
+                    logger.info(f"Circuit breaker: OPEN -> HALF_OPEN (recovery test)")
+                else:
+                    return False, None
+            
+            if self.state == CircuitBreakerState.HALF_OPEN:
+                if self.current_half_open_calls >= self.half_open_max_calls:
+                    return False, "HALF_OPEN probe limit exhausted"
+                self.current_half_open_calls += 1
         
         try:
             result = func(*args, **kwargs)
@@ -260,7 +270,8 @@ class KronosVetoGate:
         
         for col in required_cols:
             if col not in df.columns:
-                df[col] = 1000.0
+                logger.error(f"Critical execution block payload generation failed: Column {col} missing.")
+                raise ValueError(f"Incomplete historical matrix. Cannot pass safely to Kronos.")
         
         # v4.6: Return dict with 'candles' key containing list of records
         candles = []
