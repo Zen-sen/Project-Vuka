@@ -1,1 +1,1 @@
-> **⚠️ SUPERSEDED — May 2026.** This was a single-session task list (UTC expiry fix). See `AGENT.md` → Recent Structural Changes and `Memory.md` → Backlog for current work tracking.
+⚠️ SUPERSEDED — See `Memory.md` → Backlog for current work tracking and `AGENT.md` for system documentation.

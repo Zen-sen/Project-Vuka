@@ -1531,7 +1531,7 @@ def log_trade(direction, entry, sl, tp, result, lot_size, session, context=None,
     Log trade to database (primary) or JSON fallback.
     Tracks: fill price, slippage, effective RR based on actual execution.
     v5.5: Pulls actual fill from MT5 deal history when available.
-    v4.6.1: Accepts optional context dict and kronos gate for enrichment fields.
+    v6.1: Retries position_id lookup via positions_get if deal ticket unavailable.
     """
     actual_fill = entry
     position_id = 0
@@ -1547,6 +1547,17 @@ def log_trade(direction, entry, sl, tp, result, lot_size, session, context=None,
                 actual_fill = getattr(result, "price", entry)
         else:
             actual_fill = getattr(result, "price", entry)
+        # v6.1: fallback — try to get position_id from open positions
+        if position_id == 0:
+            try:
+                positions = mt5.positions_get(symbol=SYMBOL)
+                if positions:
+                    for pos in positions:
+                        if pos.magic == _instance_magic:
+                            position_id = pos.ticket
+                            break
+            except Exception:
+                pass
     slippage = abs(actual_fill - entry)
     slippage_pips = slippage * 10000
     
@@ -2008,10 +2019,18 @@ def manage_open_positions():
         if closed:
             pnl_by_pos = {}
             exit_price_by_pos = {}
+            deal_list = []
             for d in closed:
                 if d.magic == _instance_magic and d.profit != 0:
                     pnl_by_pos[d.position_id] = d.profit
                     exit_price_by_pos[d.position_id] = d.price
+                    deal_list.append({
+                        "position_id": d.position_id,
+                        "profit": d.profit,
+                        "price": d.price,
+                        "volume": d.volume,
+                        "type": d.type,  # 0=BUY, 1=SELL
+                    })
             if pnl_by_pos:
                 if not os.path.exists(LOG_FILE):
                     return
@@ -2029,7 +2048,6 @@ def manage_open_positions():
                         t["exit_price"] = round(exit_price_by_pos.get(pos_id, 0), 5)
                         exit_time_str = datetime.now().isoformat()
                         t["exit_time"] = exit_time_str
-                        # Determine exit reason
                         if pnl_val > 0:
                             t["exit_reason"] = "TP_HIT"
                         elif pnl_val < 0:
@@ -2037,6 +2055,36 @@ def manage_open_positions():
                         else:
                             t["exit_reason"] = "BE_SCRATCH"
                         updated.append(t)
+                # v6.1: fallback match for trades with position_id=0
+                for t in trade_log_data:
+                    if t.get("pnl_usd") is not None:
+                        continue
+                    if t.get("position_id", 0) != 0:
+                        continue
+                    t_dir = 0 if t.get("direction") == "BUY" else 1
+                    t_lot = t.get("lot_size", 0)
+                    t_fill = t.get("entry_fill", 0)
+                    for d in deal_list:
+                        if d["position_id"] in [x.get("position_id", 0) for x in updated]:
+                            continue
+                        if d["type"] != t_dir:
+                            continue
+                        if abs(d["volume"] - t_lot) > 0.01:
+                            continue
+                        if abs(d["price"] - t_fill) > 0.002:
+                            continue
+                        pnl_val = round(d["profit"], 2)
+                        t["pnl_usd"] = pnl_val
+                        t["exit_price"] = round(d["price"], 5)
+                        t["exit_time"] = datetime.now().isoformat()
+                        if pnl_val > 0:
+                            t["exit_reason"] = "TP_HIT"
+                        elif pnl_val < 0:
+                            t["exit_reason"] = "SL_HIT"
+                        else:
+                            t["exit_reason"] = "BE_SCRATCH"
+                        updated.append(t)
+                        break
                 if updated:
                     tmp = LOG_FILE + ".tmp"
                     with open(tmp, "w") as f:
@@ -2084,6 +2132,18 @@ def manage_open_positions():
                                 if t_pos_id:
                                     DB.update_trade_pnl_by_position_id(
                                         t_pos_id,
+                                        t["pnl_usd"],
+                                        exit_price=t.get("exit_price"),
+                                        exit_reason=t.get("exit_reason"),
+                                        exit_time=t.get("exit_time")
+                                    )
+                                else:
+                                    # v6.1: fallback using (symbol, strategy, time, direction)
+                                    DB.update_trade_pnl(
+                                        t.get("symbol", SYMBOL),
+                                        t.get("strategy", STRATEGY),
+                                        t.get("time", ""),
+                                        t.get("direction", ""),
                                         t["pnl_usd"],
                                         exit_price=t.get("exit_price"),
                                         exit_reason=t.get("exit_reason"),

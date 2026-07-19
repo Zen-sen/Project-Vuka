@@ -2,6 +2,6 @@
   "date": "2026-07-19",
   "consecutive_losses": 0,
   "sessions": [],
-  "strategy": "ICT_M1",
-  "symbol": "EURUSDc"
+  "strategy": "LONDON_OPEN",
+  "symbol": "GBPUSDc"
 }
