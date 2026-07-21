@@ -995,6 +995,13 @@ def get_candles() -> pd.DataFrame | None:
         return None
     df = pd.DataFrame(rates)
     df["time"] = pd.to_datetime(df["time"], unit="s", utc=True)
+    if "volume" not in df.columns:
+        if "tick_volume" in df.columns:
+            df["volume"] = df["tick_volume"]
+        elif "real_volume" in df.columns:
+            df["volume"] = df["real_volume"]
+        else:
+            df["volume"] = 0.0
     return df
 
 

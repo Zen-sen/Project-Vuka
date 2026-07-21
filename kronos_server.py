@@ -310,11 +310,11 @@ def run_inference(ohlcv_tensor: torch.Tensor, direction_hint: str = None) -> tup
             if device and str(device).startswith("cuda"):
                 torch.cuda.empty_cache()
             
-            # Phase 4a: Expand confidence to full 0.25-0.90 range (was 0.5-0.7)
+            # Simple but REALISTIC confidence calculation
             # Momentum-based trend follow as base fallback
             n = len(valid_prices)
             if n < 2:
-                return True, 0.40
+                return True, 0.5
                 
             x = np.arange(n)
             y = valid_prices
@@ -324,9 +324,9 @@ def run_inference(ohlcv_tensor: torch.Tensor, direction_hint: str = None) -> tup
             
             direction = slope > 0
             
-            # Phase 4a: Full range 0.25-1.0 (was 0.5-0.7)
+            # Confidence based on slope strength and consistency
             conf_score = min(1.0, abs(normalized_slope) / 2.0)
-            confidence = 0.25 + (conf_score * 0.65)  # Range 0.25 - 0.90
+            confidence = 0.5 + (conf_score * 0.2)  # Range 0.5 - 0.7
             
             if direction_hint:
                 ingwe_wants_up = direction_hint.upper() == "BUY"
@@ -346,7 +346,7 @@ def run_inference(ohlcv_tensor: torch.Tensor, direction_hint: str = None) -> tup
         log_json("ERROR", f"Inference error: {str(e)}")
         if device and str(device).startswith("cuda"):
             torch.cuda.empty_cache()
-        return True, 0.45  # Phase 4a: Lower default from 0.60 to 0.45
+        return True, 0.60  # Conservative default
 
 
 @app.post("/v1/predict", response_model=PredictResponse)

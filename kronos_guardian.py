@@ -266,6 +266,14 @@ class KronosVetoGate:
         """
         df = df.tail(512).copy()
 
+        if "volume" not in df.columns:
+            if "tick_volume" in df.columns:
+                df["volume"] = df["tick_volume"]
+            elif "real_volume" in df.columns:
+                df["volume"] = df["real_volume"]
+            else:
+                df["volume"] = 0.0
+
         required_cols = ['open', 'high', 'low', 'close', 'volume']
         
         for col in required_cols:
