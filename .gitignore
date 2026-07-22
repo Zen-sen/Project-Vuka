@@ -78,3 +78,8 @@ trades_EURUSD_ICT_M1.json
 # Windows batch launchers (legacy)
 start_ingwe.bat
 run_eurusd_live.bat
+
+# Garbage paths from shell expansion
+%USERPROFILE%/
+"C*"
+ingwe startup order from.txt
