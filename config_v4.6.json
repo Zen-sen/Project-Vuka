@@ -37,7 +37,7 @@
   "trading_governor": {
     "enabled": true,
     "blocked_sessions": [],
-    "allowed_sessions": ["Asian", "London Close", "London Open"],
+    "allowed_sessions": ["Asian", "London Close", "London Open", "New York Open"],
     "allowed_directions": ["SELL", "BUY"],
     "htf_aligned_exception": true,
     "daily_loss_limit": 50.0,

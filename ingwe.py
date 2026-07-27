@@ -3369,9 +3369,9 @@ def _get_phase_adjustments(phase: str, confidence: int) -> dict:
 
 
 def run_agent():
-    _market_phase = "UNKNOWN"
-    _phase_conf = 0
-    _phase_adj = {"threshold_mod": 0, "score_bonus": 0, "direction_favor": "NONE"}
+    MARKET_CIRCUIT._scan_phase = "UNKNOWN"
+    MARKET_CIRCUIT._scan_phase_conf = 0
+    MARKET_CIRCUIT._scan_phase_adj = {"threshold_mod": 0, "score_bonus": 0, "direction_favor": "NONE"}
 
     update_memory()
     sast_now = now_sast()
@@ -3418,17 +3418,27 @@ def run_agent():
         log(f"Circuit breaker: {cb_reason}. Ingwe rests.", "GUARD")
         return
 
+    # ── MARKET CIRCUIT ───────────────────────────────────
+    try:
+        df_m1, df_m15, df_h1 = _fetch_mtf_data()
+        if df_m1 is not None and df_m15 is not None and df_h1 is not None:
+            MARKET_CIRCUIT._scan_phase = MARKET_CIRCUIT.detect(df_m1, df_m15, df_h1, "NONE")
+            MARKET_CIRCUIT._scan_phase_conf = MARKET_CIRCUIT.confidence
+            MARKET_CIRCUIT._scan_phase_adj = _get_phase_adjustments(MARKET_CIRCUIT._scan_phase, MARKET_CIRCUIT._scan_phase_conf)
+            log(f"MARKET CIRCUIT: {MARKET_CIRCUIT._scan_phase} (confidence={MARKET_CIRCUIT._scan_phase_conf}% | "
+                f"threshold_mod={MARKET_CIRCUIT._scan_phase_adj['threshold_mod']:+d} | "
+                f"favor={MARKET_CIRCUIT._scan_phase_adj['direction_favor']})")
+        else:
+            log(f"MARKET CIRCUIT: insufficient multi-timeframe data", "WARN")
+    except Exception as e:
+        log(f"MARKET CIRCUIT error: {e}", "WARN")
+
     # P0-FULL: Market Circuit phase check
     
-    try:
-        phase_allowed, phase_reason = TRADING_GOVERNOR.check_market_phase(_market_phase, _instance_tag)
-        if not phase_allowed:
-            log(f"Phase filter: {phase_reason}. Ingwe waits.", "GUARD")
-            return
-    except UnboundLocalError:
-        log("Phase filter: circuit not yet initialized. Proceeding.", "WARN")
-    except Exception as e:
-        log(f"Phase filter error: {e}", "WARN")
+    phase_allowed, phase_reason = TRADING_GOVERNOR.check_market_phase(MARKET_CIRCUIT._scan_phase, _instance_tag)
+    if not phase_allowed:
+        log(f"Phase filter: {phase_reason}. Ingwe waits.", "GUARD")
+        return
 
     # ── ACTIVE WINDOW (strategy-aware) ──────────────────
     if STRATEGY == "SILVER_BULLET":
@@ -3463,21 +3473,6 @@ def run_agent():
     if not validate_candles(df, session_for_staleness):
         log("Data validation failed. Ingwe will not trade on uncertain ground.", "GUARD")
         return
-
-    # ── MARKET CIRCUIT ───────────────────────────────────
-    try:
-        df_m1, df_m15, df_h1 = _fetch_mtf_data()
-        if df_m1 is not None and df_m15 is not None and df_h1 is not None:
-            _market_phase = MARKET_CIRCUIT.detect(df_m1, df_m15, df_h1, "NONE")
-            _phase_conf = MARKET_CIRCUIT.confidence
-            _phase_adj = _get_phase_adjustments(_market_phase, _phase_conf)
-            log(f"MARKET CIRCUIT: {_market_phase} (confidence={_phase_conf}% | "
-                f"threshold_mod={_phase_adj['threshold_mod']:+d} | "
-                f"favor={_phase_adj['direction_favor']})")
-        else:
-            log(f"MARKET CIRCUIT: insufficient multi-timeframe data", "WARN")
-    except Exception as e:
-        log(f"MARKET CIRCUIT error: {e}", "WARN")
 
     # ── SWEEP ────────────────────────────────────────────
     sweep, sweep_level = detect_liquidity_sweep(df)
@@ -3526,18 +3521,18 @@ def run_agent():
     if STRATEGY == "SILVER_BULLET":
         evaluate_silver_bullet(df, fvgs, sweep, sweep_level, price, atr,
                                lot_size, active, unicorn_zones,
-                               market_phase=_market_phase, phase_adj=_phase_adj)
+                                market_phase=MARKET_CIRCUIT._scan_phase, phase_adj=MARKET_CIRCUIT._scan_phase_adj)
     elif STRATEGY == "LONDON_OPEN":
         evaluate_london_breakout(df, fvgs, sweep, sweep_level, price, atr,
                                  lot_size, active,
-                                 market_phase=_market_phase, phase_adj=_phase_adj)
+                                 market_phase=MARKET_CIRCUIT._scan_phase, phase_adj=MARKET_CIRCUIT._scan_phase_adj)
     elif STRATEGY == "ICT_M1":
         evaluate_ict_m1(df, fvgs, sweep, sweep_level, price, atr,
                         lot_size, active,
-                        market_phase=_market_phase, phase_adj=_phase_adj)
+                        market_phase=MARKET_CIRCUIT._scan_phase, phase_adj=MARKET_CIRCUIT._scan_phase_adj)
     else:
         evaluate_ingwe(df, fvgs, sweep, sweep_level, price, atr, lot_size, active,
-                       market_phase=_market_phase, phase_adj=_phase_adj)
+                       market_phase=MARKET_CIRCUIT._scan_phase, phase_adj=MARKET_CIRCUIT._scan_phase_adj)
 
 
 # =======================================================
@@ -3618,6 +3613,7 @@ if __name__ == "__main__":
         for name, (s, e) in get_active_killzones().items():
             print(f"     {name:<18} {s:02d}:00-{e:02d}:00")
     print()
+    import sys; sys.stdout.flush()
 
     if not mt5.initialize():
         log(f"MT5 FAILED. Error: {mt5.last_error()}", "ERROR")

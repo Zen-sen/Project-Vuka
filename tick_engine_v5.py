@@ -246,6 +246,7 @@ class TickEngine:
         
         print(f"\n[TickEngine] Starting event loop for {self.symbol} @ {self._timeframe_name()}")
         print(f"[TickEngine] Waiting for ticks... (Ctrl+C to exit)\n")
+        import sys; sys.stdout.flush()
         
         try:
             for tick in self.fetch_latest_ticks(timeout_ms=1000):
