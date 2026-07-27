@@ -261,7 +261,9 @@ class TickEngine:
                         self.callback(candle_time)
                         
                     except Exception as e:
+                        import traceback
                         print(f"[TickEngine] Error in callback: {e}", file=sys.stderr)
+                        traceback.print_exc(file=sys.stderr)
                         # Continue running even if callback fails
                         continue
         

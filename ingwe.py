@@ -36,7 +36,7 @@ from unified_logger import get_logger
 from memory_manager import MemoryManager
 from skills.trading_governor import TradingGovernor
 from skills.concept_tracker import record_concept_trade, record_concept_outcome
-from skills.market_circuit import get_circuit, detect_market_phase
+from skills.market_circuit import get_circuit
 
 # Initialize Unified Logger
 logger = get_logger(_instance_tag)
@@ -3420,10 +3420,15 @@ def run_agent():
 
     # P0-FULL: Market Circuit phase check
     
-    phase_allowed, phase_reason = TRADING_GOVERNOR.check_market_phase(_market_phase, _instance_tag)
-    if not phase_allowed:
-        log(f"Phase filter: {phase_reason}. Ingwe waits.", "GUARD")
-        return
+    try:
+        phase_allowed, phase_reason = TRADING_GOVERNOR.check_market_phase(_market_phase, _instance_tag)
+        if not phase_allowed:
+            log(f"Phase filter: {phase_reason}. Ingwe waits.", "GUARD")
+            return
+    except UnboundLocalError:
+        log("Phase filter: circuit not yet initialized. Proceeding.", "WARN")
+    except Exception as e:
+        log(f"Phase filter error: {e}", "WARN")
 
     # ── ACTIVE WINDOW (strategy-aware) ──────────────────
     if STRATEGY == "SILVER_BULLET":
