@@ -26,6 +26,14 @@
     "enabled": true,
     "interval_seconds": 60
   },
+  "market_circuit": {
+    "enabled": true,
+    "adx_trend_min": 25.0,
+    "squeeze_bb_pct": 15.0,
+    "consolidation_range_ratio": 0.35,
+    "bb_period": 20,
+    "bb_std": 2.0
+  },
   "trading_governor": {
     "enabled": true,
     "blocked_sessions": [],
@@ -41,6 +49,12 @@
       "veto_win_rate": 0.40,
       "approve_win_rate": 0.60,
       "min_buy_win_rate": 0.45
+    },
+    "market_circuit": {
+      "enabled": true,
+      "block_phases": ["CHOP"],
+      "caution_phases": ["SQUEEZE", "CONSOLIDATION"],
+      "prefer_phases": ["EXPANSION_BULLISH", "EXPANSION_BEARISH"]
     }
   }
 }

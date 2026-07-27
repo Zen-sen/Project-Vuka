@@ -64,6 +64,13 @@ class TradingGovernor:
         self.dd_approve_wr = dd.get("approve_win_rate", 0.60)
         self.dd_min_buy_wr = dd.get("min_buy_win_rate", 0.45)
 
+        # Market Circuit: Phase-based trading rules
+        mc = cfg.get("market_circuit", {})
+        self.mc_enabled = mc.get("enabled", True)
+        self.mc_block_phases = mc.get("block_phases", ["CHOP"])
+        self.mc_caution_phases = mc.get("caution_phases", ["SQUEEZE", "CONSOLIDATION"])
+        self.mc_prefer_phases = mc.get("prefer_phases", ["EXPANSION_BULLISH", "EXPANSION_BEARISH"])
+
         # Runtime state (persisted)
         self._state = self._load_state()
         self._week_start = self._state.get("week_start")
@@ -214,6 +221,34 @@ class TradingGovernor:
             logger.log("GUARD", f"[P0-B] Direction '{direction}' blocked for {signal_id}")
         return False, "P0_DIRECTION_BLOCKED"
 
+    # ── Market Circuit: Phase filter ───────────────────────────────
+
+    def check_market_phase(self, market_phase: str = "UNKNOWN", signal_id: str = "") -> tuple:
+        """
+        Returns (allowed: bool, reason: str).
+        Blocks trades during toxic phases, flags caution for others.
+        """
+        if not self.enabled or not self.mc_enabled:
+            return True, "PHASE_FILTER_DISABLED"
+
+        if market_phase == "UNKNOWN":
+            return True, "PHASE_UNKNOWN"
+
+        if market_phase in self.mc_block_phases:
+            if self.log_rejections:
+                logger.log("GUARD", f"[P0-PHASE] Blocked: {market_phase} for {signal_id}")
+            return False, f"P0_PHASE_BLOCKED:{market_phase}"
+
+        if market_phase in self.mc_caution_phases:
+            if self.log_rejections:
+                logger.log("GUARD", f"[P0-PHASE] Caution: {market_phase} for {signal_id}")
+            return True, f"PHASE_CAUTION:{market_phase}"
+
+        if market_phase in self.mc_prefer_phases:
+            return True, f"PHASE_PREFERRED:{market_phase}"
+
+        return True, f"PHASE_OK:{market_phase}"
+
     # ── Circuit Breakers ───────────────────────────────────────────
 
     def check_circuit_breakers(self, daily_pnl: float, signal_id: str = "") -> tuple:
@@ -243,13 +278,20 @@ class TradingGovernor:
 
     def can_trade(self, session: str, direction: str, daily_pnl: float,
                   htf_bias: str = None, signal_id: str = "",
-                  symbol: str = "", setup_type: str = "") -> tuple:
+                  symbol: str = "", setup_type: str = "",
+                  market_phase: str = "UNKNOWN") -> tuple:
         """
         Full P0-FULL gate. Checks all filters in order.
         Short-circuit: returns (False, reason) on first rejection.
         Phase 3: Includes data-driven pattern veto and direction filtering.
+        v5.6: Includes market circuit phase filter.
         """
         allowed, reason = self.check_session(session, signal_id)
+        if not allowed:
+            return False, reason
+
+        # Market Circuit: Phase gate (run early to skip other checks in bad phases)
+        allowed, reason = self.check_market_phase(market_phase, signal_id)
         if not allowed:
             return False, reason
 
@@ -292,6 +334,10 @@ class TradingGovernor:
             f"Data-driven veto: {self.dd_enabled}",
             f"  min_samples={self.dd_min_samples}, veto_wr<{self.dd_veto_wr}, approve_wr>{self.dd_approve_wr}",
             f"  min_buy_wr={self.dd_min_buy_wr}",
+            f"Market circuit: {self.mc_enabled}",
+            f"  Block phases: {self.mc_block_phases}",
+            f"  Caution phases: {self.mc_caution_phases}",
+            f"  Prefer phases: {self.mc_prefer_phases}",
             f"Daily loss limit: -${self.daily_loss_limit:.0f}",
             f"Weekly cap: {self.weekly_trade_cap} trades",
             f"Weekly trades so far: {self._weekly_trades}",

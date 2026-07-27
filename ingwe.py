@@ -36,6 +36,7 @@ from unified_logger import get_logger
 from memory_manager import MemoryManager
 from skills.trading_governor import TradingGovernor
 from skills.concept_tracker import record_concept_trade, record_concept_outcome
+from skills.market_circuit import get_circuit, detect_market_phase
 
 # Initialize Unified Logger
 logger = get_logger(_instance_tag)
@@ -547,6 +548,7 @@ def update_memory():
         MEM_MGR.update_state(state_data)
         
         # 2. Update handover.json
+        _mc_summary = MARKET_CIRCUIT.summary if hasattr(MARKET_CIRCUIT, 'summary') else {}
         handover = {
             "bot": "Ingwe",
             "instance": _instance_tag,
@@ -554,7 +556,13 @@ def update_memory():
             "equity": equity,
             "daily_pnl": get_daily_pnl(),
             "active_sessions": list(sessions_traded_today),
-            "status": "HEALTHY"
+            "status": "HEALTHY",
+            "market_phase": _mc_summary.get("phase", "UNKNOWN"),
+            "market_phase_confidence": _mc_summary.get("confidence", 0),
+            "market_adx": _mc_summary.get("adx", 0),
+            "market_trend": _mc_summary.get("trend", "NONE"),
+            "market_bos": _mc_summary.get("bos", "NONE"),
+            "market_bb_width": _mc_summary.get("bb_width", 0),
         }
         with open("handover.json", "w") as f:
             json.dump(handover, f, indent=2)
@@ -2193,7 +2201,8 @@ def reset_daily_sessions():
 #  SECTION 12A -- SETUP EVALUATION: INGWE MODE
 # =======================================================
 
-def evaluate_ingwe(df, fvgs, sweep, sweep_level, price, atr, lot_size, session):
+def evaluate_ingwe(df, fvgs, sweep, sweep_level, price, atr, lot_size, session,
+                    market_phase="UNKNOWN", phase_adj=None):
     """
     Full multi-confluence model.
     v4.3:   Three hard gates added after GBPUSD loss (ADX<20, D1 bias
@@ -2204,8 +2213,11 @@ def evaluate_ingwe(df, fvgs, sweep, sweep_level, price, atr, lot_size, session):
     v3.9.3: True Wilder ADX.
     v3.9.2: Zone context logging.
     v3.9.1: Four paths. 1-bar BOS pivot.
-    v3.9:   ATR guard 0.5×. Dynamic BOS lookback. HTF bias gate + +10.
+    v3.9:   ATR guard 0.5x. Dynamic BOS lookback. HTF bias gate + +10.
+    v5.6:   Market circuit phase awareness — phase-based threshold + bonus.
     """
+    if phase_adj is None:
+        phase_adj = {"threshold_mod": 0, "score_bonus": 0, "direction_favor": "NONE"}
     adx, plus_di, minus_di = calculate_adx_wilder(df)
     if adx is None:
         log("ADX unavailable.", "WARN")
@@ -2216,6 +2228,11 @@ def evaluate_ingwe(df, fvgs, sweep, sweep_level, price, atr, lot_size, session):
     if adx < ADX_MIN_THRESHOLD:
         log(f"ADX {adx} below minimum ({ADX_MIN_THRESHOLD}) -- Extreme chop. Standing down.", "GUARD")
         return
+
+    # ── MARKET CIRCUIT: PHASE DIRECTION FILTER ──────────────
+    _phase_direction = phase_adj["direction_favor"]
+    if _phase_direction != "NONE":
+        log(f"MARKET CIRCUIT: {market_phase} favors {_phase_direction} setups", "GUARD")
     
     # ── PATTERN BLACKLIST CHECK (STILL A HARD GATE) ────────────────────────────
     # Block toxic patterns identified in backtest (win rate <35%)
@@ -2255,8 +2272,10 @@ def evaluate_ingwe(df, fvgs, sweep, sweep_level, price, atr, lot_size, session):
 
     # v5.0: Get session-aware threshold
     threshold = get_confluence_threshold(adx, session, "BUY" if sweep == "SWEEP_LOW" else "SELL")
+    threshold = max(40, min(90, threshold + phase_adj["threshold_mod"]))
     log(f"Price: {price:.5f}  |  ATR: {atr:.5f}  |  "
-        f"Lot: {lot_size}  |  Spread: {spread_pips:.1f}p  |  Threshold: {threshold}/120")
+        f"Lot: {lot_size}  |  Spread: {spread_pips:.1f}p  |  "
+        f"Threshold: {threshold}/120  |  Phase: {market_phase}")
 
     trend = get_h1_trend()
     if not trend:
@@ -2315,6 +2334,11 @@ def evaluate_ingwe(df, fvgs, sweep, sweep_level, price, atr, lot_size, session):
     m15_bos      = detect_m15_bos(df, lookback=bos_lookback)
     if m15_bos:
         log(f"M15 BOS: {m15_bos}  (lookback={bos_lookback})")
+        try:
+            from skills.market_circuit import get_circuit
+            get_circuit()._bos = m15_bos
+        except Exception:
+            pass
     else:
         log(f"M15 BOS: none confirmed  (lookback={bos_lookback})")
 
@@ -2361,10 +2385,12 @@ def evaluate_ingwe(df, fvgs, sweep, sweep_level, price, atr, lot_size, session):
                 level_sweep, bos_aligned, htf_bias_ok,
                 session, "BUY"
             )
+            score += phase_adj["score_bonus"]
             bonus_label = (
                 (" [+PDH/PDL/AR]" if level_sweep  else "") +
                 (" [+BOS]"        if bos_aligned  else "") +
-                (" [+HTF]"        if htf_bias_ok  else "")
+                (" [+HTF]"        if htf_bias_ok  else "") +
+                (f" [+PHASE:{market_phase}]" if phase_adj["score_bonus"] else "")
             )
             log(f"Confluence [BUY REVERSAL]: {score}/120{bonus_label}")
             if score < threshold:
@@ -2395,7 +2421,8 @@ def evaluate_ingwe(df, fvgs, sweep, sweep_level, price, atr, lot_size, session):
                     "ob_present": ob is not None,
                     "fvg_low": fvg_low,
                     "fvg_high": fvg_high,
-                    "fvg_50": fvg_50_val
+                    "fvg_50": fvg_50_val,
+                    "market_phase": market_phase,
                 }
             
             ctx = _build_context("BUY", "REVERSAL", fvg_type, fvg_50)
@@ -2434,10 +2461,12 @@ def evaluate_ingwe(df, fvgs, sweep, sweep_level, price, atr, lot_size, session):
                 level_sweep, bos_aligned, htf_bias_ok,
                 session, "SELL"
             )
+            score += phase_adj["score_bonus"]
             bonus_label = (
                 (" [+PDH/PDL/AR]" if level_sweep  else "") +
                 (" [+BOS]"        if bos_aligned  else "") +
-                (" [+HTF]"        if htf_bias_ok  else "")
+                (" [+HTF]"        if htf_bias_ok  else "") +
+                (f" [+PHASE:{market_phase}]" if phase_adj["score_bonus"] else "")
             )
             log(f"Confluence [SELL REVERSAL]: {score}/120{bonus_label}")
             if score < threshold:
@@ -2498,10 +2527,12 @@ def evaluate_ingwe(df, fvgs, sweep, sweep_level, price, atr, lot_size, session):
                 level_sweep, bos_aligned, htf_bias_ok,
                 session, "SELL"
             )
+            score += phase_adj["score_bonus"]
             bonus_label = (
                 (" [+PDH/PDL/AR]" if level_sweep  else "") +
                 (" [+BOS]"        if bos_aligned  else "") +
-                (" [+HTF]"        if htf_bias_ok  else "")
+                (" [+HTF]"        if htf_bias_ok  else "") +
+                (f" [+PHASE:{market_phase}]" if phase_adj["score_bonus"] else "")
             )
             log(f"Confluence [SELL CONTINUATION]: {score}/120{bonus_label}")
             if score < threshold:
@@ -2529,7 +2560,8 @@ def evaluate_ingwe(df, fvgs, sweep, sweep_level, price, atr, lot_size, session):
                 "ob_present": ob is not None,
                 "fvg_low": fvg_low,
                 "fvg_high": fvg_high,
-                "fvg_50": fvg_50
+                "fvg_50": fvg_50,
+                "market_phase": market_phase,
             }
             if KRONOS_VETO_GATE is not None:
                 allowed, reason = KRONOS_VETO_GATE.validate(ctx, df, SYMBOL)
@@ -2582,10 +2614,12 @@ def evaluate_ingwe(df, fvgs, sweep, sweep_level, price, atr, lot_size, session):
                 level_sweep, bos_aligned, htf_bias_ok,
                 session, "BUY"
             )
+            score += phase_adj["score_bonus"]
             bonus_label = (
                 (" [+PDH/PDL/AR]" if level_sweep  else "") +
                 (" [+BOS]"        if bos_aligned  else "") +
-                (" [+HTF]"        if htf_bias_ok  else "")
+                (" [+HTF]"        if htf_bias_ok  else "") +
+                (f" [+PHASE:{market_phase}]" if phase_adj["score_bonus"] else "")
             )
             log(f"Confluence [BUY CONTINUATION]: {score}/120{bonus_label}")
             if score < threshold:
@@ -2614,7 +2648,8 @@ def evaluate_ingwe(df, fvgs, sweep, sweep_level, price, atr, lot_size, session):
                 "fvg_low": fvg_low,
                 "fvg_high": fvg_high,
                 "fvg_50": fvg_50,
-                "buy_threshold": effective_buy_threshold
+                "buy_threshold": effective_buy_threshold,
+                "market_phase": market_phase,
             }
             if KRONOS_VETO_GATE is not None:
                 allowed, reason = KRONOS_VETO_GATE.validate(ctx, df, SYMBOL)
@@ -3267,6 +3302,72 @@ def evaluate_ict_m1(df, fvgs, sweep, sweep_level, price, atr,
 #  SECTION 12 -- MAIN SCAN LOOP
 # =======================================================
 
+MARKET_CIRCUIT = get_circuit()
+
+
+def _fetch_mtf_data():
+    """Fetch M1, M15, H1 data for market circuit detection."""
+    df_m1 = df_m15 = df_h1 = None
+    try:
+        rates = mt5_fetch_with_retry(mt5.copy_rates_from_pos, SYMBOL, mt5.TIMEFRAME_M1, 0, 100)
+        if rates is not None:
+            df_m1 = pd.DataFrame(rates)
+            df_m1["time"] = pd.to_datetime(df_m1["time"], unit="s", utc=True)
+    except Exception:
+        pass
+    try:
+        rates = mt5_fetch_with_retry(mt5.copy_rates_from_pos, SYMBOL, mt5.TIMEFRAME_M15, 0, 100)
+        if rates is not None:
+            df_m15 = pd.DataFrame(rates)
+            df_m15["time"] = pd.to_datetime(df_m15["time"], unit="s", utc=True)
+    except Exception:
+        pass
+    try:
+        rates = mt5_fetch_with_retry(mt5.copy_rates_from_pos, SYMBOL, mt5.TIMEFRAME_H1, 0, 100)
+        if rates is not None:
+            df_h1 = pd.DataFrame(rates)
+            df_h1["time"] = pd.to_datetime(df_h1["time"], unit="s", utc=True)
+    except Exception:
+        pass
+    return df_m1, df_m15, df_h1
+
+
+def _get_phase_adjustments(phase: str, confidence: int) -> dict:
+    """
+    Return threshold and confluence adjustments based on market phase.
+    """
+    adj = {"threshold_mod": 0, "score_bonus": 0, "direction_favor": "NONE"}
+    if phase == "EXPANSION_BULLISH":
+        adj["threshold_mod"] = -5
+        adj["score_bonus"] = 10
+        adj["direction_favor"] = "BUY"
+    elif phase == "EXPANSION_BEARISH":
+        adj["threshold_mod"] = -5
+        adj["score_bonus"] = 10
+        adj["direction_favor"] = "SELL"
+    elif phase in ("BREAKOUT_BULLISH",):
+        adj["threshold_mod"] = -10
+        adj["score_bonus"] = 15
+        adj["direction_favor"] = "BUY"
+    elif phase in ("BREAKOUT_BEARISH",):
+        adj["threshold_mod"] = -10
+        adj["score_bonus"] = 15
+        adj["direction_favor"] = "SELL"
+    elif phase == "SQUEEZE":
+        adj["threshold_mod"] = 10
+        adj["score_bonus"] = 0
+        adj["direction_favor"] = "NONE"
+    elif phase == "CONSOLIDATION":
+        adj["threshold_mod"] = 5
+        adj["score_bonus"] = -5
+        adj["direction_favor"] = "NONE"
+    elif phase == "CHOP":
+        adj["threshold_mod"] = 10
+        adj["score_bonus"] = -10
+        adj["direction_favor"] = "NONE"
+    return adj
+
+
 def run_agent():
     update_memory()
     sast_now = now_sast()
@@ -3313,6 +3414,13 @@ def run_agent():
         log(f"Circuit breaker: {cb_reason}. Ingwe rests.", "GUARD")
         return
 
+    # P0-FULL: Market Circuit phase check
+    
+    phase_allowed, phase_reason = TRADING_GOVERNOR.check_market_phase(_market_phase, _instance_tag)
+    if not phase_allowed:
+        log(f"Phase filter: {phase_reason}. Ingwe waits.", "GUARD")
+        return
+
     # ── ACTIVE WINDOW (strategy-aware) ──────────────────
     if STRATEGY == "SILVER_BULLET":
         active = get_current_sb_window()
@@ -3346,6 +3454,24 @@ def run_agent():
     if not validate_candles(df, session_for_staleness):
         log("Data validation failed. Ingwe will not trade on uncertain ground.", "GUARD")
         return
+
+    # ── MARKET CIRCUIT ───────────────────────────────────
+    _market_phase = "UNKNOWN"
+    _phase_conf = 0
+    _phase_adj = {"threshold_mod": 0, "score_bonus": 0, "direction_favor": "NONE"}
+    try:
+        df_m1, df_m15, df_h1 = _fetch_mtf_data()
+        if df_m1 is not None and df_m15 is not None and df_h1 is not None:
+            _market_phase = MARKET_CIRCUIT.detect(df_m1, df_m15, df_h1, "NONE")
+            _phase_conf = MARKET_CIRCUIT.confidence
+            _phase_adj = _get_phase_adjustments(_market_phase, _phase_conf)
+            log(f"MARKET CIRCUIT: {_market_phase} (confidence={_phase_conf}% | "
+                f"threshold_mod={_phase_adj['threshold_mod']:+d} | "
+                f"favor={_phase_adj['direction_favor']})")
+        else:
+            log(f"MARKET CIRCUIT: insufficient multi-timeframe data", "WARN")
+    except Exception as e:
+        log(f"MARKET CIRCUIT error: {e}", "WARN")
 
     # ── SWEEP ────────────────────────────────────────────
     sweep, sweep_level = detect_liquidity_sweep(df)
@@ -3393,15 +3519,19 @@ def run_agent():
     # ── STRATEGY BRANCH ──────────────────────────────────
     if STRATEGY == "SILVER_BULLET":
         evaluate_silver_bullet(df, fvgs, sweep, sweep_level, price, atr,
-                               lot_size, active, unicorn_zones)
+                               lot_size, active, unicorn_zones,
+                               market_phase=_market_phase, phase_adj=_phase_adj)
     elif STRATEGY == "LONDON_OPEN":
         evaluate_london_breakout(df, fvgs, sweep, sweep_level, price, atr,
-                                 lot_size, active)
+                                 lot_size, active,
+                                 market_phase=_market_phase, phase_adj=_phase_adj)
     elif STRATEGY == "ICT_M1":
         evaluate_ict_m1(df, fvgs, sweep, sweep_level, price, atr,
-                        lot_size, active)
+                        lot_size, active,
+                        market_phase=_market_phase, phase_adj=_phase_adj)
     else:
-        evaluate_ingwe(df, fvgs, sweep, sweep_level, price, atr, lot_size, active)
+        evaluate_ingwe(df, fvgs, sweep, sweep_level, price, atr, lot_size, active,
+                       market_phase=_market_phase, phase_adj=_phase_adj)
 
 
 # =======================================================

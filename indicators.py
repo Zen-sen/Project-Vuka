@@ -1,4 +1,5 @@
 import numpy as np
+from typing import Optional
 
 
 def calculate_adx_wilder(high: np.ndarray, low: np.ndarray, close: np.ndarray, period: int = 14):
@@ -53,3 +54,43 @@ def calculate_adx_wilder(high: np.ndarray, low: np.ndarray, close: np.ndarray, p
         adx = (adx * (period - 1) + dx_arr[i]) / period
 
     return round(adx, 1), round(pdi, 1), round(mdi, 1)
+
+
+def calculate_bollinger_bands(close: np.ndarray, period: int = 20, std_mult: float = 2.0):
+    if len(close) < period:
+        return None, None, None
+    sma = np.mean(close[-period:])
+    std = np.std(close[-period:])
+    upper = sma + std_mult * std
+    lower = sma - std_mult * std
+    width = (upper - lower) / sma if sma > 0 else 0
+    return upper, sma, lower, width
+
+
+def calculate_keltner_channels(high: np.ndarray, low: np.ndarray, close: np.ndarray,
+                                ema_period: int = 20, atr_period: int = 14, atr_mult: float = 1.5):
+    if len(close) < ema_period or len(high) < atr_period:
+        return None, None, None, None
+    ema = np.mean(close[-ema_period:])
+    tr_arr = np.zeros(len(high))
+    for i in range(1, len(high)):
+        tr_arr[i] = max(
+            high[i] - low[i],
+            abs(high[i] - close[i - 1]),
+            abs(low[i] - close[i - 1])
+        )
+    atr = float(np.mean(tr_arr[-atr_period:]))
+    upper = ema + atr_mult * atr
+    lower = ema - atr_mult * atr
+    width = (upper - lower) / ema if ema > 0 else 0
+    return upper, ema, lower, width
+
+
+def detect_range_ratio(high: np.ndarray, low: np.ndarray, short_period: int = 15, long_period: int = 60) -> Optional[float]:
+    if len(high) < long_period:
+        return None
+    short_range = float(np.max(high[-short_period:]) - np.min(low[-short_period:]))
+    long_range = float(np.max(high[-long_period:]) - np.min(low[-long_period:]))
+    if long_range == 0:
+        return None
+    return short_range / long_range
