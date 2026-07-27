@@ -3369,6 +3369,10 @@ def _get_phase_adjustments(phase: str, confidence: int) -> dict:
 
 
 def run_agent():
+    _market_phase = "UNKNOWN"
+    _phase_conf = 0
+    _phase_adj = {"threshold_mod": 0, "score_bonus": 0, "direction_favor": "NONE"}
+
     update_memory()
     sast_now = now_sast()
     mkt_mode = "SUMMER" if is_eu_summer() else "WINTER"
@@ -3456,9 +3460,6 @@ def run_agent():
         return
 
     # ── MARKET CIRCUIT ───────────────────────────────────
-    _market_phase = "UNKNOWN"
-    _phase_conf = 0
-    _phase_adj = {"threshold_mod": 0, "score_bonus": 0, "direction_favor": "NONE"}
     try:
         df_m1, df_m15, df_h1 = _fetch_mtf_data()
         if df_m1 is not None and df_m15 is not None and df_h1 is not None:
