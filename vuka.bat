@@ -23,7 +23,7 @@ goto end
 
 :stop
 echo Stopping all Vuka processes...
-"%PYTHON%" launcher.py stop
+"%PYTHON%" -m vuka.core.launcher stop
 echo.
 goto end
 
@@ -38,7 +38,7 @@ for proc in psutil.process_iter(['pid','name','cmdline']):
     try:
         c = ' '.join(proc.info.get('cmdline') or [])
         n = proc.info.get('name','')
-        if n == 'python.exe' and any(x in c for x in ['ingwe.py','supervisor.py','dashboard.py','kronos_server.py']):
+        if n == 'python.exe' and any(x in c for x in ['vuka.core.bot','vuka.core.supervisor','vuka.core.dashboard','vuka.ai.kronos_server']):
             parts = c.split()
             label = parts[1] if len(parts) > 1 else '?'
             args  = ' '.join(parts[2:4]) if len(parts) > 2 else ''
@@ -50,7 +50,7 @@ else:
     for label, args, pid in sorted(procs):
         print(f'  PID {pid:>6}  {label:30s}  {args}')
 
-expected = {'kronos_server.py','supervisor.py','dashboard.py'}
+expected = {'kronos_server','supervisor','dashboard'}
 running  = {p[0].split('\\\\')[-1] for p in procs}
 missing  = expected - running
 if missing:
@@ -62,7 +62,7 @@ echo.
 goto end
 
 :dashboard
-start "Vuka Dashboard" /min "C:\Users\classic\AppData\Local\Python\pythoncore-3.14-64\python.exe" dashboard.py
+start "Vuka Dashboard" /min "C:\Users\classic\AppData\Local\Python\pythoncore-3.14-64\python.exe" -m vuka.core.dashboard
 echo Dashboard launched.
 goto end
 

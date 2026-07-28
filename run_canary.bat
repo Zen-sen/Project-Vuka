@@ -19,7 +19,7 @@ echo   [TickEngine] Waiting for ticks...
 echo   [TickEngine] Candle #1 @ ...
 echo.
 
-python3.14.exe ingwe.py EURUSD INGWE --live
+python3.14.exe -m vuka.core.bot EURUSD INGWE --live
 
 echo.
 echo ================================================================================

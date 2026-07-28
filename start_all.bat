@@ -14,18 +14,18 @@ timeout /t 5 /nobreak > nul
 
 REM [1/3] Kronos FIRST — bots require it before scanning
 echo [1/3] Starting Kronos AI Server...
-start "Kronos Server" "%PYTHON%" kronos_server.py
+start "Kronos Server" "%PYTHON%" -m vuka.ai.kronos_server
 echo       Waiting 15s for Kronos to be ready (model download + load)...
 timeout /t 15 /nobreak > nul
 
 REM [2/3] Supervisor — launches 2 INGWE bot instances
 echo [2/3] Starting Supervisor (manages all bots)...
-start "Vuka Supervisor" /min "%PYTHON%" supervisor.py
+start "Vuka Supervisor" /min "%PYTHON%" -m vuka.core.supervisor
 timeout /t 3 /nobreak > nul
 
 REM [3/3] Dashboard
 echo [3/3] Opening Dashboard...
-start "Vuka Dashboard" /min "%PYTHON%" dashboard.py
+start "Vuka Dashboard" /min "%PYTHON%" -m vuka.core.dashboard
 
 echo.
 echo ==========================================

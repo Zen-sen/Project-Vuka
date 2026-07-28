@@ -22,7 +22,7 @@ echo.
 
 REM Check if MT5 is accessible
 echo [1/3] Verifying configuration...
-python3.14.exe ingwe.py EURUSD INGWE --check > nul 2>&1
+python3.14.exe -m vuka.core.bot EURUSD INGWE --check > nul 2>&1
 if errorlevel 1 (
     echo ✗ Configuration check failed. Verify MT5 is running and vuka_trading.db exists.
     exit /b 1
@@ -52,7 +52,7 @@ for /f "tokens=2-4 delims=/ " %%a in ('date /t') do (set mydate=%%c%%a%%b)
 for /f "tokens=1-2 delims=/:" %%a in ('time /t') do (set mytime=%%a%%b)
 set logfile=logs\canary_%mydate%_%mytime%.log
 
-python3.14.exe ingwe.py EURUSD INGWE --live 2>&1 | tee "%logfile%"
+python3.14.exe -m vuka.core.bot EURUSD INGWE --live 2>&1 | tee "%logfile%"
 
 echo.
 echo ================================================================================
