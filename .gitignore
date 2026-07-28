@@ -19,6 +19,8 @@ sessions_today.bak
 
 # Data directories
 data/
+data/sessions/*.csv
+data/tick_data.csv
 
 # Logs
 *.log
