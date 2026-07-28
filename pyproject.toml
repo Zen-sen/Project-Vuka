@@ -1,0 +1,121 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "project-vuka"
+version = "5.5.0"
+description = "ICT Forex Trading Agent — Agent Ingwe. Leopard-speed execution. Kronos AI veto."
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.10"
+authors = [
+    {name = "Zen-sen", email = "your@email.com"}
+]
+keywords = ["forex", "trading", "ict", "metatrader5", "ai", "ml"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Office/Business :: Financial",
+]
+
+dependencies = [
+    "MetaTrader5==5.0.45",
+    "pandas>=2.0.0,<3.0.0",
+    "numpy>=1.24.0",
+    "rich>=13.0.0",
+    "textual>=0.52.0",
+    "psutil>=5.9.0",
+    "fastapi>=0.110.0",
+    "uvicorn[standard]>=0.27.0",
+    "pydantic>=2.0.0",
+    "torch>=2.1.0",
+    "transformers>=4.35.0",
+    "huggingface-hub>=0.20.0",
+    "sentencepiece>=0.1.99",
+    "python-dotenv>=1.0.0",
+    "pyyaml>=6.0.0",
+    "httpx>=0.26.0",
+    "watchdog>=3.0.0",
+    "python-telegram-bot>=20.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+    "pytest-cov>=4.1.0",
+    "ruff>=0.3.0",
+    "mypy>=1.8.0",
+    "pre-commit>=3.6.0",
+    "types-pyyaml>=6.0.0",
+]
+
+[project.scripts]
+ingwe = "vuka.core.bot:main"
+vuka-dashboard = "vuka.core.dashboard:main"
+vuka-supervisor = "vuka.core.supervisor:main"
+vuka-kronos = "vuka.ai.kronos_server:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+select = [
+    "E", "F", "I", "W", "N", "UP", "B", "C4", "SIM", "ERA",
+]
+ignore = ["E501"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+skip-magic-trailing-comma = false
+line-ending = "auto"
+
+[tool.mypy]
+python_version = "3.10"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+check_untyped_defs = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+show_error_codes = true
+
+[[tool.mypy.overrides]]
+module = ["MetaTrader5.*", "torch.*", "transformers.*", "sentencepiece.*"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = "-v --tb=short --strict-markers"
+markers = [
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+    "integration: marks tests as integration tests",
+    "mt5: marks tests that require a live MT5 terminal",
+]
+
+[tool.coverage.run]
+source = ["src/vuka"]
+omit = ["*/tests/*", "*/test_*"]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "raise AssertionError",
+    "raise NotImplementedError",
+    'if __name__ == .__main__.:',
+    "if TYPE_CHECKING:",
+]

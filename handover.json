@@ -1,16 +1,15 @@
 {
   "bot": "Ingwe",
-  "instance": "GBPUSD_INGWE",
-  "last_updated": "2026-07-28T01:46:35.907958+00:00",
+  "instance": "EURUSD_INGWE",
+  "last_updated": "2026-07-29T00:02:46.267155+00:00",
   "equity": 4169.11,
   "daily_pnl": 0,
   "active_sessions": [],
   "status": "HEALTHY",
-  "market_phase": "CHOP",
-  "market_phase_confidence": 25,
-  "market_adx": 26.3,
+  "market_phase": "CONSOLIDATION",
+  "market_phase_confidence": 80,
+  "market_adx": 18.7,
   "market_trend": "NONE",
   "market_bos": "NONE",
-  "market_bb_width": 0.00669
-}.004926
+  "market_bb_width": 0.004195
 }
