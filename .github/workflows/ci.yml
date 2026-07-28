@@ -1,0 +1,50 @@
+name: CI
+
+on:
+  push:
+    branches: [master, "forge/**"]
+  pull_request:
+    branches: [master]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Ruff lint
+        run: ruff check src/vuka/
+
+      - name: Check syntax
+        run: python -c "
+          import ast, glob, sys
+          files = glob.glob('src/vuka/**/*.py', recursive=True)
+          failures = [(f, e.lineno, e.msg) for f in files
+                      for e in [ast.parse(open(f, encoding='utf-8').read())]
+                      if isinstance(e, SyntaxError)]
+          if failures:
+            for f, ln, msg in failures:
+              print(f'{f}:{ln}: {msg}')
+            sys.exit(1)
+          print(f'All {len(files)} files: syntax OK')
+          "
+
+      - name: Run tests
+        run: python -m pytest tests/unit/ tests/integration/test_full_flow.py -v --tb=short
+
+      - name: Test coverage
+        run: python -m pytest tests/unit/ tests/integration/test_full_flow.py --cov=src/vuka --cov-report=term-missing

@@ -1,85 +1,65 @@
-# Environment Variables
-.env
-.env.local
-.env.*.local
-
 # Python
 __pycache__/
 *.py[cod]
-*$py.class
-*.so
-.Python
-build/
-develop-eggs/
-dist/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
 *.egg-info/
-.installed.cfg
-*.egg
-
-# Virtual Environments
-venv/
-ENV/
-env/
-.venv
+dist/
+build/
 
 # IDE
 .vscode/
 .idea/
-*.swp
-*.swo
-*~
+
+# Runtime data files (regenerated every run)
+trades_*.json
+sessions_*.json
+sl_moves_*.json
+handover.json
+Memory.md
+sessions_today.bak
+
+# Data directories
+data/
 
 # Logs
-logs/
 *.log
+logs/
 
 # Database
 *.db
 *.db-shm
 *.db-wal
 
-# Cache and temp
-.cache/
-tmp/
-temp/
-*_backup*
+# Environment / venv
+.venv/
+.env
+
+# Backup files
 *.backup*
-*.bak
-*.orig
+*.backup[0-9]*
 
-# Market data CSVs
-*.csv
+# Windows
+*.bat
+*.exe
 
-# Generated data directories
-data/
-archive/
-
-# Junk/test files
+# Misc
 nul
-Run
-ingwe_headers.txt
-test_clean.py
-test_csv.py
-test_line.txt
-audit_kronos.py
-check_trades.py
-fix_unknown_symbols.py
-trades_EURUSD_ICT_M1.json
-
-# Windows batch launchers (legacy)
-start_ingwe.bat
-run_eurusd_live.bat
-
-# Garbage paths from shell expansion
+state_backups/
+bot_test.log
 %USERPROFILE%/
-"C*"
-ingwe startup order from.txt
+Run/
+
+
+# Environment
+.env
+.env.local
+
+# Coverage
+.coverage
+htmlcov/
+coverage.xml
+
+# mypy
+.mypy_cache/
+
+# pytest
+.pytest_cache/

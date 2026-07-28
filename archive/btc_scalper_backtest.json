@@ -1,0 +1,26 @@
+{
+  "total_trades": 38,
+  "wins": 3,
+  "losses": 35,
+  "win_rate": 7.894736842105263,
+  "net_pnl": -631253.5000000077,
+  "roi": -14546.11756193461,
+  "final_balance": -626913.8300000076,
+  "by_strategy": {
+    "RANGE_FADE": {
+      "wins": 0,
+      "losses": 10,
+      "pnl": -268327.500000003
+    },
+    "EMA_PULLBACK": {
+      "wins": 2,
+      "losses": 25,
+      "pnl": -443541.5000000051
+    },
+    "MACD_STOCH": {
+      "wins": 1,
+      "losses": 0,
+      "pnl": 80615.50000000061
+    }
+  }
+}

@@ -1,0 +1,63 @@
+{
+  "run_date": "2026-04-19T22:08:52.337354+00:00",
+  "csv_file": "btcusdc_m1_90days.csv",
+  "config": {
+    "initial_balance": 1000.0,
+    "risk_per_trade": 1.0,
+    "rrr": 2.0,
+    "atr_multiplier": 1.0,
+    "fvg_lookback": 20,
+    "use_kronos": false,
+    "kronos_threshold": 0.5
+  },
+  "final_balance": -108770.0,
+  "total_orders_placed": 5,
+  "orders_filled": 5,
+  "orders_expired": 0,
+  "kronos_vetoed": 0,
+  "trailing_sl_moves": 2,
+  "open_positions_at_end": 2,
+  "total_trades": 3,
+  "wins": 0,
+  "losses": 3,
+  "win_rate_pct": 0.0,
+  "net_pnl": -109770.0,
+  "trades": [
+    {
+      "entry_time": "2026-03-07 10:06:00",
+      "direction": "SELL",
+      "entry": 68019.73005,
+      "sl": 68056.32005,
+      "tp": 67946.55005,
+      "lot": 0.01,
+      "outcome": "LOSS",
+      "pnl": -36590.0,
+      "session": "London",
+      "kronos_confidence": 0.75
+    },
+    {
+      "entry_time": "2026-03-07 15:04:00",
+      "direction": "BUY",
+      "entry": 68001.82005000001,
+      "sl": 67965.23005,
+      "tp": 68075.00005,
+      "lot": 0.01,
+      "outcome": "LOSS",
+      "pnl": -36590.0,
+      "session": "NY_Open",
+      "kronos_confidence": 0.75
+    },
+    {
+      "entry_time": "2026-03-08 02:06:00",
+      "direction": "BUY",
+      "entry": 67264.95005,
+      "sl": 67228.36005,
+      "tp": 67338.13005,
+      "lot": 0.01,
+      "outcome": "LOSS",
+      "pnl": -36590.0,
+      "session": "Asian",
+      "kronos_confidence": 0.75
+    }
+  ]
+}
