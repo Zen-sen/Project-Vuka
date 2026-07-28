@@ -284,9 +284,9 @@ ICT_M1_SESSIONS = {
 # =========================================================
 
 SESSION_PERFORMANCE = {
-    "Asian": {"buy": 0.29, "sell": 1.00},
-    "London": {"buy": 0.14, "sell": 0.00},
-    "New York": {"buy": 0.00, "sell": 0.58},
+    "asian": {"buy": 0.29, "sell": 1.00},
+    "london": {"buy": 0.14, "sell": 0.00},
+    "new york": {"buy": 0.00, "sell": 0.58},
 }
 
 SESSION_ASYMMETRY_BONUS = {
