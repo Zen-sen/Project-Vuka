@@ -10,8 +10,8 @@ from pathlib import Path
 from datetime import datetime
 from typing import List, Dict, Any
 import psutil
-from database_manager import get_db
-from unified_logger import get_logger
+from vuka.data.database_manager import get_db
+from vuka.utils.unified_logger import get_logger
 
 from rich.console import Console
 from rich.layout import Layout

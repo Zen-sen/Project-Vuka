@@ -4,7 +4,7 @@ from datetime import datetime, timedelta, timezone
 from collections import deque
 import logging
 from typing import Optional, List, Dict, Any
-from notifier import send as send_notification
+from vuka.utils.notifier import send as send_notification
 
 logger = logging.getLogger(__name__)
 

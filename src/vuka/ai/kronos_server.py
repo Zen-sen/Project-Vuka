@@ -19,7 +19,7 @@ from pydantic import BaseModel
 from typing import Optional, Dict, List
 import uvicorn
 from contextlib import asynccontextmanager
-from unified_logger import get_logger
+from vuka.utils.unified_logger import get_logger
 
 # Initialize Unified Logger
 logger = get_logger("Kronos_Server")

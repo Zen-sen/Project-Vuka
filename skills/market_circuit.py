@@ -13,13 +13,13 @@ from typing import Optional, Dict, List
 import numpy as np
 import pandas as pd
 
-from indicators import (
+from vuka.market_structure.indicators import (
     calculate_adx_wilder,
     calculate_bollinger_bands,
     calculate_keltner_channels,
     detect_range_ratio,
 )
-from unified_logger import get_logger
+from vuka.utils.unified_logger import get_logger
 
 BASE_DIR = Path(__file__).parent.parent
 STATE_PATH = BASE_DIR / "data" / "market_circuit.json"

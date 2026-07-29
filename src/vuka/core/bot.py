@@ -1165,6 +1165,16 @@ def fallback_polling_loop():
 #  SECTION 14 -- BOOT SEQUENCE
 # =======================================================
 
+# Inject bot.py functions into vuka.risk.filters so bare-name calls resolve
+import vuka.risk.filters as _filters
+_filters.now_sast = now_sast
+_filters.is_eu_summer = is_eu_summer
+_filters.get_active_killzones = get_active_killzones
+_filters.get_active_sb_windows = get_active_sb_windows
+_filters.get_active_blackouts = get_active_blackouts
+_filters.get_spread = get_spread
+_filters.log = log
+
 if __name__ == "__main__":
 
     _errors = []

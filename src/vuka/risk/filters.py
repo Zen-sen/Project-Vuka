@@ -1,4 +1,34 @@
 from vuka.core.state import s
+
+
+def now_sast():
+    raise NotImplementedError("bot.py should overwrite this")
+
+
+def is_eu_summer():
+    raise NotImplementedError("bot.py should overwrite this")
+
+
+def get_active_killzones():
+    raise NotImplementedError("bot.py should overwrite this")
+
+
+def get_active_sb_windows():
+    raise NotImplementedError("bot.py should overwrite this")
+
+
+def get_active_blackouts():
+    raise NotImplementedError("bot.py should overwrite this")
+
+
+def get_spread():
+    raise NotImplementedError("bot.py should overwrite this")
+
+
+def log(msg: str, level: str = "INFO"):
+    raise NotImplementedError("bot.py should overwrite this")
+
+
 def get_current_session() -> str | None:
     hour = now_sast().hour
     for session, (s, e) in get_active_killzones().items():
@@ -8,7 +38,6 @@ def get_current_session() -> str | None:
 
 
 def is_in_dead_zone() -> bool:
-    """Winter: 13:00-16:00 SAST. Summer: 12:00-15:00 SAST."""
     hour = now_sast().hour
     if is_eu_summer():
         return 12 <= hour < 15
@@ -31,7 +60,7 @@ def is_in_news_blackout() -> bool:
     return False
 
 
-def check_panic_candle(df: pd.DataFrame, atr: float) -> bool:
+def check_panic_candle(df, atr: float) -> bool:
     if atr is None or df.empty:
         return False
     last = df.iloc[-1]
@@ -41,7 +70,7 @@ def check_panic_candle(df: pd.DataFrame, atr: float) -> bool:
     return False
 
 
-def check_premium_discount_zone(df: pd.DataFrame, price: float, direction: str) -> bool:
+def check_premium_discount_zone(df, price: float, direction: str) -> bool:
     if len(df) < 20:
         return True
     recent = df.iloc[-20:]
@@ -54,7 +83,7 @@ def check_premium_discount_zone(df: pd.DataFrame, price: float, direction: str) 
     return price >= (hi - rng * 0.50)
 
 
-def check_pre_trade_spread(atr: float | None = None) -> bool:
+def check_pre_trade_spread(atr=None) -> bool:
     spread = get_spread()
     if spread is None:
         log("Spread unavailable.", "WARN")

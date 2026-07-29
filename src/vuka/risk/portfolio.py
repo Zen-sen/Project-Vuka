@@ -1,10 +1,55 @@
 import MetaTrader5 as mt5
 import json
+import logging
 import os
 import time
 from datetime import datetime, timezone, timedelta
 from typing import Optional
 from vuka.core.state import s
+
+logger = logging.getLogger(__name__)
+
+def log(msg: str, level: str = "INFO"):
+    logger.log(getattr(logging, level, logging.INFO), msg)
+
+
+def get_last_sunday(year: int, month: int):
+    if month == 12:
+        last_day = datetime(year + 1, 1, 1) - timedelta(days=1)
+    else:
+        last_day = datetime(year, month + 1, 1) - timedelta(days=1)
+    while last_day.weekday() != 6:
+        last_day -= timedelta(days=1)
+    return last_day
+
+
+def is_eu_summer():
+    today = datetime.now()
+    return get_last_sunday(today.year, 3) <= today <= get_last_sunday(today.year, 10)
+
+
+SA_OFFSET = 2
+
+
+def now_sast():
+    return datetime.now(timezone.utc) + timedelta(hours=SA_OFFSET)
+
+
+def get_exness_server_offset():
+    return 3 if is_eu_summer() else 2
+
+def mt5_fetch_with_retry(fetch_fn, *args, **kwargs):
+    for attempt in range(1, s.MT5_RETRY_ATTEMPTS + 1):
+        result = fetch_fn(*args, **kwargs)
+        if result is not None:
+            return result
+        error = mt5.last_error()
+        log(f"MT5 fetch failed (attempt {attempt}/{s.MT5_RETRY_ATTEMPTS}). "
+            f"Error: {error}. Waiting {s.MT5_RETRY_DELAY_SEC}s...", "WARN")
+        time.sleep(s.MT5_RETRY_DELAY_SEC)
+    log("All MT5 fetch attempts exhausted.", "ERROR")
+    return None
+
 
 def get_initial_equity() -> float:
     global initial_equity
@@ -86,6 +131,7 @@ def load_consecutive_losses() -> tuple:
     
     if s.DB_AVAILABLE:
         try:
+            from vuka.core.bot import DB
             return DB.get_loss_tracking(today, s._arg_symbol, s.STRATEGY)
         except Exception as e:
             log(f"Database read error: {e}. Falling back to JSON.", "WARN")
@@ -111,6 +157,7 @@ def save_consecutive_losses(count: int, last_ticket: int = 0):
     
     if s.DB_AVAILABLE:
         try:
+            from vuka.core.bot import DB
             DB.update_loss_tracking(today, s._arg_symbol, s.STRATEGY, count, last_ticket)
             return
         except Exception as e:
@@ -175,7 +222,13 @@ def calculate_lot_size(sl_distance: float | None = None) -> float:
     if sl_distance is None or sl_distance <= 0:
         # Default fallback: use ATR-based distance if no specific SL provided
         try:
-            df = get_candles()
+            from vuka.market_structure.ict import calculate_atr
+            rates = mt5_fetch_with_retry(mt5.copy_rates_from_pos, s.SYMBOL, s.TIMEFRAME, 0, 200)
+            if rates is None:
+                return 0.01
+            import pandas as pd
+            df = pd.DataFrame(rates)
+            df["time"] = pd.to_datetime(df["time"], unit="s")
             atr = calculate_atr(df)
             if atr:
                 sl_distance = atr * s.ATR_MULTIPLIER

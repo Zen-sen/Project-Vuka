@@ -14,9 +14,9 @@ import psutil
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, Optional
-from unified_logger import get_logger
-from database_manager import get_db
-from notifier import send as send_notification
+from vuka.utils.unified_logger import get_logger
+from vuka.data.database_manager import get_db
+from vuka.utils.notifier import send as send_notification
 
 # Configuration
 PROJECT_DIR = Path(__file__).parent.absolute()

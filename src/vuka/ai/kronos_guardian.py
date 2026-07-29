@@ -9,7 +9,7 @@ from enum import Enum
 
 import pandas as pd
 import requests
-from notifier import send as send_notification
+from vuka.utils.notifier import send as send_notification
 
 BASE_DIR = Path(__file__).parent
 LOG_DIR = BASE_DIR / "logs"

@@ -13,7 +13,7 @@ Phase 3 changes:
 import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from unified_logger import get_logger
+from vuka.utils.unified_logger import get_logger
 
 BASE_DIR = Path(__file__).parent.parent
 CONFIG_PATH = BASE_DIR / "config_v4.6.json"

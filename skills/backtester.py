@@ -20,7 +20,7 @@ if sys.platform == "win32":
     sys.stderr = codecs.getwriter('utf-8')(sys.stderr.buffer, 'strict')
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from indicators import calculate_adx_wilder as _calculate_adx_wilder
+from vuka.market_structure.indicators import calculate_adx_wilder as _calculate_adx_wilder
 
 def calculate_adx_wilder(candles: list, period: int = 14):
     if len(candles) < period * 2 + 1:

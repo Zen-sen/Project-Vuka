@@ -5,7 +5,7 @@ Centralizes all system events into the SQLite database for correlation and monit
 import uuid
 from datetime import datetime, timezone
 from typing import Optional, Dict, Any
-from database_manager import get_db
+from vuka.data.database_manager import get_db
 
 class UnifiedLogger:
     def __init__(self, component: str):

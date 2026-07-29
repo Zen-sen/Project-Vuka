@@ -6,22 +6,15 @@ from vuka.core.state import s
 
 @pytest.fixture(autouse=True)
 def inject_filter_names():
-    """Inject names that vuka.risk.filters expects from bot.py."""
+    """Replace stub functions in vuka.risk.filters with mocks for testing."""
     import vuka.risk.filters as mod
-    if not hasattr(mod, "now_sast"):
-        mod.now_sast = MagicMock()
-    if not hasattr(mod, "get_active_killzones"):
-        mod.get_active_killzones = MagicMock()
-    if not hasattr(mod, "is_eu_summer"):
-        mod.is_eu_summer = MagicMock(return_value=True)
-    if not hasattr(mod, "get_active_sb_windows"):
-        mod.get_active_sb_windows = MagicMock()
-    if not hasattr(mod, "get_active_blackouts"):
-        mod.get_active_blackouts = MagicMock()
-    if not hasattr(mod, "get_spread"):
-        mod.get_spread = MagicMock()
-    if not hasattr(mod, "log"):
-        mod.log = MagicMock()
+    mod.now_sast = MagicMock()
+    mod.is_eu_summer = MagicMock(return_value=True)
+    mod.get_active_killzones = MagicMock()
+    mod.get_active_sb_windows = MagicMock()
+    mod.get_active_blackouts = MagicMock()
+    mod.get_spread = MagicMock()
+    mod.log = MagicMock()
 
 
 class TestSessionFilters:
