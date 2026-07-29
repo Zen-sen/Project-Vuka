@@ -1,0 +1,4 @@
+[submodule "Kronos"]
+    path = Kronos
+    url = https://github.com/Zen-sen/Kronos.git
+    branch = main
