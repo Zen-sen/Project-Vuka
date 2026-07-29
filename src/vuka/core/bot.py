@@ -19,6 +19,11 @@ __version__ = "5.5.0"
 from vuka.core.state import s
 
 
+# Project root for importing skills/
+_PROJECT_ROOT = Path(__file__).resolve().parents[3]
+if str(_PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PROJECT_ROOT))
+
 # ---- ARGUMENT PARSING ------------------------------------------------
 parser = argparse.ArgumentParser(description="Agent Ingwe -- ICT Trading Bot")
 parser.add_argument("symbol", choices=["EURUSD", "GBPUSD", "USDJPY", "BTCUSD"])

@@ -65,7 +65,7 @@ class BotInstance:
         try:
             log_file = LOG_DIR / f"{self.name.lower().replace(' ', '_')}.log"
             self.process = subprocess.Popen(
-                [sys.executable, "ingwe.py", self.symbol, self.strategy],
+                [sys.executable, "-m", "vuka.core.bot", self.symbol, self.strategy],
                 cwd=str(PROJECT_DIR),
                 stdout=open(log_file, "a"),
                 stderr=subprocess.STDOUT,
@@ -200,9 +200,12 @@ class Supervisor:
     @staticmethod
     def kill_stale_processes():
         """Kill any orphaned Vuka python processes before starting fresh."""
+        current_pid = os.getpid()
         killed = []
         for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
             try:
+                if proc.info['pid'] == current_pid:
+                    continue
                 cmdline = proc.info.get('cmdline')
                 if not cmdline:
                     continue
@@ -305,10 +308,8 @@ class Supervisor:
                     elif cmd == "STOP_ALL":
                         self.stop_all()
                     elif cmd == "RESTART_SERVER":
-                        # Restarting the server requires a process kill/start
-                        # We'll implement this via a subprocess call to the server
                         logger.info("Restarting Kronos Server...")
-                        subprocess.Popen([sys.executable, "kronos_server.py"])
+                        subprocess.Popen([sys.executable, "-m", "vuka.ai.kronos_server"])
                 
                 # 2. Health Check
                 crashed = self.check_health()

@@ -25,8 +25,10 @@ from vuka.utils.unified_logger import get_logger
 logger = get_logger("Kronos_Server")
 
 # Add Kronos and skills to path
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "Kronos"))
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "skills"))
+KRONOS_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", "Kronos"))
+SKILLS_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", "skills"))
+sys.path.insert(0, KRONOS_DIR)
+sys.path.insert(0, SKILLS_DIR)
 from model import Kronos, KronosTokenizer
 
 # === CONFIGURATION ===

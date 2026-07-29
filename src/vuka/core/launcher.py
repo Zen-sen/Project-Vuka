@@ -29,7 +29,8 @@ def log(msg: str):
 
 def kill_stale():
     """Kill any existing Vuka processes before starting fresh."""
-    targets = {"ingwe.py", "kronos_server.py", "supervisor.py", "dashboard.py"}
+    targets = {"ingwe.py", "kronos_server.py", "supervisor.py", "dashboard.py",
+               "vuka.ai.kronos_server", "vuka.core.supervisor", "vuka.core.dashboard"}
     killed = []
     for proc in psutil.process_iter(["pid", "name", "cmdline"]):
         try:
@@ -43,9 +44,15 @@ def kill_stale():
         log(f"Killed {len(killed)} stale process(es): {killed}")
         time.sleep(3)
 
+MODULE_MAP = {
+    "kronos_server.py": ["-m", "vuka.ai.kronos_server"],
+    "supervisor.py":    ["-m", "vuka.core.supervisor"],
+    "dashboard.py":     ["-m", "vuka.core.dashboard"],
+}
+
 def launch(label: str, script: str, *args, visible: bool = False) -> subprocess.Popen:
     """Launch a Python script as a detached process."""
-    cmd = [PYTHON, script, *args]
+    cmd = [PYTHON] + MODULE_MAP.get(script, [script]) + list(args)
     if visible:
         proc = subprocess.Popen(
             cmd,
@@ -127,7 +134,8 @@ def main():
     print()
 
 def stop():
-    targets = {"ingwe.py", "kronos_server.py", "supervisor.py", "dashboard.py"}
+    targets = {"ingwe.py", "kronos_server.py", "supervisor.py", "dashboard.py",
+               "vuka.ai.kronos_server", "vuka.core.supervisor", "vuka.core.dashboard"}
     killed = []
     for proc in psutil.process_iter(["pid", "name", "cmdline"]):
         try:
@@ -140,7 +148,8 @@ def stop():
     print(f"Stopped {len(killed)} process(es): {', '.join(killed) if killed else 'none running'}")
 
 def status():
-    targets = {"ingwe.py", "kronos_server.py", "supervisor.py", "dashboard.py"}
+    targets = {"ingwe.py", "kronos_server.py", "supervisor.py", "dashboard.py",
+               "vuka.ai.kronos_server", "vuka.core.supervisor", "vuka.core.dashboard"}
     found = []
     for proc in psutil.process_iter(["pid", "name", "cmdline"]):
         try:

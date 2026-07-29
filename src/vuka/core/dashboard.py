@@ -71,13 +71,13 @@ class CommandCenter:
     def _ensure_supervisor(self):
         for proc in psutil.process_iter(['cmdline']):
             try:
-                if 'supervisor.py' in ' '.join(proc.info.get('cmdline') or []):
+                if 'vuka.core.supervisor' in ' '.join(proc.info.get('cmdline') or []):
                     return
             except (psutil.NoSuchProcess, psutil.AccessDenied):
                 continue
         logger.info("Supervisor not running -- starting in background...")
         subprocess.Popen(
-            [sys.executable, "supervisor.py"],
+            [sys.executable, "-m", "vuka.core.supervisor"],
             creationflags=DETACHED,
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
         )
@@ -109,10 +109,14 @@ class CommandCenter:
             status_list = []
             for tag in self._bot_tags:
                 symbol, strategy = tag.split('_', 1)
-                running = any('ingwe.py' in c and symbol in c and strategy in c for c in procs)
+                running = any(
+                    ('ingwe.py' in c or 'vuka.core.bot' in c)
+                    and symbol in c and strategy in c
+                    for c in procs
+                )
                 mode = "-"
                 for c in procs:
-                    if 'ingwe.py' in c and symbol in c and strategy in c:
+                    if ('ingwe.py' in c or 'vuka.core.bot' in c) and symbol in c and strategy in c:
                         if '--backtest' in c:
                             mode = "BACKTEST"
                         elif '--check' in c or '--test' in c:
@@ -330,7 +334,8 @@ class CommandCenter:
                 break
 
     def _kill_all(self):
-        targets = {"ingwe.py", "kronos_server.py", "supervisor.py", "dashboard.py"}
+        targets = {"ingwe.py", "kronos_server.py", "supervisor.py", "dashboard.py",
+                   "vuka.ai.kronos_server", "vuka.core.supervisor", "vuka.core.dashboard"}
         for p in psutil.process_iter(['pid', 'cmdline']):
             try:
                 if any(t in ' '.join(p.info.get('cmdline') or []) for t in targets):
