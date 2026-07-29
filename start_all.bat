@@ -41,4 +41,4 @@ echo    vuka status    —  Check what's running + flag missing components
 echo    vuka stop      —  Stop everything
 echo    vuka restart   —  Full restart
 echo.
-pause
+timeout /t 5 /nobreak > nul
