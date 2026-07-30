@@ -18,6 +18,15 @@ import numpy as np
 import pandas as pd
 
 BASE_DIR = Path(__file__).parent
+
+# Project root, so this script works whether run standalone or as part of the package
+_PROJECT_ROOT = BASE_DIR.resolve().parents[2]
+if str(_PROJECT_ROOT / "src") not in sys.path:
+    sys.path.insert(0, str(_PROJECT_ROOT / "src"))
+
+from vuka.core.config import calculate_confluence_score, get_confluence_threshold, load_config
+from vuka.market_structure.ict import calculate_adx_wilder
+
 CSV_DIR = BASE_DIR / "data" / "sessions"
 DEFAULT_CSV = CSV_DIR / "GBPUSDc_M15_202601012200_202605110000.csv"
 RESULTS_FILE = BASE_DIR / "data" / "london_open_backtest_results.json"
@@ -72,7 +81,9 @@ class LondonOpenBacktester:
         }
         self.df = None
         self.current_idx = 0
+        load_config("GBPUSD", "LONDON_OPEN", "GBPUSD_LONDON_OPEN", "GBPUSD")
         self.atr = 0.0005
+        self.adx = None
         self.spread = min_spread
         self.adx_values = []
         self.ema10 = None
@@ -143,6 +154,9 @@ class LondonOpenBacktester:
         self.ema10 = self.calculate_ema(10)
         self.ema30 = self.calculate_ema(30)
         self.h1_bullish = self.ema10 > self.ema30 if (self.ema10 is not None and self.ema30 is not None) else None
+        window = self.df.iloc[max(0, self.current_idx - 60):self.current_idx + 1]
+        adx, _plus_di, _minus_di = calculate_adx_wilder(window)
+        self.adx = adx
 
     def detect_sweep(self):
         if self.current_idx < 4:
@@ -187,20 +201,6 @@ class LondonOpenBacktester:
             return price <= mid
         return price >= mid
 
-    def calculate_confluence_score(self, trend: str, sweep: bool, fvg: bool, spread_ok: bool,
-                                    bos: bool, level_sweep: bool, htf_ok: bool, session: str) -> int:
-        score = 0
-        if trend == "BULLISH": score += 15
-        elif trend == "BEARISH": score += 10
-        if sweep: score += 25
-        if fvg: score += 25
-        if bos: score += 15
-        if level_sweep: score += 10
-        if htf_ok: score += 10
-        if session == "London Open": score += 10
-        if not spread_ok: score -= 20
-        return score
-
     def calculate_lot(self) -> float:
         risk_dollars = self.state.balance * (self.config["risk_pct"] / 100)
         stop_pips = self.atr * self.config["atr_mult"]
@@ -217,7 +217,7 @@ class LondonOpenBacktester:
             "entry_time": str(self.df.iloc[self.current_idx]["time"]),
             "entry_idx": self.current_idx,
             "trailing_sl_level": None, "sl_moved_to_be": False, "sl_moved_to_1r": False,
-            "adx_at_entry": 25
+            "adx_at_entry": self.adx if self.adx is not None else 25.0
         })
         self.state.sessions_traded_today.add(session)
 
@@ -371,8 +371,12 @@ class LondonOpenBacktester:
                             if not self.check_premium_discount_zone(price, "BUY"):
                                 continue
                             trend = "BULLISH" if self.h1_bullish else "UNKNOWN"
-                            score = self.calculate_confluence_score(trend, True, True, spread_ok, bos, level_sweep, htf_ok, session)
-                            if score >= 40:
+                            score = calculate_confluence_score(
+                                trend, True, True, spread_ok, True,
+                                level_sweep, bos, htf_ok, session, "BUY"
+                            )
+                            threshold = max(40, min(90, get_confluence_threshold(self.adx, session, "BUY")))
+                            if score >= threshold:
                                 stop = self.atr * self.config["atr_mult"]
                                 entry = price
                                 sl = entry - stop
@@ -384,8 +388,12 @@ class LondonOpenBacktester:
                             if not self.check_premium_discount_zone(price, "SELL"):
                                 continue
                             trend = "BEARISH" if not self.h1_bullish else "UNKNOWN"
-                            score = self.calculate_confluence_score(trend, True, True, spread_ok, bos, level_sweep, htf_ok, session)
-                            if score >= 40:
+                            score = calculate_confluence_score(
+                                trend, True, True, spread_ok, True,
+                                level_sweep, bos, htf_ok, session, "SELL"
+                            )
+                            threshold = max(40, min(90, get_confluence_threshold(self.adx, session, "SELL")))
+                            if score >= threshold:
                                 stop = self.atr * self.config["atr_mult"]
                                 entry = price
                                 sl = entry + stop
