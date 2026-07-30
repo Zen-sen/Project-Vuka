@@ -192,13 +192,6 @@ def load_config(symbol: str, strategy: str, instance_tag: str, arg_symbol: str) 
 
 
 # =========================================================
-# PATTERN BLACKLIST
-# =========================================================
-PATTERN_BLACKLIST = [
-    ("Asian", "BUY", "SWEEP_LOW"),
-]
-
-# =========================================================
 # BACKTEST MODE
 # =========================================================
 BACKTEST_MODE            = False

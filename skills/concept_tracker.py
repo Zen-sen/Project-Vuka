@@ -116,8 +116,9 @@ class ConceptTracker:
                 mc = market_context or {}
                 session = mc.get("session", "unknown")
                 volatility = mc.get("volatility", "normal")
+                regime = mc.get("market_phase", "UNKNOWN")
                 
-                self._update_concept_stats(concepts, outcome, rr_result, session, volatility)
+                self._update_concept_stats(concepts, outcome, rr_result, session, volatility, regime)
                 self._update_combo_stats(combo_key, concepts, outcome, rr_result)
                 
                 break
@@ -130,7 +131,8 @@ class ConceptTracker:
         outcome: str,
         rr_result: float,
         session: str,
-        volatility: str
+        volatility: str,
+        regime: str = "UNKNOWN"
     ):
         for concept in concepts:
             if concept not in self.stats["concepts"]:
@@ -140,6 +142,7 @@ class ConceptTracker:
                     "win_rr_sum": 0.0, "loss_rr_sum": 0.0,
                     "session_stats": {},
                     "volatility_stats": {},
+                    "regime_stats": {},
                     "recent_wins": 0,
                     "recent_losses": 0,
                     "recent_rr_sum": 0.0
@@ -172,6 +175,13 @@ class ConceptTracker:
             if outcome == "win":
                 vs["wins"] += 1
             vs["total_rr"] += rr_result
+
+            if regime and regime not in ("", "UNKNOWN", "NONE"):
+                rs = stats.setdefault("regime_stats", {}).setdefault(regime, {"uses": 0, "wins": 0, "total_rr": 0.0})
+                rs["uses"] += 1
+                if outcome == "win":
+                    rs["wins"] += 1
+                rs["total_rr"] += rr_result
     
     def _update_combo_stats(self, combo_key: str, concepts: List[str], outcome: str, rr_result: float):
         if combo_key not in self.stats["combos"]:

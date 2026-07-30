@@ -7,6 +7,13 @@ import time
 from datetime import datetime, timezone, timedelta
 from typing import Optional, Tuple, Any
 from vuka.core.state import s
+from vuka.market_structure.ict import calculate_adx_wilder, calculate_atr
+from vuka.risk.portfolio import get_spread, get_overlap_multiplier
+from vuka.risk.filters import get_current_session, check_premium_discount_zone, check_panic_candle, check_pre_trade_spread
+from vuka.utils.unified_logger import get_logger
+
+_logger = get_logger("Ingwe")
+log = _logger.log
 
 def evaluate_ingwe(df, fvgs, sweep, sweep_level, price, atr, lot_size, session,
                     market_phase="UNKNOWN", phase_adj=None):
@@ -41,33 +48,9 @@ def evaluate_ingwe(df, fvgs, sweep, sweep_level, price, atr, lot_size, session,
     if _phase_direction != "NONE":
         log(f"MARKET CIRCUIT: {market_phase} favors {_phase_direction} setups", "GUARD")
     
-    # ── PATTERN BLACKLIST CHECK (STILL A HARD GATE) ────────────────────────────
-    # Block toxic patterns identified in backtest (win rate <35%)
-    blacklist_blocked = False
-    for pattern in s.PATTERN_BLACKLIST:
-        blk_session, blk_direction, blk_sweep = pattern
-        if session == blk_session and sweep == blk_sweep:
-            for fvg_type, _, _, _, _, _ in fvgs:
-                if sweep == "SWEEP_LOW" and fvg_type == "BULLISH_FVG":
-                    current_direction = "BUY"
-                elif sweep == "SWEEP_HIGH" and fvg_type == "BEARISH_FVG":
-                    current_direction = "SELL"
-                elif sweep == "SWEEP_LOW" and fvg_type == "BEARISH_FVG":
-                    current_direction = "SELL"
-                elif sweep == "SWEEP_HIGH" and fvg_type == "BULLISH_FVG":
-                    current_direction = "BUY"
-                else:
-                    continue
-                if current_direction == blk_direction:
-                    log(f"PATTERN BLACKLIST: {session} {current_direction} {sweep} -- "
-                        f"historically <35% win rate. Standing down.", "GUARD")
-                    blacklist_blocked = True
-                    break
-            if blacklist_blocked:
-                break
-    
-    if blacklist_blocked:
-        return
+    # Pattern veto is handled upstream by TradingGovernor.check_market_phase()
+    # and KronosGuardian.validate_signal() via concept_tracker's should_auto_veto().
+    # The old hardcoded PATTERN_BLACKLIST was removed in favor of data-driven gates.
 
     spread      = get_spread()
     spread_pips = spread * 10000 if spread else 0

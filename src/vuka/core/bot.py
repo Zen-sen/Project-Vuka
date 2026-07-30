@@ -300,14 +300,6 @@ else:
     MT5_RETRY_ATTEMPTS       = 3
     MT5_RETRY_DELAY_SEC      = 30
 
-# =======================================================
-# PATTERN BLACKLIST (Based on Backtest Analysis)
-# =======================================================
-# Win rate <35% patterns - auto-blocked to prevent losses
-PATTERN_BLACKLIST = [
-    ("Asian", "BUY", "SWEEP_LOW"),       # 28% WR -- block
-]
-
 # -------------------------------------------------------
 # BACKTEST MODE (Option B) -- CSV Replay
 # -------------------------------------------------------
@@ -409,9 +401,9 @@ for _key in ('STRATEGY', 'SYMBOL', '_arg_symbol', '_instance_tag', '_instance_sh
              'MIN_SPREAD_PIPS', 'MAX_DAILY_LOSS', 'MAX_DRAWDOWN_PCT',
              'HARD_LOT_CAP', 'SCAN_INTERVAL_SEC', 'DATA_STALE_MINUTES',
              'DATA_STALE_MINUTES_ASIAN', 'MT5_RETRY_ATTEMPTS', 'MT5_RETRY_DELAY_SEC',
-             'BACKTEST_MODE', 'BACKTEST_CSV', 'BACKTEST_SPEED',
+              'BACKTEST_MODE', 'BACKTEST_CSV', 'BACKTEST_SPEED',
              '_backtest_index', '_backtest_data',
-             'PATTERN_BLACKLIST', 'SA_OFFSET', 'initial_equity',
+             'SA_OFFSET', 'initial_equity',
              'sessions_traded_today',
              'KILLZONES_WINTER', 'KILLZONES_SUMMER',
              'INGWE_BLACKOUTS_WINTER', 'INGWE_BLACKOUTS_SUMMER',
