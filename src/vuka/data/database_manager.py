@@ -167,6 +167,17 @@ class DatabaseManager:
                 cursor.execute(col_sql)
             except:
                 pass
+
+        # Migration v5.6: raw structural fields (previously computed but discarded)
+        for col_sql in [
+            "ALTER TABLE trades ADD COLUMN market_phase TEXT DEFAULT 'UNKNOWN'",
+            "ALTER TABLE trades ADD COLUMN sweep_direction TEXT DEFAULT 'UNKNOWN'",
+            "ALTER TABLE trades ADD COLUMN fvg_type_raw TEXT DEFAULT 'UNKNOWN'",
+        ]:
+            try:
+                cursor.execute(col_sql)
+            except:
+                pass
         
         # SL movements table
         cursor.execute("""
@@ -306,9 +317,11 @@ class DatabaseManager:
                         htf_bias, kronos_decision, kronos_confidence, circuit_breaker,
                         api_latency_ms, spread_at_entry,
                         fvg_confirmed, ob_present, confluence_score, setup_type,
-                        concept_confidence, trail_be_at
+                        concept_confidence, trail_be_at,
+                        market_phase, sweep_direction, fvg_type_raw
                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                              ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                              ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                              ?, ?, ?)
                 """, (
                     symbol,
                     strategy,
@@ -339,6 +352,9 @@ class DatabaseManager:
                     trade_dict.get("setup_type", ""),
                     trade_dict.get("concept_confidence", 0.0),
                     trade_dict.get("trail_be_at", 1.0),
+                    trade_dict.get("market_phase", "UNKNOWN"),
+                    trade_dict.get("sweep_direction", "UNKNOWN"),
+                    trade_dict.get("fvg_type_raw", "UNKNOWN"),
                 ))
                 
                 return cursor.lastrowid or -1

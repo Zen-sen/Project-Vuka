@@ -209,6 +209,8 @@ def manage_open_positions():
                                 "direction": t.get("direction", "unknown"),
                                 "setup_type": t.get("setup_type", "UNKNOWN"),
                                 "confluence_score": t.get("confluence_score", 0),
+                                "market_phase": t.get("market_phase", "UNKNOWN"),
+                                "sweep_direction": t.get("sweep_direction", "UNKNOWN"),
                                 "volatility": "normal",
                                 "exit_reason": t.get("exit_reason", "UNKNOWN"),
                             }

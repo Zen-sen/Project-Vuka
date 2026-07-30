@@ -120,6 +120,9 @@ def log_trade(direction, entry, sl, tp, result, lot_size, session, context=None,
         trade_entry["ob_present"] = context.get("ob_present", False)
         trade_entry["confluence_score"] = context.get("confluence_score", 0)
         trade_entry["setup_type"] = context.get("setup_type", "")
+        trade_entry["market_phase"] = context.get("market_phase", "UNKNOWN")
+        trade_entry["sweep_direction"] = context.get("sweep", "UNKNOWN")
+        trade_entry["fvg_type_raw"] = context.get("fvg_type", "UNKNOWN")
     
     log(f"[FILL] req={entry} fill={actual_fill} slip={slippage_pips:.1f}p eff_RR={effective_rr:.2f}", "TRADE")
     
@@ -166,6 +169,9 @@ def log_trade(direction, entry, sl, tp, result, lot_size, session, context=None,
             sess = context.get("session", "")
             if sess and sess not in ("", "UNKNOWN", None):
                 concepts_used.append(f"session_{sess.lower().replace(' ', '_')}")
+            mp = context.get("market_phase", "")
+            if mp and mp not in ("", "UNKNOWN", None):
+                concepts_used.append(f"phase_{mp.lower()}")
             tr = context.get("trend", "")
             if tr and tr not in ("", "UNKNOWN", None):
                 concepts_used.append(f"trend_{tr.lower()}")

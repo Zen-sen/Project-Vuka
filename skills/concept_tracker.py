@@ -568,7 +568,7 @@ def get_pattern_win_rate(symbol: str, session: str, setup_type: str, direction: 
     if len(matching_trades) < min_samples:
         return 0.5, len(matching_trades)  # Not enough data
     
-    wins = sum(1 for t in matching_trades if t.get("outcome") == "WIN")
+    wins = sum(1 for t in matching_trades if t.get("outcome") == "win")
     return wins / len(matching_trades), len(matching_trades)
 
 
