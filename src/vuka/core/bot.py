@@ -1211,7 +1211,7 @@ if __name__ == "__main__":
 
     summer = is_eu_summer()
     print("=" * 60)
-    print("   PROJECT VUKA -- AGENT INGWE  v4.4")
+    print(f"   PROJECT VUKA -- AGENT INGWE  v{__version__}")
     print("   The leopard does not miss because it does not rush.")
     print("=" * 60)
     print()
