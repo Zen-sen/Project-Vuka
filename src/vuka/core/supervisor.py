@@ -28,6 +28,8 @@ logger = get_logger("Supervisor")
 BOT_SCRIPTS = [
     ("EURUSD", "INGWE"),
     ("GBPUSD", "INGWE"),
+    ("EURUSD", "SILVER_BULLET"),
+    ("GBPUSD", "SILVER_BULLET"),
 ]
 RESTART_DELAY = 60  # seconds to wait before restarting crashed bot
 HEALTH_CHECK_INTERVAL = 30  # seconds between health checks
@@ -211,7 +213,7 @@ class Supervisor:
                     continue
                 cmd = ' '.join(cmdline)
                 if 'python' in proc.info.get('name', '').lower():
-                    if any(tag in cmd for tag in ['ingwe.py', 'dashboard.py']):
+                    if any(tag in cmd for tag in ['ingwe.py', 'dashboard.py', 'vuka.core.bot']):
                         proc.kill()
                         killed.append((proc.info['pid'], cmd.split('\\')[-1].split('/')[-1]))
             except (psutil.NoSuchProcess, psutil.AccessDenied):

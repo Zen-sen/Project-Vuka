@@ -8,6 +8,13 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional
 from pathlib import Path
 from vuka.core.state import s
+from vuka.risk.filters import is_eu_summer
+from vuka.risk.portfolio import get_spread
+from vuka.utils.unified_logger import get_logger
+from skills.concept_tracker import record_concept_trade
+
+_logger = get_logger("Orders")
+log = _logger.log
 
 def log_trade(direction, entry, sl, tp, result, lot_size, session, context=None, kronos_gate=None):
     """
@@ -116,11 +123,12 @@ def log_trade(direction, entry, sl, tp, result, lot_size, session, context=None,
     
     log(f"[FILL] req={entry} fill={actual_fill} slip={slippage_pips:.1f}p eff_RR={effective_rr:.2f}", "TRADE")
     
+    from vuka.core.bot import TRADING_GOVERNOR
     TRADING_GOVERNOR.record_trade()
     
     if s.DB_AVAILABLE:
         try:
-            DB.insert_trade(trade_entry)
+            s.DB.insert_trade(trade_entry)
             log(f"Trade logged -> vuka_trading.db", "TRADE")
         except Exception as e:
             log(f"Database write error: {e}. Falling back to JSON.", "WARN")
@@ -194,7 +202,7 @@ def place_trade(direction, entry, sl, tp, lot_size, session="unknown"):
 
     # Phase 5a: Per-symbol-per-session dedup lock (prevents double-firing)
     if s.DB_AVAILABLE and session != "unknown":
-        dedup_ok = DB.dedup_check_and_lock(s.SYMBOL, session, s.STRATEGY)
+        dedup_ok = s.DB.dedup_check_and_lock(s.SYMBOL, session, s.STRATEGY)
         if not dedup_ok:
             log(f"Session '{session}' already traded for {s.SYMBOL} today. Dedup lock active.", "GUARD")
             return None
@@ -371,7 +379,7 @@ def log_sl_move(ticket: int, entry: float, old_sl: float, new_sl: float, label: 
     
     if s.DB_AVAILABLE:
         try:
-            DB.insert_sl_movement(sl_move_entry)
+            s.DB.insert_sl_movement(sl_move_entry)
             return
         except Exception as e:
             log(f"Database write error: {e}. Falling back to JSON.", "WARN")

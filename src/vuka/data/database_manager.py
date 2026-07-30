@@ -147,6 +147,26 @@ class DatabaseManager:
                 cursor.execute(col_sql)
             except:
                 pass
+
+        # Migration v5.5: Add enrichment columns for field parity with JSON log
+        for col_sql in [
+            "ALTER TABLE trades ADD COLUMN htf_bias TEXT DEFAULT 'SPLIT'",
+            "ALTER TABLE trades ADD COLUMN kronos_decision TEXT DEFAULT 'ALLOW'",
+            "ALTER TABLE trades ADD COLUMN kronos_confidence REAL DEFAULT 0.0",
+            "ALTER TABLE trades ADD COLUMN circuit_breaker TEXT DEFAULT 'CLOSED'",
+            "ALTER TABLE trades ADD COLUMN api_latency_ms REAL DEFAULT 0.0",
+            "ALTER TABLE trades ADD COLUMN spread_at_entry REAL",
+            "ALTER TABLE trades ADD COLUMN fvg_confirmed INTEGER DEFAULT 0",
+            "ALTER TABLE trades ADD COLUMN ob_present INTEGER DEFAULT 0",
+            "ALTER TABLE trades ADD COLUMN confluence_score INTEGER DEFAULT 0",
+            "ALTER TABLE trades ADD COLUMN setup_type TEXT DEFAULT ''",
+            "ALTER TABLE trades ADD COLUMN concept_confidence REAL DEFAULT 0.0",
+            "ALTER TABLE trades ADD COLUMN trail_be_at REAL DEFAULT 1.0",
+        ]:
+            try:
+                cursor.execute(col_sql)
+            except:
+                pass
         
         # SL movements table
         cursor.execute("""
@@ -261,7 +281,7 @@ class DatabaseManager:
     
     def insert_trade(self, trade_dict: Dict[str, Any]) -> int:
         """
-        Insert or update trade record.
+        Insert or update trade record with full field parity.
         
         Args:
             trade_dict: Trade data (must include: symbol, strategy, time, direction, sl, tp, lot_size)
@@ -282,8 +302,13 @@ class DatabaseManager:
                         symbol, strategy, time, direction,
                         entry_req, entry_fill, sl, tp, lot_size,
                         effective_rr, retcode, comment, session, market_mode, slippage,
-                        position_id
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        position_id, pnl_usd,
+                        htf_bias, kronos_decision, kronos_confidence, circuit_breaker,
+                        api_latency_ms, spread_at_entry,
+                        fvg_confirmed, ob_present, confluence_score, setup_type,
+                        concept_confidence, trail_be_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                              ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
                     symbol,
                     strategy,
@@ -300,7 +325,20 @@ class DatabaseManager:
                     trade_dict.get("session"),
                     trade_dict.get("market_mode"),
                     trade_dict.get("slippage"),
-                    trade_dict.get("position_id")
+                    trade_dict.get("position_id"),
+                    trade_dict.get("pnl_usd"),
+                    trade_dict.get("htf_bias", "SPLIT"),
+                    trade_dict.get("kronos_decision", "ALLOW"),
+                    trade_dict.get("kronos_confidence", 0.0),
+                    trade_dict.get("circuit_breaker", "CLOSED"),
+                    trade_dict.get("api_latency_ms", 0.0),
+                    trade_dict.get("spread_at_entry"),
+                    int(trade_dict.get("fvg_confirmed", False)),
+                    int(trade_dict.get("ob_present", False)),
+                    trade_dict.get("confluence_score", 0),
+                    trade_dict.get("setup_type", ""),
+                    trade_dict.get("concept_confidence", 0.0),
+                    trade_dict.get("trail_be_at", 1.0),
                 ))
                 
                 return cursor.lastrowid or -1
