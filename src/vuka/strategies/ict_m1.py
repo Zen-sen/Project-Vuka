@@ -7,6 +7,12 @@ import time
 from datetime import datetime, timezone, timedelta
 from typing import Optional, Tuple, Any
 from vuka.core.state import s
+from vuka.utils.unified_logger import get_logger
+
+_logger = get_logger("ICTm1")
+
+def log(msg: str, level: str = "INFO"):
+    _logger.log(level=level, message=msg)
 
 def evaluate_ict_m1(df, fvgs, sweep, sweep_level, price, atr,
                     lot_size, session):
