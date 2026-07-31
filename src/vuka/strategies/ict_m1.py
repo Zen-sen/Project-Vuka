@@ -11,7 +11,7 @@ from vuka.utils.unified_logger import get_logger
 
 _logger = get_logger("ICTm1")
 
-def log(msg: str, level: str = "INFO"):
+def _log(msg: str, level: str = "INFO"):
     _logger.log(level=level, message=msg)
 
 def evaluate_ict_m1(df, fvgs, sweep, sweep_level, price, atr,
@@ -25,7 +25,7 @@ def evaluate_ict_m1(df, fvgs, sweep, sweep_level, price, atr,
     """
     spread = get_spread()
     spread_pips = spread * 10000 if spread else 0
-    log(f"Price: {price:.5f}  |  ATR: {atr:.5f}  |  "
+    _log(f"Price: {price:.5f}  |  ATR: {atr:.5f}  |  "
         f"Lot: {lot_size}  |  Spread: {spread_pips:.1f}p")
 
     for fvg_type, fvg_low, fvg_high, fvg_idx, ob, fvg_50 in fvgs:
@@ -37,7 +37,7 @@ def evaluate_ict_m1(df, fvgs, sweep, sweep_level, price, atr,
             if not check_pre_trade_spread(atr):
                 continue
 
-            log(f"M1 Bullish FVG: {fvg_low:.5f}-{fvg_high:.5f}  |  50%: {fvg_50:.5f}")
+            _log(f"M1 Bullish FVG: {fvg_low:.5f}-{fvg_high:.5f}  |  50%: {fvg_50:.5f}")
 
             ctx = {
                 "direction": "BUY",
@@ -60,9 +60,9 @@ def evaluate_ict_m1(df, fvgs, sweep, sweep_level, price, atr,
             }
             if s.KRONOS_VETO_GATE is not None:
                 allowed, reason = KRONOS_VETO_GATE.validate(ctx, df, s.SYMBOL)
-                log(f"[KRONOS] BUY signal: {reason}", "GUARD")
+                _log(f"[KRONOS] BUY signal: {reason}", "GUARD")
                 if not allowed:
-                    log(f"Kronos vetoed BUY. Skipping trade.", "GUARD")
+                    _log(f"Kronos vetoed BUY. Skipping trade.", "GUARD")
                     return
 
             stop = max(atr * s.ATR_MULTIPLIER, atr * s.MIN_SL_ATR_MULTIPLIER)
@@ -71,12 +71,12 @@ def evaluate_ict_m1(df, fvgs, sweep, sweep_level, price, atr,
             tp = round_to_tick(entry + stop * s.RISK_REWARD_RATIO, s.SYMBOL)
             res = place_trade("BUY", entry, sl, tp, lot_size, session=session)
             if res and res.retcode == mt5.TRADE_RETCODE_DONE:
-                log(f"M1 BUY  Entry={entry}  SL={sl}  TP={tp}  Lot={lot_size}", "TRADE")
+                _log(f"M1 BUY  Entry={entry}  SL={sl}  TP={tp}  Lot={lot_size}", "TRADE")
                 log_trade("BUY", entry, sl, tp, res, lot_size, session, context=ctx, kronos_gate=s.KRONOS_VETO_GATE)
                 sessions_traded_today.add(session)
                 save_sessions(s.sessions_traded_today)
             else:
-                log(f"M1 BUY FAILED. Code={res.retcode if res else 'N/A'}.", "ERROR")
+                _log(f"M1 BUY FAILED. Code={res.retcode if res else 'N/A'}.", "ERROR")
             return
 
         # ── M1 SELL: sweep high + bearish FVG ─────────────
@@ -84,7 +84,7 @@ def evaluate_ict_m1(df, fvgs, sweep, sweep_level, price, atr,
             if not check_pre_trade_spread(atr):
                 continue
 
-            log(f"M1 Bearish FVG: {fvg_low:.5f}-{fvg_high:.5f}  |  50%: {fvg_50:.5f}")
+            _log(f"M1 Bearish FVG: {fvg_low:.5f}-{fvg_high:.5f}  |  50%: {fvg_50:.5f}")
 
             ctx = {
                 "direction": "SELL",
@@ -107,9 +107,9 @@ def evaluate_ict_m1(df, fvgs, sweep, sweep_level, price, atr,
             }
             if s.KRONOS_VETO_GATE is not None:
                 allowed, reason = KRONOS_VETO_GATE.validate(ctx, df, s.SYMBOL)
-                log(f"[KRONOS] SELL signal: {reason}", "GUARD")
+                _log(f"[KRONOS] SELL signal: {reason}", "GUARD")
                 if not allowed:
-                    log(f"Kronos vetoed SELL. Skipping trade.", "GUARD")
+                    _log(f"Kronos vetoed SELL. Skipping trade.", "GUARD")
                     return
 
             stop = max(atr * s.ATR_MULTIPLIER, atr * s.MIN_SL_ATR_MULTIPLIER)
@@ -118,12 +118,12 @@ def evaluate_ict_m1(df, fvgs, sweep, sweep_level, price, atr,
             tp = round_to_tick(entry - stop * s.RISK_REWARD_RATIO, s.SYMBOL)
             res = place_trade("SELL", entry, sl, tp, lot_size, session=session)
             if res and res.retcode == mt5.TRADE_RETCODE_DONE:
-                log(f"M1 SELL  Entry={entry}  SL={sl}  TP={tp}  Lot={lot_size}", "TRADE")
+                _log(f"M1 SELL  Entry={entry}  SL={sl}  TP={tp}  Lot={lot_size}", "TRADE")
                 log_trade("SELL", entry, sl, tp, res, lot_size, session, context=ctx, kronos_gate=s.KRONOS_VETO_GATE)
                 sessions_traded_today.add(session)
                 save_sessions(s.sessions_traded_today)
             else:
-                log(f"M1 SELL FAILED. Code={res.retcode if res else 'N/A'}.", "ERROR")
+                _log(f"M1 SELL FAILED. Code={res.retcode if res else 'N/A'}.", "ERROR")
             return
 
-    log("M1: No valid FVG sweep. Ingwe waits...")
+    _log("M1: No valid FVG sweep. Ingwe waits...")

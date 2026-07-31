@@ -15,7 +15,7 @@ from skills.concept_tracker import record_concept_trade
 
 _logger = get_logger("Orders")
 
-def log(msg: str, level: str = "INFO"):
+def _log(msg: str, level: str = "INFO"):
     _logger.log(level=level, message=msg)
 
 def log_trade(direction, entry, sl, tp, result, lot_size, session, context=None, kronos_gate=None):
@@ -126,7 +126,7 @@ def log_trade(direction, entry, sl, tp, result, lot_size, session, context=None,
         trade_entry["sweep_direction"] = context.get("sweep", "UNKNOWN")
         trade_entry["fvg_type_raw"] = context.get("fvg_type", "UNKNOWN")
     
-    log(f"[FILL] req={entry} fill={actual_fill} slip={slippage_pips:.1f}p eff_RR={effective_rr:.2f}", "TRADE")
+    _log(f"[FILL] req={entry} fill={actual_fill} slip={slippage_pips:.1f}p eff_RR={effective_rr:.2f}", "TRADE")
     
     from vuka.core.bot import TRADING_GOVERNOR
     TRADING_GOVERNOR.record_trade()
@@ -134,9 +134,9 @@ def log_trade(direction, entry, sl, tp, result, lot_size, session, context=None,
     if s.DB_AVAILABLE:
         try:
             s.DB.insert_trade(trade_entry)
-            log(f"Trade logged -> vuka_trading.db", "TRADE")
+            _log(f"Trade logged -> vuka_trading.db", "TRADE")
         except Exception as e:
-            log(f"Database write error: {e}. Falling back to JSON.", "WARN")
+            _log(f"Database write error: {e}. Falling back to JSON.", "WARN")
     
     # JSON fallback (dual-write for safety during transition)
     trade_log = []
@@ -153,7 +153,7 @@ def log_trade(direction, entry, sl, tp, result, lot_size, session, context=None,
     with open(tmp, "w") as f:
         json.dump(trade_log, f, indent=2)
     os.replace(tmp, s.LOG_FILE)
-    log(f"Trade logged -> {s.LOG_FILE}", "TRADE")
+    _log(f"Trade logged -> {s.LOG_FILE}", "TRADE")
 
     # Phase 1c: Enrich concept tracker with full trade context
     try:
@@ -194,7 +194,7 @@ def log_trade(direction, entry, sl, tp, result, lot_size, session, context=None,
         # High confidence (>0.6) -> trail BE at 2:1; otherwise BE at 1:1
         trade_entry["trail_be_at"] = 2.0 if _conf_score > 0.6 else 1.0
     except Exception as e:
-        log(f"Concept tracker record_trade error: {e}", "WARN")
+        _log(f"Concept tracker record_trade error: {e}", "WARN")
 
 
 def place_trade(direction, entry, sl, tp, lot_size, session="unknown"):
@@ -205,14 +205,14 @@ def place_trade(direction, entry, sl, tp, lot_size, session="unknown"):
         return MockResult()
 
     if has_open_position():
-        log(f"Position already open for {s._instance_tag} -- skipping duplicate entry.", "GUARD")
+        _log(f"Position already open for {s._instance_tag} -- skipping duplicate entry.", "GUARD")
         return None
 
     # Phase 5a: Per-symbol-per-session dedup lock (prevents double-firing)
     if s.DB_AVAILABLE and session != "unknown":
         dedup_ok = s.DB.dedup_check_and_lock(s.SYMBOL, session, s.STRATEGY)
         if not dedup_ok:
-            log(f"Session '{session}' already traded for {s.SYMBOL} today. Dedup lock active.", "GUARD")
+            _log(f"Session '{session}' already traded for {s.SYMBOL} today. Dedup lock active.", "GUARD")
             return None
     
     order_type = mt5.ORDER_TYPE_BUY if direction == "BUY" else mt5.ORDER_TYPE_SELL
@@ -242,24 +242,24 @@ def place_trade(direction, entry, sl, tp, lot_size, session="unknown"):
         result = mt5.order_send(order)
 
         if result is None:
-            log(f"Order send returned None (attempt {i}/3). "
+            _log(f"Order send returned None (attempt {i}/3). "
                 f"MT5 error: {mt5.last_error()}", "ERROR")
             continue
 
         if result.retcode == mt5.TRADE_RETCODE_DONE:
-            log(f"Order filled with filling mode {i}/3 (RETURN/IOC/FOK)", "TRADE")
+            _log(f"Order filled with filling mode {i}/3 (RETURN/IOC/FOK)", "TRADE")
             return result
 
         if result.retcode == 10030:
             if i < 3:
-                log(f"Filling mode rejected (10030) -- trying fallback {i+1}/3...", "WARN")
+                _log(f"Filling mode rejected (10030) -- trying fallback {i+1}/3...", "WARN")
             continue
 
-        log(f"Order failed. Retcode: {result.retcode}, "
+        _log(f"Order failed. Retcode: {result.retcode}, "
             f"Comment: {getattr(result, 'comment', 'N/A')}", "ERROR")
         return result
 
-    log("All filling modes exhausted. Order failed.", "ERROR")
+    _log("All filling modes exhausted. Order failed.", "ERROR")
     return None
 
 
@@ -336,13 +336,13 @@ def place_limit_order(direction: str, entry: float, sl: float,
     result = mt5.order_send(order)
     if result is None:
         err = mt5.last_error()
-        log(f"Limit order send returned None. MT5 error: {err}", "ERROR")
-        log(f"Order details: price={entry}, sl={sl}, tp={tp}, type={order_type}", "ERROR")
+        _log(f"Limit order send returned None. MT5 error: {err}", "ERROR")
+        _log(f"Order details: price={entry}, sl={sl}, tp={tp}, type={order_type}", "ERROR")
         return None
     if result.retcode == mt5.TRADE_RETCODE_DONE:
-        log(f"Limit order placed (expires {expiry_dt.isoformat()}).", "TRADE")
+        _log(f"Limit order placed (expires {expiry_dt.isoformat()}).", "TRADE")
     else:
-        log(f"Limit order failed. Retcode: {result.retcode}  "
+        _log(f"Limit order failed. Retcode: {result.retcode}  "
             f"Comment: {getattr(result, 'comment', 'N/A')}", "ERROR")
     return result
 
@@ -361,10 +361,10 @@ def _modify_sl(pos, new_sl: float, label: str):
         "tp":       pos.tp,
     })
     if result and result.retcode == mt5.TRADE_RETCODE_DONE:
-        log(f"TRAIL [{label}]  Ticket={pos.ticket}  SL -> {new_sl:.5f}", "TRADE")
+        _log(f"TRAIL [{label}]  Ticket={pos.ticket}  SL -> {new_sl:.5f}", "TRADE")
         log_sl_move(pos.ticket, pos.price_open, pos.sl, new_sl, label)
     else:
-        log(f"SL modify failed. Ticket={pos.ticket}  "
+        _log(f"SL modify failed. Ticket={pos.ticket}  "
             f"Code={result.retcode if result else 'N/A'}", "ERROR")
 
 
@@ -390,7 +390,7 @@ def log_sl_move(ticket: int, entry: float, old_sl: float, new_sl: float, label: 
             s.DB.insert_sl_movement(sl_move_entry)
             return
         except Exception as e:
-            log(f"Database write error: {e}. Falling back to JSON.", "WARN")
+            _log(f"Database write error: {e}. Falling back to JSON.", "WARN")
     
     # JSON fallback (dual-write for safety during transition)
     log_file = Path(f"sl_moves_{s._instance_tag}.json")

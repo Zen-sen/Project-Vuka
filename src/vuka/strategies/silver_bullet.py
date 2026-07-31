@@ -11,7 +11,7 @@ from vuka.utils.unified_logger import get_logger
 
 _logger = get_logger("SilverBullet")
 
-def log(msg: str, level: str = "INFO"):
+def _log(msg: str, level: str = "INFO"):
     _logger.log(level=level, message=msg)
 
 def evaluate_silver_bullet(df, fvgs, sweep, sweep_level, price, atr,
@@ -27,7 +27,7 @@ def evaluate_silver_bullet(df, fvgs, sweep, sweep_level, price, atr,
 
     spread      = get_spread()
     spread_pips = spread * 10000 if spread else 0
-    log(f"Price: {price:.5f}  |  ATR: {atr:.5f}  |  "
+    _log(f"Price: {price:.5f}  |  ATR: {atr:.5f}  |  "
         f"Lot: {lot_size}  |  Spread: {spread_pips:.1f}p")
 
     # ── UNICORN PATH ─────────────────────────────────────
@@ -40,13 +40,13 @@ def evaluate_silver_bullet(df, fvgs, sweep, sweep_level, price, atr,
         for u_type, u_low, u_high, u_mid, bb_low, bb_high in unicorn_zones_sorted:
 
             if u_type == "BULLISH_UNICORN" and sweep == "SWEEP_LOW":
-                log(f"UNICORN BULLISH zone: {u_low:.5f}-{u_high:.5f}  |  "
+                _log(f"UNICORN BULLISH zone: {u_low:.5f}-{u_high:.5f}  |  "
                     f"Mid: {u_mid:.5f}  |  BB: {bb_low:.5f}-{bb_high:.5f}")
                 if price > u_high:
-                    log("Price above Unicorn zone -- waiting for retracement.", "GUARD")
+                    _log("Price above Unicorn zone -- waiting for retracement.", "GUARD")
                     continue
                 if price < u_low:
-                    log("Price below Unicorn zone -- not yet in range.", "GUARD")
+                    _log("Price below Unicorn zone -- not yet in range.", "GUARD")
                     continue
                 if check_panic_candle(df, atr):
                     continue
@@ -74,9 +74,9 @@ def evaluate_silver_bullet(df, fvgs, sweep, sweep_level, price, atr,
                 }
                 if s.KRONOS_VETO_GATE is not None:
                     allowed, reason = KRONOS_VETO_GATE.validate(ctx, df, s.SYMBOL)
-                    log(f"[KRONOS] BUY signal: {reason}", "GUARD")
+                    _log(f"[KRONOS] BUY signal: {reason}", "GUARD")
                     if not allowed:
-                        log(f"Kronos vetoed BUY. Skipping trade.", "GUARD")
+                        _log(f"Kronos vetoed BUY. Skipping trade.", "GUARD")
                         return
                 
                 entry   = round_to_tick(price, s.SYMBOL)
@@ -85,24 +85,24 @@ def evaluate_silver_bullet(df, fvgs, sweep, sweep_level, price, atr,
                 tp      = round_to_tick(entry + sl_dist * s.RISK_REWARD_RATIO, s.SYMBOL)
                 res     = place_trade("BUY", entry, sl, tp, lot_size, session=window)
                 if res and res.retcode == mt5.TRADE_RETCODE_DONE:
-                    log(f"[UNICORN] UNICORN BUY  Entry={entry}  SL={sl}  TP={tp}  "
+                    _log(f"[UNICORN] UNICORN BUY  Entry={entry}  SL={sl}  TP={tp}  "
                         f"Lot={lot_size}", "TRADE")
                     log_trade("BUY", entry, sl, tp, res, lot_size, window, context=ctx, kronos_gate=s.KRONOS_VETO_GATE)
                     sessions_traded_today.add(window)
                     save_sessions(s.sessions_traded_today)
                 else:
-                    log(f"UNICORN BUY FAILED. "
+                    _log(f"UNICORN BUY FAILED. "
                         f"Code={res.retcode if res else 'N/A'}.", "ERROR")
                 return
 
             if u_type == "BEARISH_UNICORN" and sweep == "SWEEP_HIGH":
-                log(f"UNICORN BEARISH zone: {u_low:.5f}-{u_high:.5f}  |  "
+                _log(f"UNICORN BEARISH zone: {u_low:.5f}-{u_high:.5f}  |  "
                     f"Mid: {u_mid:.5f}  |  BB: {bb_low:.5f}-{bb_high:.5f}")
                 if price < u_low:
-                    log("Price below Unicorn zone -- waiting for retracement.", "GUARD")
+                    _log("Price below Unicorn zone -- waiting for retracement.", "GUARD")
                     continue
                 if price > u_high:
-                    log("Price above Unicorn zone -- not yet in range.", "GUARD")
+                    _log("Price above Unicorn zone -- not yet in range.", "GUARD")
                     continue
                 if check_panic_candle(df, atr):
                     continue
@@ -130,9 +130,9 @@ def evaluate_silver_bullet(df, fvgs, sweep, sweep_level, price, atr,
                 }
                 if s.KRONOS_VETO_GATE is not None:
                     allowed, reason = KRONOS_VETO_GATE.validate(ctx, df, s.SYMBOL)
-                    log(f"[KRONOS] SELL signal: {reason}", "GUARD")
+                    _log(f"[KRONOS] SELL signal: {reason}", "GUARD")
                     if not allowed:
-                        log(f"Kronos vetoed SELL. Skipping trade.", "GUARD")
+                        _log(f"Kronos vetoed SELL. Skipping trade.", "GUARD")
                         return
                 
                 entry   = round_to_tick(price, s.SYMBOL)
@@ -141,17 +141,17 @@ def evaluate_silver_bullet(df, fvgs, sweep, sweep_level, price, atr,
                 tp      = round_to_tick(entry - sl_dist * s.RISK_REWARD_RATIO, s.SYMBOL)
                 res     = place_trade("SELL", entry, sl, tp, lot_size, session=window)
                 if res and res.retcode == mt5.TRADE_RETCODE_DONE:
-                    log(f"[UNICORN] UNICORN SELL  Entry={entry}  SL={sl}  TP={tp}  "
+                    _log(f"[UNICORN] UNICORN SELL  Entry={entry}  SL={sl}  TP={tp}  "
                         f"Lot={lot_size}", "TRADE")
                     log_trade("SELL", entry, sl, tp, res, lot_size, window, context=ctx, kronos_gate=s.KRONOS_VETO_GATE)
                     sessions_traded_today.add(window)
                     save_sessions(s.sessions_traded_today)
                 else:
-                    log(f"UNICORN SELL FAILED. "
+                    _log(f"UNICORN SELL FAILED. "
                         f"Code={res.retcode if res else 'N/A'}.", "ERROR")
                 return
 
-        log("Unicorn zones present but not aligned. Falling back to FVG path.")
+        _log("Unicorn zones present but not aligned. Falling back to FVG path.")
 
     # ── STANDARD SILVER BULLET PATH ──────────────────────
     for fvg_type, fvg_low, fvg_high, fvg_idx, ob, fvg_50 in fvgs:
@@ -159,12 +159,12 @@ def evaluate_silver_bullet(df, fvgs, sweep, sweep_level, price, atr,
             continue
 
         if sweep == "SWEEP_LOW" and fvg_type == "BULLISH_FVG":
-            log(f"SB Bullish FVG: {fvg_low:.5f}-{fvg_high:.5f}  |  50%: {fvg_50:.5f}")
+            _log(f"SB Bullish FVG: {fvg_low:.5f}-{fvg_high:.5f}  |  50%: {fvg_50:.5f}")
             if price > fvg_high:
-                log("Price above FVG -- waiting for retracement into gap.", "GUARD")
+                _log("Price above FVG -- waiting for retracement into gap.", "GUARD")
                 continue
             if price > fvg_50:
-                log(f"Price in FVG but above 50% ({fvg_50:.5f}) -- waiting deeper.",
+                _log(f"Price in FVG but above 50% ({fvg_50:.5f}) -- waiting deeper.",
                     "GUARD")
                 continue
             if not check_pre_trade_spread(atr):
@@ -196,9 +196,9 @@ def evaluate_silver_bullet(df, fvgs, sweep, sweep_level, price, atr,
             }
             if s.KRONOS_VETO_GATE is not None:
                 allowed, reason = KRONOS_VETO_GATE.validate(ctx, df, s.SYMBOL)
-                log(f"[KRONOS] BUY signal: {reason}", "GUARD")
+                _log(f"[KRONOS] BUY signal: {reason}", "GUARD")
                 if not allowed:
-                    log(f"Kronos vetoed BUY. Skipping trade.", "GUARD")
+                    _log(f"Kronos vetoed BUY. Skipping trade.", "GUARD")
                     return
 
             entry   = round_to_tick(price, s.SYMBOL)
@@ -212,21 +212,21 @@ def evaluate_silver_bullet(df, fvgs, sweep, sweep_level, price, atr,
             tp      = round_to_tick(entry + sl_dist * s.RISK_REWARD_RATIO, s.SYMBOL)
             res     = place_trade("BUY", entry, sl, tp, lot_size, session=window)
             if res and res.retcode == mt5.TRADE_RETCODE_DONE:
-                log(f"SB BUY  Entry={entry}  SL={sl}  TP={tp}  Lot={lot_size}", "TRADE")
+                _log(f"SB BUY  Entry={entry}  SL={sl}  TP={tp}  Lot={lot_size}", "TRADE")
                 log_trade("BUY", entry, sl, tp, res, lot_size, window, context=ctx, kronos_gate=s.KRONOS_VETO_GATE)
                 sessions_traded_today.add(window)
                 save_sessions(s.sessions_traded_today)
             else:
-                log(f"SB BUY FAILED. Code={res.retcode if res else 'N/A'}.", "ERROR")
+                _log(f"SB BUY FAILED. Code={res.retcode if res else 'N/A'}.", "ERROR")
             return
 
         if sweep == "SWEEP_HIGH" and fvg_type == "BEARISH_FVG":
-            log(f"SB Bearish FVG: {fvg_low:.5f}-{fvg_high:.5f}  |  50%: {fvg_50:.5f}")
+            _log(f"SB Bearish FVG: {fvg_low:.5f}-{fvg_high:.5f}  |  50%: {fvg_50:.5f}")
             if price < fvg_low:
-                log("Price below FVG -- waiting for retracement into gap.", "GUARD")
+                _log("Price below FVG -- waiting for retracement into gap.", "GUARD")
                 continue
             if price < fvg_50:
-                log(f"Price in FVG but below 50% ({fvg_50:.5f}) -- waiting deeper.",
+                _log(f"Price in FVG but below 50% ({fvg_50:.5f}) -- waiting deeper.",
                     "GUARD")
                 continue
             if not check_pre_trade_spread(atr):
@@ -258,9 +258,9 @@ def evaluate_silver_bullet(df, fvgs, sweep, sweep_level, price, atr,
             }
             if s.KRONOS_VETO_GATE is not None:
                 allowed, reason = KRONOS_VETO_GATE.validate(ctx, df, s.SYMBOL)
-                log(f"[KRONOS] SELL signal: {reason}", "GUARD")
+                _log(f"[KRONOS] SELL signal: {reason}", "GUARD")
                 if not allowed:
-                    log(f"Kronos vetoed SELL. Skipping trade.", "GUARD")
+                    _log(f"Kronos vetoed SELL. Skipping trade.", "GUARD")
                     return
 
             entry   = round_to_tick(price, s.SYMBOL)
@@ -274,12 +274,12 @@ def evaluate_silver_bullet(df, fvgs, sweep, sweep_level, price, atr,
             tp      = round_to_tick(entry - sl_dist * s.RISK_REWARD_RATIO, s.SYMBOL)
             res     = place_trade("SELL", entry, sl, tp, lot_size, session=window)
             if res and res.retcode == mt5.TRADE_RETCODE_DONE:
-                log(f"SB SELL  Entry={entry}  SL={sl}  TP={tp}  Lot={lot_size}", "TRADE")
+                _log(f"SB SELL  Entry={entry}  SL={sl}  TP={tp}  Lot={lot_size}", "TRADE")
                 log_trade("SELL", entry, sl, tp, res, lot_size, window, context=ctx, kronos_gate=s.KRONOS_VETO_GATE)
                 sessions_traded_today.add(window)
                 save_sessions(s.sessions_traded_today)
             else:
-                log(f"SB SELL FAILED. Code={res.retcode if res else 'N/A'}.", "ERROR")
+                _log(f"SB SELL FAILED. Code={res.retcode if res else 'N/A'}.", "ERROR")
             return
 
-    log("SB: No valid FVG retracement. Ingwe waits...")
+    _log("SB: No valid FVG retracement. Ingwe waits...")
