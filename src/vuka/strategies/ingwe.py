@@ -13,7 +13,9 @@ from vuka.risk.filters import get_current_session, check_premium_discount_zone, 
 from vuka.utils.unified_logger import get_logger
 
 _logger = get_logger("Ingwe")
-log = _logger.log
+
+def log(msg: str, level: str = "INFO"):
+    _logger.log(level=level, message=msg)
 
 def evaluate_ingwe(df, fvgs, sweep, sweep_level, price, atr, lot_size, session,
                     market_phase="UNKNOWN", phase_adj=None):

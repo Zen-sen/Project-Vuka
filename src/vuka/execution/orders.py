@@ -14,7 +14,9 @@ from vuka.utils.unified_logger import get_logger
 from skills.concept_tracker import record_concept_trade
 
 _logger = get_logger("Orders")
-log = _logger.log
+
+def log(msg: str, level: str = "INFO"):
+    _logger.log(level=level, message=msg)
 
 def log_trade(direction, entry, sl, tp, result, lot_size, session, context=None, kronos_gate=None):
     """
