@@ -149,7 +149,7 @@ def evaluate_ingwe(df, fvgs, sweep, sweep_level, price, atr, lot_size, session,
         # ── PATH A: BUY REVERSAL ─────────────────────────
         if sweep == "SWEEP_LOW" and fvg_type == "BULLISH_FVG" and trend == "BULLISH":
             # P0-B: Direction filter gate (data-driven)
-            dir_allowed, dir_reason = TRADING_GOVERNOR.check_direction(
+            dir_allowed, dir_reason = s.TRADING_GOVERNOR.check_direction(
                 "BUY", htf_bias, s._instance_tag,
                 symbol=s.SYMBOL, session=session, setup_type="REVERSAL"
             )
@@ -377,7 +377,7 @@ def evaluate_ingwe(df, fvgs, sweep, sweep_level, price, atr, lot_size, session,
         # ── PATH D: BUY CONTINUATION (v3.9.1) ───────────
         if sweep == "SWEEP_HIGH" and fvg_type == "BULLISH_FVG" and trend == "BULLISH":
             # P0-B: Direction filter gate (data-driven)
-            dir_allowed, dir_reason = TRADING_GOVERNOR.check_direction(
+            dir_allowed, dir_reason = s.TRADING_GOVERNOR.check_direction(
                 "BUY", htf_bias, s._instance_tag,
                 symbol=s.SYMBOL, session=session, setup_type="CONTINUATION"
             )

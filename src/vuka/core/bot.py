@@ -125,6 +125,7 @@ BUY_THRESHOLD = _veto_cfg.get("buy_threshold", 0.35)
 
 # Initialize Trading Governor (P0-FULL filter system)
 TRADING_GOVERNOR = TradingGovernor(CONFIG)
+s.TRADING_GOVERNOR = TRADING_GOVERNOR
 
 # Database manager for SQLite consolidation
 try:

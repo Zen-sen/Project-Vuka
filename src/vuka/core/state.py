@@ -59,6 +59,9 @@ class State:
         self.KRONOS_VETO_GATE: Any = None
         self.BUY_THRESHOLD: float = 0.35
 
+        # Trading governor (P0-FULL filter system)
+        self.TRADING_GOVERNOR: Any = None
+
         # Market circuit
         self.MARKET_CIRCUIT: Any = None
 

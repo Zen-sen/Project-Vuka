@@ -261,6 +261,7 @@ class LondonOpenBacktester:
                         outcome="WIN", pnl=pnl, session=pos["session"],
                         fvg_type=pos["fvg_type"], sweep_type=pos["sweep_type"],
                         confluence_score=pos["score"],
+                        adx_at_entry=pos.get("adx_at_entry", 25.0),
                         exit_time=str(self.df.iloc[exit_idx]["time"]),
                         bars_held=exit_idx - pos["entry_idx"]))
                     self.state.balance += pnl
@@ -270,17 +271,19 @@ class LondonOpenBacktester:
                 elif current_price <= pos["sl"]:
                     pnl = (pos["sl"] - entry) * lot * 100000
                     exit_idx = self.current_idx
+                    outcome = "WIN" if pnl > 0 else ("BE" if pnl == 0 else "LOSS")
                     self.state.trades.append(Trade(
                         entry_time=pos["entry_time"], direction="BUY",
                         entry=entry, sl=pos["sl"], tp=tp, lot=lot,
-                        outcome="LOSS", pnl=pnl, session=pos["session"],
+                        outcome=outcome, pnl=pnl, session=pos["session"],
                         fvg_type=pos["fvg_type"], sweep_type=pos["sweep_type"],
                         confluence_score=pos["score"],
+                        adx_at_entry=pos.get("adx_at_entry", 25.0),
                         exit_time=str(self.df.iloc[exit_idx]["time"]),
                         bars_held=exit_idx - pos["entry_idx"]))
                     self.state.balance += pnl
                     ts = self.df.iloc[exit_idx]["time"]
-                    print(f"  [{ts}] LOSS {direction} {pnl:.2f} ({pos['fvg_type']} {pos['sweep_type']})")
+                    print(f"  [{ts}] {outcome} {direction} {pnl:+.2f} ({pos['fvg_type']} {pos['sweep_type']})")
                     continue
             else:
                 if profit_r >= 2 and current_sl > entry - sl_dist and not pos["sl_moved_to_1r"]:
@@ -301,6 +304,7 @@ class LondonOpenBacktester:
                         outcome="WIN", pnl=pnl, session=pos["session"],
                         fvg_type=pos["fvg_type"], sweep_type=pos["sweep_type"],
                         confluence_score=pos["score"],
+                        adx_at_entry=pos.get("adx_at_entry", 25.0),
                         exit_time=str(self.df.iloc[exit_idx]["time"]),
                         bars_held=exit_idx - pos["entry_idx"]))
                     self.state.balance += pnl
@@ -310,17 +314,19 @@ class LondonOpenBacktester:
                 elif current_price >= pos["sl"]:
                     pnl = (entry - pos["sl"]) * lot * 100000
                     exit_idx = self.current_idx
+                    outcome = "WIN" if pnl > 0 else ("BE" if pnl == 0 else "LOSS")
                     self.state.trades.append(Trade(
                         entry_time=pos["entry_time"], direction="SELL",
                         entry=entry, sl=pos["sl"], tp=tp, lot=lot,
-                        outcome="LOSS", pnl=pnl, session=pos["session"],
+                        outcome=outcome, pnl=pnl, session=pos["session"],
                         fvg_type=pos["fvg_type"], sweep_type=pos["sweep_type"],
                         confluence_score=pos["score"],
+                        adx_at_entry=pos.get("adx_at_entry", 25.0),
                         exit_time=str(self.df.iloc[exit_idx]["time"]),
                         bars_held=exit_idx - pos["entry_idx"]))
                     self.state.balance += pnl
                     ts = self.df.iloc[exit_idx]["time"]
-                    print(f"  [{ts}] LOSS {direction} {pnl:.2f} ({pos['fvg_type']} {pos['sweep_type']})")
+                    print(f"  [{ts}] {outcome} {direction} {pnl:+.2f} ({pos['fvg_type']} {pos['sweep_type']})")
                     continue
 
             still_open.append(pos)
@@ -420,8 +426,10 @@ class LondonOpenBacktester:
     def compute_metrics(self):
         wins = [t for t in self.state.trades if t.outcome == "WIN"]
         losses = [t for t in self.state.trades if t.outcome == "LOSS"]
+        be = [t for t in self.state.trades if t.outcome == "BE"]
         total = len(self.state.trades)
-        win_rate = (len(wins) / total * 100) if total > 0 else 0
+        decided = len(wins) + len(losses)
+        win_rate = (len(wins) / decided * 100) if decided > 0 else 0
         net_pnl = sum(t.pnl for t in self.state.trades)
 
         gross_profit = sum(t.pnl for t in wins)
@@ -454,6 +462,7 @@ class LondonOpenBacktester:
 
         return {
             "total": total, "wins": len(wins), "losses": len(losses),
+            "be": len(be),
             "win_rate": round(win_rate, 1),
             "net_pnl": round(net_pnl, 2),
             "final_balance": round(self.state.balance, 2),
@@ -480,6 +489,7 @@ class LondonOpenBacktester:
         print(f"  TRADES")
         print(f"  Total Trades    : {m['total']}")
         print(f"  Wins / Losses   : {m['wins']} / {m['losses']}")
+        print(f"  Breakeven       : {m['be']}")
         print(f"  Win Rate        : {m['win_rate']}%")
         print(f"  Avg RR          : {m['avg_rr']}:1")
         print(f"  ")
@@ -514,6 +524,7 @@ class LondonOpenBacktester:
                 "direction": t.direction, "entry": t.entry, "sl": t.sl, "tp": t.tp,
                 "lot": t.lot, "outcome": t.outcome, "pnl": round(t.pnl, 2),
                 "session": t.session, "fvg_type": t.fvg_type, "sweep_type": t.sweep_type,
+                "adx_at_entry": round(t.adx_at_entry, 2) if t.adx_at_entry is not None else None,
                 "confluence_score": t.confluence_score, "bars_held": t.bars_held
             })
 
