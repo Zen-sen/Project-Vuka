@@ -1,12 +1,10 @@
+
 import MetaTrader5 as mt5
-import pandas as pd
-import numpy as np
-import json
-import os
-import time
-from datetime import datetime, timezone, timedelta
-from typing import Optional, Tuple, Any
+
 from vuka.core.state import s
+from vuka.execution.orders import log_trade, place_trade, round_to_tick
+from vuka.risk.filters import check_panic_candle, check_pre_trade_spread
+from vuka.risk.portfolio import get_spread
 from vuka.utils.unified_logger import get_logger
 
 _logger = get_logger("SilverBullet")
@@ -14,8 +12,18 @@ _logger = get_logger("SilverBullet")
 def _log(msg: str, level: str = "INFO"):
     _logger.log(level=level, message=msg)
 
+
+def _mark_session_traded(window: str):
+    """Record a traded session against the shared singleton, then persist it.
+    bot.py is imported lazily to avoid a circular import at module load."""
+    from vuka.core.bot import save_sessions
+    s.sessions_traded_today.add(window)
+    save_sessions(s.sessions_traded_today)
+
+
 def evaluate_silver_bullet(df, fvgs, sweep, sweep_level, price, atr,
-                           lot_size, window, unicorn_zones=None):
+                           lot_size, window, unicorn_zones=None,
+                           market_phase="UNKNOWN", phase_adj=None):
     """
     ICT Silver Bullet -- time-precision model.
     No trend filter. No ADX. No zone filter.
@@ -28,7 +36,7 @@ def evaluate_silver_bullet(df, fvgs, sweep, sweep_level, price, atr,
     spread      = get_spread()
     spread_pips = spread * 10000 if spread else 0
     _log(f"Price: {price:.5f}  |  ATR: {atr:.5f}  |  "
-        f"Lot: {lot_size}  |  Spread: {spread_pips:.1f}p")
+        f"Lot: {lot_size}  |  Spread: {spread_pips:.1f}p  |  Phase: {market_phase}")
 
     # ── UNICORN PATH ─────────────────────────────────────
     if unicorn_zones:
@@ -50,9 +58,10 @@ def evaluate_silver_bullet(df, fvgs, sweep, sweep_level, price, atr,
                     continue
                 if check_panic_candle(df, atr):
                     continue
-                if not check_pre_trade_spread(atr):
+                spread_ok = check_pre_trade_spread(atr)
+                if not spread_ok:
                     continue
-                
+
                 ctx = {
                     "direction": "BUY",
                     "setup_type": "UNICORN",
@@ -64,21 +73,22 @@ def evaluate_silver_bullet(df, fvgs, sweep, sweep_level, price, atr,
                     "confluence_score": 80,
                     "session": window,
                     "atr": atr,
-                    "spread_ok": check_pre_trade_spread(atr),
+                    "spread_ok": spread_ok,
                     "trend": "BULLISH",
                     "level_sweep": True,
                     "ob_present": False,
+                    "market_phase": market_phase,
                     "fvg_low": 0,
                     "fvg_high": 0,
                     "fvg_50": 0
                 }
                 if s.KRONOS_VETO_GATE is not None:
-                    allowed, reason = KRONOS_VETO_GATE.validate(ctx, df, s.SYMBOL)
+                    allowed, reason = s.KRONOS_VETO_GATE.validate(ctx, df, s.SYMBOL)
                     _log(f"[KRONOS] BUY signal: {reason}", "GUARD")
                     if not allowed:
-                        _log(f"Kronos vetoed BUY. Skipping trade.", "GUARD")
+                        _log("Kronos vetoed BUY. Skipping trade.", "GUARD")
                         return
-                
+
                 entry   = round_to_tick(price, s.SYMBOL)
                 sl      = round_to_tick(bb_low - atr * s.ATR_MULTIPLIER, s.SYMBOL)
                 sl_dist = abs(entry - sl)
@@ -88,12 +98,11 @@ def evaluate_silver_bullet(df, fvgs, sweep, sweep_level, price, atr,
                     _log(f"[UNICORN] UNICORN BUY  Entry={entry}  SL={sl}  TP={tp}  "
                         f"Lot={lot_size}", "TRADE")
                     log_trade("BUY", entry, sl, tp, res, lot_size, window, context=ctx, kronos_gate=s.KRONOS_VETO_GATE)
-                    sessions_traded_today.add(window)
-                    save_sessions(s.sessions_traded_today)
-                else:
-                    _log(f"UNICORN BUY FAILED. "
-                        f"Code={res.retcode if res else 'N/A'}.", "ERROR")
-                return
+                    _mark_session_traded(window)
+                    return
+                _log(f"UNICORN BUY FAILED. Code={res.retcode if res else 'N/A'}, "
+                    f"falling back to FVG path.", "WARN")
+                continue
 
             if u_type == "BEARISH_UNICORN" and sweep == "SWEEP_HIGH":
                 _log(f"UNICORN BEARISH zone: {u_low:.5f}-{u_high:.5f}  |  "
@@ -106,9 +115,10 @@ def evaluate_silver_bullet(df, fvgs, sweep, sweep_level, price, atr,
                     continue
                 if check_panic_candle(df, atr):
                     continue
-                if not check_pre_trade_spread(atr):
+                spread_ok = check_pre_trade_spread(atr)
+                if not spread_ok:
                     continue
-                
+
                 ctx = {
                     "direction": "SELL",
                     "setup_type": "UNICORN",
@@ -120,21 +130,22 @@ def evaluate_silver_bullet(df, fvgs, sweep, sweep_level, price, atr,
                     "confluence_score": 80,
                     "session": window,
                     "atr": atr,
-                    "spread_ok": check_pre_trade_spread(atr),
+                    "spread_ok": spread_ok,
                     "trend": "BEARISH",
                     "level_sweep": True,
                     "ob_present": False,
+                    "market_phase": market_phase,
                     "fvg_low": 0,
                     "fvg_high": 0,
                     "fvg_50": 0
                 }
                 if s.KRONOS_VETO_GATE is not None:
-                    allowed, reason = KRONOS_VETO_GATE.validate(ctx, df, s.SYMBOL)
+                    allowed, reason = s.KRONOS_VETO_GATE.validate(ctx, df, s.SYMBOL)
                     _log(f"[KRONOS] SELL signal: {reason}", "GUARD")
                     if not allowed:
-                        _log(f"Kronos vetoed SELL. Skipping trade.", "GUARD")
+                        _log("Kronos vetoed SELL. Skipping trade.", "GUARD")
                         return
-                
+
                 entry   = round_to_tick(price, s.SYMBOL)
                 sl      = round_to_tick(bb_high + atr * s.ATR_MULTIPLIER, s.SYMBOL)
                 sl_dist = abs(sl - entry)
@@ -144,12 +155,11 @@ def evaluate_silver_bullet(df, fvgs, sweep, sweep_level, price, atr,
                     _log(f"[UNICORN] UNICORN SELL  Entry={entry}  SL={sl}  TP={tp}  "
                         f"Lot={lot_size}", "TRADE")
                     log_trade("SELL", entry, sl, tp, res, lot_size, window, context=ctx, kronos_gate=s.KRONOS_VETO_GATE)
-                    sessions_traded_today.add(window)
-                    save_sessions(s.sessions_traded_today)
-                else:
-                    _log(f"UNICORN SELL FAILED. "
-                        f"Code={res.retcode if res else 'N/A'}.", "ERROR")
-                return
+                    _mark_session_traded(window)
+                    return
+                _log(f"UNICORN SELL FAILED. Code={res.retcode if res else 'N/A'}, "
+                    f"falling back to FVG path.", "WARN")
+                continue
 
         _log("Unicorn zones present but not aligned. Falling back to FVG path.")
 
@@ -167,9 +177,11 @@ def evaluate_silver_bullet(df, fvgs, sweep, sweep_level, price, atr,
                 _log(f"Price in FVG but above 50% ({fvg_50:.5f}) -- waiting deeper.",
                     "GUARD")
                 continue
-            if not check_pre_trade_spread(atr):
+            spread_ok = check_pre_trade_spread(atr)
+            if not spread_ok:
                 continue
 
+            from vuka.core.bot import get_draw_on_liquidity
             dol_name, dol_price = get_draw_on_liquidity("BUY")
             ctx = {
                 "direction": "BUY",
@@ -182,7 +194,7 @@ def evaluate_silver_bullet(df, fvgs, sweep, sweep_level, price, atr,
                 "confluence_score": 70,
                 "session": window,
                 "atr": atr,
-                "spread_ok": check_pre_trade_spread(atr),
+                "spread_ok": spread_ok,
                 "trend": "BULLISH",
                 "level_sweep": True,
                 "draw_on_liquidity": dol_name,
@@ -190,15 +202,16 @@ def evaluate_silver_bullet(df, fvgs, sweep, sweep_level, price, atr,
                 "distance_to_dol": abs(dol_price - price) if dol_price else None,
                 "sb_window": window,
                 "ob_present": ob is not None,
+                "market_phase": market_phase,
                 "fvg_low": fvg_low,
                 "fvg_high": fvg_high,
                 "fvg_50": fvg_50
             }
             if s.KRONOS_VETO_GATE is not None:
-                allowed, reason = KRONOS_VETO_GATE.validate(ctx, df, s.SYMBOL)
+                allowed, reason = s.KRONOS_VETO_GATE.validate(ctx, df, s.SYMBOL)
                 _log(f"[KRONOS] BUY signal: {reason}", "GUARD")
                 if not allowed:
-                    _log(f"Kronos vetoed BUY. Skipping trade.", "GUARD")
+                    _log("Kronos vetoed BUY. Skipping trade.", "GUARD")
                     return
 
             entry   = round_to_tick(price, s.SYMBOL)
@@ -214,8 +227,7 @@ def evaluate_silver_bullet(df, fvgs, sweep, sweep_level, price, atr,
             if res and res.retcode == mt5.TRADE_RETCODE_DONE:
                 _log(f"SB BUY  Entry={entry}  SL={sl}  TP={tp}  Lot={lot_size}", "TRADE")
                 log_trade("BUY", entry, sl, tp, res, lot_size, window, context=ctx, kronos_gate=s.KRONOS_VETO_GATE)
-                sessions_traded_today.add(window)
-                save_sessions(s.sessions_traded_today)
+                _mark_session_traded(window)
             else:
                 _log(f"SB BUY FAILED. Code={res.retcode if res else 'N/A'}.", "ERROR")
             return
@@ -229,9 +241,11 @@ def evaluate_silver_bullet(df, fvgs, sweep, sweep_level, price, atr,
                 _log(f"Price in FVG but below 50% ({fvg_50:.5f}) -- waiting deeper.",
                     "GUARD")
                 continue
-            if not check_pre_trade_spread(atr):
+            spread_ok = check_pre_trade_spread(atr)
+            if not spread_ok:
                 continue
 
+            from vuka.core.bot import get_draw_on_liquidity
             dol_name, dol_price = get_draw_on_liquidity("SELL")
             ctx = {
                 "direction": "SELL",
@@ -244,7 +258,7 @@ def evaluate_silver_bullet(df, fvgs, sweep, sweep_level, price, atr,
                 "confluence_score": 70,
                 "session": window,
                 "atr": atr,
-                "spread_ok": check_pre_trade_spread(atr),
+                "spread_ok": spread_ok,
                 "trend": "BEARISH",
                 "level_sweep": True,
                 "draw_on_liquidity": dol_name,
@@ -252,15 +266,16 @@ def evaluate_silver_bullet(df, fvgs, sweep, sweep_level, price, atr,
                 "distance_to_dol": abs(dol_price - price) if dol_price else None,
                 "sb_window": window,
                 "ob_present": ob is not None,
+                "market_phase": market_phase,
                 "fvg_low": fvg_low,
                 "fvg_high": fvg_high,
                 "fvg_50": fvg_50
             }
             if s.KRONOS_VETO_GATE is not None:
-                allowed, reason = KRONOS_VETO_GATE.validate(ctx, df, s.SYMBOL)
+                allowed, reason = s.KRONOS_VETO_GATE.validate(ctx, df, s.SYMBOL)
                 _log(f"[KRONOS] SELL signal: {reason}", "GUARD")
                 if not allowed:
-                    _log(f"Kronos vetoed SELL. Skipping trade.", "GUARD")
+                    _log("Kronos vetoed SELL. Skipping trade.", "GUARD")
                     return
 
             entry   = round_to_tick(price, s.SYMBOL)
@@ -276,8 +291,7 @@ def evaluate_silver_bullet(df, fvgs, sweep, sweep_level, price, atr,
             if res and res.retcode == mt5.TRADE_RETCODE_DONE:
                 _log(f"SB SELL  Entry={entry}  SL={sl}  TP={tp}  Lot={lot_size}", "TRADE")
                 log_trade("SELL", entry, sl, tp, res, lot_size, window, context=ctx, kronos_gate=s.KRONOS_VETO_GATE)
-                sessions_traded_today.add(window)
-                save_sessions(s.sessions_traded_today)
+                _mark_session_traded(window)
             else:
                 _log(f"SB SELL FAILED. Code={res.retcode if res else 'N/A'}.", "ERROR")
             return

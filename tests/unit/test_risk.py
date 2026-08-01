@@ -1,5 +1,9 @@
+import json
+from datetime import datetime
+from unittest.mock import ANY, MagicMock, patch
+
 import pytest
-from unittest.mock import patch, MagicMock, ANY
+
 from vuka.core.state import s
 
 
@@ -192,3 +196,39 @@ class TestConsecutiveLosses:
              patch.object(mod, "log"):
             mod.update_consecutive_losses()
             mock_save.assert_called_with(2, 999)
+
+
+class TestConsecutiveLossesRAM:
+    """v6.2: loss counter is cached in RAM -- the scan loop never re-reads disk."""
+
+    def test_load_caches_once_then_serves_from_ram(self, tmp_path):
+        import vuka.risk.portfolio as mod
+        s.DB_AVAILABLE = False
+        s.consecutive_losses = None
+        today = datetime.now().strftime("%Y-%m-%d")
+        f = tmp_path / "sessions.json"
+        f.write_text(json.dumps({
+            "date": today, "consecutive_losses": 2, "last_counted_ticket": 99
+        }))
+        s.SESSIONS_FILE = str(f)
+
+        count, ticket = mod.load_consecutive_losses()
+        assert (count, ticket) == (2, 99)
+        assert s.consecutive_losses == 2
+        assert s.last_counted_ticket == 99
+
+        # Source removed -- a cache hit must not touch disk.
+        f.unlink()
+        count2, ticket2 = mod.load_consecutive_losses()
+        assert (count2, ticket2) == (2, 99)
+
+    def test_save_updates_ram_and_submits_to_telemetry(self):
+        import vuka.risk.portfolio as mod
+        tele = MagicMock()
+        with patch("vuka.utils.telemetry_queue.get_telemetry", return_value=tele):
+            mod.save_consecutive_losses(3, 555)
+        assert s.consecutive_losses == 3
+        assert s.last_counted_ticket == 555
+        tele.submit.assert_called_once_with("loss_tracking", {
+            "count": 3, "last_ticket": 555, "date": ANY,
+        })

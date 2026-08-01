@@ -71,6 +71,8 @@ class TelemetryQueue:
             self._handle_sl_move(payload)
         elif kind == "sessions":
             self._handle_sessions(payload)
+        elif kind == "loss_tracking":
+            self._handle_loss_tracking(payload)
         elif kind == "pnl_backfill":
             self._handle_pnl_backfill(payload)
         elif kind == "memory_state":
@@ -111,16 +113,7 @@ class TelemetryQueue:
                 return
             except Exception as e:
                 self._warn(f"Database write error: {e}. Falling back to JSON.")
-        path = payload.get("log_file")
-        moves = []
-        if path and os.path.exists(path):
-            try:
-                with open(path) as f:
-                    moves = json.load(f)
-            except Exception:
-                moves = []
-        moves.append(entry)
-        self._write_json(path, moves)
+        self._append_json(payload.get("log_file"), entry)
 
     def _handle_sessions(self, payload: dict) -> None:
         """Persist traded sessions: DB primary, JSON fallback."""
@@ -137,8 +130,40 @@ class TelemetryQueue:
                 self._warn(f"Database write error: {e}. Falling back to JSON.")
         self._write_json(
             payload.get("sessions_file"),
-            {"date": today, "sessions": list(sessions)},
+            {
+                "date": today,
+                "sessions": list(sessions),
+                "consecutive_losses": s.consecutive_losses if s.consecutive_losses is not None else 0,
+                "last_counted_ticket": s.last_counted_ticket,
+            },
         )
+
+    def _handle_loss_tracking(self, payload: dict) -> None:
+        """Persist the consecutive-loss counter: DB primary, JSON fallback."""
+        today = payload.get("date", "")
+        if s.DB_AVAILABLE:
+            try:
+                s.DB.update_loss_tracking(
+                    today, s._arg_symbol, s.STRATEGY,
+                    payload.get("count", 0), payload.get("last_ticket", 0)
+                )
+                return
+            except Exception as e:
+                self._warn(f"Database write error: {e}. Falling back to JSON.")
+        # JSON fallback -- merge into the sessions file that also holds loss state
+        path = s.SESSIONS_FILE
+        data: dict = {"date": today, "sessions": list(s.sessions_traded_today)}
+        if path and os.path.exists(path):
+            try:
+                with open(path) as f:
+                    existing = json.load(f)
+                if isinstance(existing, dict):
+                    data.update(existing)
+            except Exception:
+                pass
+        data["consecutive_losses"] = payload.get("count", 0)
+        data["last_counted_ticket"] = payload.get("last_ticket", 0)
+        self._write_json(path, data)
 
     def _handle_pnl_backfill(self, payload: dict) -> None:
         """Backfill PnL/exit info into the JSON trade log, then update the
@@ -146,11 +171,7 @@ class TelemetryQueue:
         log_file = payload.get("log_file")
         if not log_file or not os.path.exists(log_file):
             return
-        try:
-            with open(log_file) as f:
-                trade_log_data = json.load(f)
-        except (OSError, json.JSONDecodeError):
-            return
+        trade_log_data = self._read_log_entries(log_file)
 
         pnl_by_pos = payload.get("pnl_by_pos", {})
         exit_price_by_pos = payload.get("exit_price_by_pos", {})
@@ -190,7 +211,7 @@ class TelemetryQueue:
         if not updated:
             return
 
-        self._write_json(log_file, trade_log_data)
+        self._write_jsonl(log_file, trade_log_data)
         for t in updated:
             self._record_outcome_and_update_db(t)
 
@@ -281,18 +302,81 @@ class TelemetryQueue:
                 self._warn(f"s.DB PnL update error for trade: {e}")
 
     def _append_json(self, path, entry: dict) -> None:
-        """Atomically append one entry to a JSON list file."""
+        """Append one entry as a JSONL line (no read-before-write).
+
+        A legacy JSON-array file is migrated to JSONL once, on first append,
+        so the 55 pre-migration trades survive the format change."""
         if not path:
             return
-        log_list: list = []
-        if os.path.exists(path):
+        self._migrate_jsonl(path)
+        try:
+            with open(path, "a", encoding="utf-8") as f:
+                f.write(json.dumps(entry) + "\n")
+        except OSError as e:
+            self._warn(f"JSONL append failed for {path}: {e}")
+
+    @staticmethod
+    def _migrate_jsonl(path: str) -> None:
+        """Rewrite a legacy JSON-array file as JSONL, once."""
+        try:
+            with open(path) as f:
+                raw = f.read()
+        except OSError:
+            return
+        if not raw.strip():
+            return
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError:
+            return
+        if not isinstance(data, list):
+            return
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            for e in data:
+                f.write(json.dumps(e) + "\n")
+        os.replace(tmp, path)
+
+    @staticmethod
+    def _read_log_entries(path: str) -> list:
+        """Read a JSON trade log as a list of dicts, tolerating both legacy
+        JSON-array files and newline-delimited JSON (JSONL)."""
+        if not path or not os.path.exists(path):
+            return []
+        try:
+            with open(path) as f:
+                raw = f.read()
+        except OSError:
+            return []
+        if not raw.strip():
+            return []
+        try:
+            data = json.loads(raw)
+            if isinstance(data, list):
+                return data
+        except json.JSONDecodeError:
+            pass
+        entries = []
+        for line in raw.splitlines():
+            line = line.strip()
+            if not line:
+                continue
             try:
-                with open(path) as f:
-                    log_list = json.load(f)
-            except (OSError, json.JSONDecodeError):
-                log_list = []
-        log_list.append(entry)
-        self._write_json(path, log_list)
+                entries.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+        return entries
+
+    @staticmethod
+    def _write_jsonl(path: str, entries: list) -> None:
+        """Rewrite a list of entries as JSONL, atomically."""
+        if not path:
+            return
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            for e in entries:
+                f.write(json.dumps(e) + "\n")
+        os.replace(tmp, path)
 
     def _write_json(self, path, data: Any) -> None:
         if not path:

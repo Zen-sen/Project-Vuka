@@ -59,10 +59,9 @@ class TestSlMoveHandler:
     def test_json_fallback(self):
         s.DB_AVAILABLE = False
         q = TelemetryQueue()
-        with patch.object(q, "_write_json") as wj:
+        with patch.object(q, "_append_json") as aj:
             q._handle_sl_move({"entry": {"ticket": 1, "label": "BE"}, "log_file": None})
-        path, moves = wj.call_args[0]
-        assert moves == [{"ticket": 1, "label": "BE"}]
+        aj.assert_called_once_with(None, {"ticket": 1, "label": "BE"})
 
     def test_db_insert_when_available(self):
         s.DB_AVAILABLE = True
@@ -84,7 +83,12 @@ class TestSessionsHandler:
                 "sessions_file": None,
             })
         path, data = wj.call_args[0]
-        assert data == {"date": "2026-01-01", "sessions": ["London Open", "NY"]}
+        assert data == {
+            "date": "2026-01-01",
+            "sessions": ["London Open", "NY"],
+            "consecutive_losses": 0,
+            "last_counted_ticket": 0,
+        }
 
     def test_db_mark_when_available(self):
         s.DB_AVAILABLE = True
@@ -141,7 +145,7 @@ class TestPnlBackfillHandler:
                      "volume": 0.20, "type": 1},
                 ],
             })
-        data = json.loads(log.read_text())
+        data = [json.loads(line) for line in log.read_text().splitlines()]
         t1 = next(t for t in data if t["position_id"] == 10)
         assert t1["pnl_usd"] == 25.0 and t1["exit_reason"] == "TP_HIT"
         assert t1["exit_price"] == 1.1040
@@ -189,7 +193,18 @@ class TestAsyncPath:
                 "setup_type": "LONDON_OPEN",
             })
             q.flush()
-        assert json.loads(log.read_text()) == [entry]
+        assert [json.loads(line) for line in log.read_text().splitlines()] == [entry]
+
+    def test_append_migrates_legacy_json_array_to_jsonl(self, tmp_path):
+        """A pre-migration JSON-array trade log is converted on first append."""
+        log = tmp_path / "trades.json"
+        legacy = [{"position_id": 1, "pnl_usd": None}]
+        log.write_text(json.dumps(legacy))
+        q = TelemetryQueue()
+        q._append_json(str(log), {"position_id": 2, "pnl_usd": None})
+        entries = [json.loads(line) for line in log.read_text().splitlines()]
+        assert entries == [{"position_id": 1, "pnl_usd": None},
+                           {"position_id": 2, "pnl_usd": None}]
 
     def test_flush_waits_for_worker(self, tmp_path):
         log = tmp_path / "sessions.json"
@@ -202,5 +217,8 @@ class TestAsyncPath:
         })
         q.flush()
         assert json.loads(log.read_text()) == {
-            "date": "2026-01-01", "sessions": ["London Open"]
+            "date": "2026-01-01",
+            "sessions": ["London Open"],
+            "consecutive_losses": 0,
+            "last_counted_ticket": 0,
         }

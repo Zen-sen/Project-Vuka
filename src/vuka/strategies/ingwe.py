@@ -1,21 +1,35 @@
+
 import MetaTrader5 as mt5
 import pandas as pd
-import numpy as np
-import json
-import os
-import time
-from datetime import datetime, timezone, timedelta
-from typing import Optional, Tuple, Any
+
+from vuka.core.config import (
+    calculate_confluence_score,
+    get_confluence_threshold,
+    get_session_multiplier,
+)
 from vuka.core.state import s
-from vuka.market_structure.ict import calculate_adx_wilder, calculate_atr
-from vuka.risk.portfolio import get_spread, get_overlap_multiplier
-from vuka.risk.filters import get_current_session, check_premium_discount_zone, check_panic_candle, check_pre_trade_spread
+from vuka.execution.orders import log_trade, place_trade, round_to_tick
+from vuka.market_structure.ict import calculate_adx_wilder, detect_m15_bos
+from vuka.risk.filters import (
+    check_panic_candle,
+    check_pre_trade_spread,
+    check_premium_discount_zone,
+)
+from vuka.risk.portfolio import get_overlap_multiplier, get_spread
 from vuka.utils.unified_logger import get_logger
 
 _logger = get_logger("Ingwe")
 
 def _log(msg: str, level: str = "INFO"):
     _logger.log(level=level, message=msg)
+
+
+def _mark_session_traded(session: str):
+    """Record a traded session against the shared singleton, then persist it.
+    bot.py is imported lazily to avoid a circular import at module load."""
+    from vuka.core.bot import save_sessions
+    s.sessions_traded_today.add(session)
+    save_sessions(s.sessions_traded_today)
 
 def evaluate_ingwe(df, fvgs, sweep, sweep_level, price, atr, lot_size, session,
                     market_phase="UNKNOWN", phase_adj=None):
@@ -34,6 +48,9 @@ def evaluate_ingwe(df, fvgs, sweep, sweep_level, price, atr, lot_size, session,
     """
     if phase_adj is None:
         phase_adj = {"threshold_mod": 0, "score_bonus": 0, "direction_favor": "NONE"}
+    # bot.py helpers are imported lazily -- this function runs only after bot.py
+    # has finished loading, so no circular-import risk.
+    from vuka.core.bot import get_asian_range, get_h1_trend, get_htf_bias, get_pdh_pdl
     adx, plus_di, minus_di = calculate_adx_wilder(df)
     if adx is None:
         _log("ADX unavailable.", "WARN")
@@ -49,7 +66,7 @@ def evaluate_ingwe(df, fvgs, sweep, sweep_level, price, atr, lot_size, session,
     _phase_direction = phase_adj["direction_favor"]
     if _phase_direction != "NONE":
         _log(f"MARKET CIRCUIT: {market_phase} favors {_phase_direction} setups", "GUARD")
-    
+
     # Pattern veto is handled upstream by TradingGovernor.check_market_phase()
     # and KronosGuardian.validate_signal() via concept_tracker's should_auto_veto().
     # The old hardcoded PATTERN_BLACKLIST was removed in favor of data-driven gates.
@@ -86,7 +103,7 @@ def evaluate_ingwe(df, fvgs, sweep, sweep_level, price, atr, lot_size, session,
         _log(f"HTF bias ({htf_bias}) conflicts with H1 trend ({trend}) -- flagged for Kronos review.", "WARN")
         htf_bias_ok = False
     else:
-        _log(f"HTF bias confirms H1 trend -- full top-down alignment.  [+10]")
+        _log("HTF bias confirms H1 trend -- full top-down alignment.  [+10]")
 
 
     # ── FIX-3: SL MINIMUM DISTANCE (v4.3) ───────────────
@@ -192,7 +209,7 @@ def evaluate_ingwe(df, fvgs, sweep, sweep_level, price, atr, lot_size, session,
                 score_ok = True
             if not check_pre_trade_spread(atr):
                 continue
-            
+
             def _build_context(dir, setup_type, fvg_t, fvg_50_val):
                 return {
                     "direction": dir,
@@ -216,15 +233,15 @@ def evaluate_ingwe(df, fvgs, sweep, sweep_level, price, atr, lot_size, session,
                     "fvg_50": fvg_50_val,
                     "market_phase": market_phase,
                 }
-            
+
             ctx = _build_context("BUY", "REVERSAL", fvg_type, fvg_50)
             if s.KRONOS_VETO_GATE is not None:
-                allowed, reason = KRONOS_VETO_GATE.validate(ctx, df, s.SYMBOL)
+                allowed, reason = s.KRONOS_VETO_GATE.validate(ctx, df, s.SYMBOL)
                 _log(f"[KRONOS] BUY signal: {reason}", "GUARD")
                 if not allowed:
-                    _log(f"Kronos vetoed BUY. Skipping trade.", "GUARD")
+                    _log("Kronos vetoed BUY. Skipping trade.", "GUARD")
                     return
-            
+
             stop  = max(atr * s.ATR_MULTIPLIER, min_sl)
             entry = round_to_tick(price, s.SYMBOL)
             sl    = round_to_tick(entry - stop, s.SYMBOL)
@@ -233,8 +250,7 @@ def evaluate_ingwe(df, fvgs, sweep, sweep_level, price, atr, lot_size, session,
             if res and res.retcode == mt5.TRADE_RETCODE_DONE:
                 _log(f"BUY MARKET  Entry={entry}  SL={sl}  TP={tp}  Lot={lot_size}", "TRADE")
                 log_trade("BUY", entry, sl, tp, res, lot_size, session, context=ctx, kronos_gate=s.KRONOS_VETO_GATE)
-                sessions_traded_today.add(session)
-                save_sessions(s.sessions_traded_today)
+                _mark_session_traded(session)
             else:
                 _log(f"BUY MARKET FAILED. Code={res.retcode if res else 'N/A'}.", "ERROR")
             return
@@ -285,13 +301,14 @@ def evaluate_ingwe(df, fvgs, sweep, sweep_level, price, atr, lot_size, session,
                 "ob_present": ob is not None,
                 "fvg_low": fvg_low,
                 "fvg_high": fvg_high,
-                "fvg_50": fvg_50
+                "fvg_50": fvg_50,
+                "market_phase": market_phase,
             }
             if s.KRONOS_VETO_GATE is not None:
-                allowed, reason = KRONOS_VETO_GATE.validate(ctx, df, s.SYMBOL)
+                allowed, reason = s.KRONOS_VETO_GATE.validate(ctx, df, s.SYMBOL)
                 _log(f"[KRONOS] SELL signal: {reason}", "GUARD")
                 if not allowed:
-                    _log(f"Kronos vetoed SELL. Skipping trade.", "GUARD")
+                    _log("Kronos vetoed SELL. Skipping trade.", "GUARD")
                     return
             stop  = max(atr * s.ATR_MULTIPLIER, min_sl)
             entry = round_to_tick(price, s.SYMBOL)
@@ -301,8 +318,7 @@ def evaluate_ingwe(df, fvgs, sweep, sweep_level, price, atr, lot_size, session,
             if res and res.retcode == mt5.TRADE_RETCODE_DONE:
                 _log(f"SELL MARKET  Entry={entry}  SL={sl}  TP={tp}  Lot={lot_size}", "TRADE")
                 log_trade("SELL", entry, sl, tp, res, lot_size, session, context=ctx, kronos_gate=s.KRONOS_VETO_GATE)
-                sessions_traded_today.add(session)
-                save_sessions(s.sessions_traded_today)
+                _mark_session_traded(session)
             else:
                 _log(f"SELL MARKET FAILED. Code={res.retcode if res else 'N/A'}.", "ERROR")
             return
@@ -332,7 +348,7 @@ def evaluate_ingwe(df, fvgs, sweep, sweep_level, price, atr, lot_size, session,
                 continue
             if not check_pre_trade_spread(atr):
                 continue
-            
+
             ctx = {
                 "direction": "SELL",
                 "setup_type": "CONTINUATION",
@@ -356,12 +372,12 @@ def evaluate_ingwe(df, fvgs, sweep, sweep_level, price, atr, lot_size, session,
                 "market_phase": market_phase,
             }
             if s.KRONOS_VETO_GATE is not None:
-                allowed, reason = KRONOS_VETO_GATE.validate(ctx, df, s.SYMBOL)
+                allowed, reason = s.KRONOS_VETO_GATE.validate(ctx, df, s.SYMBOL)
                 _log(f"[KRONOS] SELL signal: {reason}", "GUARD")
                 if not allowed:
-                    _log(f"Kronos vetoed SELL. Skipping trade.", "GUARD")
+                    _log("Kronos vetoed SELL. Skipping trade.", "GUARD")
                     return
-            
+
             stop  = max(atr * s.ATR_MULTIPLIER, min_sl)
             entry = round_to_tick(price, s.SYMBOL)
             sl    = round_to_tick(entry + stop, s.SYMBOL)
@@ -370,8 +386,7 @@ def evaluate_ingwe(df, fvgs, sweep, sweep_level, price, atr, lot_size, session,
             if res and res.retcode == mt5.TRADE_RETCODE_DONE:
                 _log(f"SELL MARKET  Entry={entry}  SL={sl}  TP={tp}  Lot={lot_size}", "TRADE")
                 log_trade("SELL", entry, sl, tp, res, lot_size, session, context=ctx, kronos_gate=s.KRONOS_VETO_GATE)
-                sessions_traded_today.add(session)
-                save_sessions(s.sessions_traded_today)
+                _mark_session_traded(session)
             else:
                 _log(f"SELL MARKET FAILED. Code={res.retcode if res else 'N/A'}.", "ERROR")
             return
@@ -419,7 +434,7 @@ def evaluate_ingwe(df, fvgs, sweep, sweep_level, price, atr, lot_size, session,
                 continue
             if not check_pre_trade_spread(atr):
                 continue
-            
+
             ctx = {
                 "direction": "BUY",
                 "setup_type": "CONTINUATION",
@@ -444,12 +459,12 @@ def evaluate_ingwe(df, fvgs, sweep, sweep_level, price, atr, lot_size, session,
                 "market_phase": market_phase,
             }
             if s.KRONOS_VETO_GATE is not None:
-                allowed, reason = KRONOS_VETO_GATE.validate(ctx, df, s.SYMBOL)
+                allowed, reason = s.KRONOS_VETO_GATE.validate(ctx, df, s.SYMBOL)
                 _log(f"[KRONOS] BUY signal: {reason}", "GUARD")
                 if not allowed:
-                    _log(f"Kronos vetoed BUY. Skipping trade.", "GUARD")
+                    _log("Kronos vetoed BUY. Skipping trade.", "GUARD")
                     return
-            
+
             stop  = max(atr * s.ATR_MULTIPLIER, min_sl)
             entry = round_to_tick(price, s.SYMBOL)
             sl    = round_to_tick(entry - stop, s.SYMBOL)
@@ -458,8 +473,7 @@ def evaluate_ingwe(df, fvgs, sweep, sweep_level, price, atr, lot_size, session,
             if res and res.retcode == mt5.TRADE_RETCODE_DONE:
                 _log(f"BUY MARKET  Entry={entry}  SL={sl}  TP={tp}  Lot={lot_size}", "TRADE")
                 log_trade("BUY", entry, sl, tp, res, lot_size, session, context=ctx, kronos_gate=s.KRONOS_VETO_GATE)
-                sessions_traded_today.add(session)
-                save_sessions(s.sessions_traded_today)
+                _mark_session_traded(session)
             else:
                 _log(f"BUY MARKET FAILED. Code={res.retcode if res else 'N/A'}.", "ERROR")
             return

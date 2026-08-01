@@ -1,21 +1,49 @@
-import time
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Optional
 
 import MetaTrader5 as mt5
-import numpy as np
-import pandas as pd
 
 from vuka.core.state import s
 from vuka.risk.filters import is_eu_summer
 from vuka.risk.portfolio import get_spread
+from vuka.utils.telemetry_queue import get_telemetry
 from vuka.utils.unified_logger import get_logger
 
 _logger = get_logger("Orders")
 
 def _log(msg: str, level: str = "INFO"):
     _logger.log(level=level, message=msg)
+
+def _pip_size() -> float:
+    """Broker 'point' for the current symbol -- the natural unit of slippage.
+
+    Hardcoding ``* 10000`` assumes a 5-digit quote (pip = 0.0001), which is
+    wrong for JPY pairs (point = 0.001) and XAUUSD (point = 0.01). Normalising
+    by ``symbol_info.point`` keeps reported slippage symbol-independent.
+    """
+    if s.BACKTEST_MODE:
+        return 0.00001
+    try:
+        info = mt5.symbol_info(s.SYMBOL)
+        if info and info.point and info.point > 0:
+            return info.point
+    except Exception:
+        pass
+    return 0.00001
+
+# ConceptTracker is stateless (stdlib only); cache a single instance so the
+# trade path never re-instantiates it. The class identity check means a mocked
+# class (tests) or a hot-reloaded module still yields a fresh instance.
+_concept_tracker = None
+_concept_tracker_cls = None
+
+def _get_concept_tracker():
+    global _concept_tracker, _concept_tracker_cls
+    from skills.concept_tracker import ConceptTracker
+    if _concept_tracker_cls is not ConceptTracker:
+        _concept_tracker = ConceptTracker()
+        _concept_tracker_cls = ConceptTracker
+    return _concept_tracker
 
 def log_trade(direction, entry, sl, tp, result, lot_size, session, context=None, kronos_gate=None):
     """
@@ -50,17 +78,17 @@ def log_trade(direction, entry, sl, tp, result, lot_size, session, context=None,
             except Exception:
                 pass
     slippage = abs(actual_fill - entry)
-    slippage_pips = slippage * 10000
-    
+    slippage_pips = slippage / _pip_size()
+
     if direction == "BUY":
         sl_dist_actual = actual_fill - sl
         tp_dist_actual = tp - actual_fill
     else:
         sl_dist_actual = sl - actual_fill
         tp_dist_actual = actual_fill - tp
-    
+
     effective_rr = tp_dist_actual / sl_dist_actual if sl_dist_actual > 0 else 0
-    
+
     # Enrichment fields from live context dict
     htf_bias_val = "SPLIT"
     if context:
@@ -70,7 +98,7 @@ def log_trade(direction, entry, sl, tp, result, lot_size, session, context=None,
             htf_bias_val = trend_val
         elif trend_val:
             htf_bias_val = f"{trend_val}_SPLIT"
-    
+
     kronos_decision_val = "ALLOW"
     kronos_confidence_val = 0.0
     circuit_breaker_val = "CLOSED"
@@ -81,7 +109,7 @@ def log_trade(direction, entry, sl, tp, result, lot_size, session, context=None,
         kronos_confidence_val = kd.get("confidence", 0.0)
         circuit_breaker_val = kd.get("circuit_breaker_state", "CLOSED")
         api_latency_val = kd.get("api_latency_ms", 0.0)
-    
+
     spread_val = None
     try:
         spread_raw = get_spread()
@@ -89,7 +117,7 @@ def log_trade(direction, entry, sl, tp, result, lot_size, session, context=None,
             spread_val = round(spread_raw * 10000, 1)
     except Exception:
         pass
-    
+
     trade_entry = {
         "symbol":      s.SYMBOL,
         "time":        datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -115,7 +143,7 @@ def log_trade(direction, entry, sl, tp, result, lot_size, session, context=None,
         "api_latency_ms": api_latency_val,
         "spread_at_entry": spread_val,
     }
-    
+
     if context:
         trade_entry["fvg_confirmed"] = context.get("fvg_type") is not None and context["fvg_type"] not in ("", "UNKNOWN", None)
         trade_entry["ob_present"] = context.get("ob_present", False)
@@ -124,11 +152,11 @@ def log_trade(direction, entry, sl, tp, result, lot_size, session, context=None,
         trade_entry["market_phase"] = context.get("market_phase", "UNKNOWN")
         trade_entry["sweep_direction"] = context.get("sweep", "UNKNOWN")
         trade_entry["fvg_type_raw"] = context.get("fvg_type", "UNKNOWN")
-    
+
     _log(f"[FILL] req={entry} fill={actual_fill} slip={slippage_pips:.1f}p eff_RR={effective_rr:.2f}", "TRADE")
 
-    from vuka.core.bot import TRADING_GOVERNOR
-    TRADING_GOVERNOR.record_trade()
+    if s.TRADING_GOVERNOR:
+        s.TRADING_GOVERNOR.record_trade()
 
     # Phase 1c: Compute data-driven trail config BEFORE persistence so it
     # reaches the DB, the JSON log, and the in-memory active_trails dict.
@@ -158,8 +186,7 @@ def log_trade(direction, entry, sl, tp, result, lot_size, session, context=None,
     concept_confidence = 0.25
     trail_be_at = 1.0
     try:
-        from skills.concept_tracker import ConceptTracker
-        _ct = ConceptTracker()
+        _ct = _get_concept_tracker()
         concept_confidence = round(_ct.get_confidence_score(concepts_used[0]), 2)
         # High confidence (>0.6) -> trail BE at 2:1; otherwise BE at 1:1
         trail_be_at = 2.0 if concept_confidence > 0.6 else 1.0
@@ -178,7 +205,6 @@ def log_trade(direction, entry, sl, tp, result, lot_size, session, context=None,
 
     # Phase 5b: Offload all blocking I/O (DB insert, JSON dual-write, concept
     # record) to the TelemetryQueue background worker thread.
-    from vuka.utils.telemetry_queue import get_telemetry
     get_telemetry().submit("trade", {
         "log_file": s.LOG_FILE,
         "trade_entry": trade_entry,
@@ -202,12 +228,18 @@ def place_trade(direction, entry, sl, tp, lot_size, session="unknown"):
         return None
 
     # Phase 5a: Per-symbol-per-session dedup lock (prevents double-firing)
+    # Fail-closed: if the DB is unreachable the entry is skipped rather than
+    # risking a duplicate order on a live account.
     if s.DB_AVAILABLE and session != "unknown":
-        dedup_ok = s.DB.dedup_check_and_lock(s.SYMBOL, session, s.STRATEGY)
+        try:
+            dedup_ok = s.DB.dedup_check_and_lock(s.SYMBOL, session, s.STRATEGY)
+        except Exception as e:
+            _log(f"Dedup DB unreachable ({e}) -- failing closed, skipping entry.", "WARN")
+            dedup_ok = False
         if not dedup_ok:
             _log(f"Session '{session}' already traded for {s.SYMBOL} today. Dedup lock active.", "GUARD")
             return None
-    
+
     order_type = mt5.ORDER_TYPE_BUY if direction == "BUY" else mt5.ORDER_TYPE_SELL
 
     base_order = {
@@ -264,7 +296,7 @@ def has_pending_order() -> bool:
     """
     if s.BACKTEST_MODE:
         return False
-    
+
     orders = mt5.orders_get(symbol=s.SYMBOL)
     if not orders:
         return False
@@ -278,7 +310,7 @@ def has_open_position() -> bool:
     """
     if s.BACKTEST_MODE:
         return False
-    
+
     positions = mt5.positions_get(symbol=s.SYMBOL)
     if not positions:
         return False
@@ -302,7 +334,7 @@ def place_limit_order(direction: str, entry: float, sl: float,
             retcode = mt5.TRADE_RETCODE_DONE if filled else 10025
             comment = "BACKTEST FILLED" if filled else "BACKTEST EXPIRED"
         return MockResult()
-    
+
     order_type = (mt5.ORDER_TYPE_BUY_LIMIT
                   if direction == "BUY"
                   else mt5.ORDER_TYPE_SELL_LIMIT)
@@ -378,7 +410,6 @@ def log_sl_move(ticket: int, entry: float, old_sl: float, new_sl: float, label: 
         "label": label
     }
 
-    from vuka.utils.telemetry_queue import get_telemetry
     get_telemetry().submit("sl_move", {
         "entry": sl_move_entry,
         "log_file": str(Path(f"sl_moves_{s._instance_tag}.json")),

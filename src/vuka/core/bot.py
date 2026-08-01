@@ -889,11 +889,14 @@ def run_backtest_step():
 # =======================================================
 
 def reset_daily_sessions():
-    global consecutive_losses, sessions_traded_today
+    global consecutive_losses
     local = now_sast()
-    if local.hour == 0 and local.minute < 15 and sessions_traded_today:
-        sessions_traded_today.clear()
-        save_sessions(sessions_traded_today)
+    if local.hour == 0 and local.minute < 15 and s.sessions_traded_today:
+        s.sessions_traded_today.clear()
+        save_sessions(s.sessions_traded_today)
+        # Invalidates the RAM loss cache -- a new day must reload from source.
+        s.consecutive_losses = None
+        s.last_counted_ticket = 0
         consecutive_losses = 0
         log("Midnight reset -- sessions and loss counter cleared.")
 
@@ -1232,7 +1235,9 @@ if __name__ == "__main__":
     log("MT5 connected.")
     mt5.symbol_select(SYMBOL, True)
     sessions_traded_today = load_sessions()
+    s.sessions_traded_today = sessions_traded_today  # keep the singleton and the module global in lock-step
     get_initial_equity()
+    load_consecutive_losses()  # prime the RAM cache -- no DB/JSON reads on the scan loop
 
     log(f"Sessions traded today:  {sessions_traded_today or 'none'}")
     log(f"Risk per trade:         {RISK_PERCENT}%")

@@ -1,8 +1,9 @@
 import sys
-import pytest
+from unittest.mock import MagicMock
+
 import numpy as np
 import pandas as pd
-from unittest.mock import MagicMock, patch
+import pytest
 
 # ── Mock MetaTrader5 before any vuka import ─────────────
 _mt5 = MagicMock()
@@ -94,6 +95,8 @@ def reset_state():
     s.SESSIONS_FILE = ""
     s.initial_equity = None
     s.sessions_traded_today = set()
+    s.consecutive_losses = None
+    s.last_counted_ticket = 0
     s.BACKTEST_MODE = False
     s.BACKTEST_CSV = ""
     s.TIMEFRAME = 15
@@ -111,6 +114,7 @@ def reset_state():
     s.HARD_LOT_CAP = 0.20
     s.SCAN_INTERVAL_SEC = 900
     s.DB_AVAILABLE = False
+    s.TRADING_GOVERNOR = None
     s.KRONOS_VETO_GATE = None
     s.BUY_THRESHOLD = 0.35
     s.MARKET_CIRCUIT = None

@@ -1,12 +1,10 @@
+
 import MetaTrader5 as mt5
-import pandas as pd
-import numpy as np
-import json
-import os
-import time
-from datetime import datetime, timezone, timedelta
-from typing import Optional, Tuple, Any
+
 from vuka.core.state import s
+from vuka.execution.orders import log_trade, place_trade, round_to_tick
+from vuka.risk.filters import check_panic_candle, check_pre_trade_spread
+from vuka.risk.portfolio import get_spread
 from vuka.utils.unified_logger import get_logger
 
 _logger = get_logger("ICTm1")
@@ -14,8 +12,17 @@ _logger = get_logger("ICTm1")
 def _log(msg: str, level: str = "INFO"):
     _logger.log(level=level, message=msg)
 
+
+def _mark_session_traded(session: str):
+    """Record a traded session against the shared singleton, then persist it.
+    bot.py is imported lazily to avoid a circular import at module load."""
+    from vuka.core.bot import save_sessions
+    s.sessions_traded_today.add(session)
+    save_sessions(s.sessions_traded_today)
+
+
 def evaluate_ict_m1(df, fvgs, sweep, sweep_level, price, atr,
-                    lot_size, session):
+                    lot_size, session, market_phase="UNKNOWN", phase_adj=None):
     """
     ICT M1 Scalper pattern.
     - M1 timeframe, tight SL, quick entries
@@ -26,7 +33,7 @@ def evaluate_ict_m1(df, fvgs, sweep, sweep_level, price, atr,
     spread = get_spread()
     spread_pips = spread * 10000 if spread else 0
     _log(f"Price: {price:.5f}  |  ATR: {atr:.5f}  |  "
-        f"Lot: {lot_size}  |  Spread: {spread_pips:.1f}p")
+        f"Lot: {lot_size}  |  Spread: {spread_pips:.1f}p  |  Phase: {market_phase}")
 
     for fvg_type, fvg_low, fvg_high, fvg_idx, ob, fvg_50 in fvgs:
         if check_panic_candle(df, atr):
@@ -54,15 +61,16 @@ def evaluate_ict_m1(df, fvgs, sweep, sweep_level, price, atr,
                 "trend": "BULLISH",
                 "level_sweep": True,
                 "ob_present": ob is not None,
+                "market_phase": market_phase,
                 "fvg_low": fvg_low,
                 "fvg_high": fvg_high,
                 "fvg_50": fvg_50
             }
             if s.KRONOS_VETO_GATE is not None:
-                allowed, reason = KRONOS_VETO_GATE.validate(ctx, df, s.SYMBOL)
+                allowed, reason = s.KRONOS_VETO_GATE.validate(ctx, df, s.SYMBOL)
                 _log(f"[KRONOS] BUY signal: {reason}", "GUARD")
                 if not allowed:
-                    _log(f"Kronos vetoed BUY. Skipping trade.", "GUARD")
+                    _log("Kronos vetoed BUY. Skipping trade.", "GUARD")
                     return
 
             stop = max(atr * s.ATR_MULTIPLIER, atr * s.MIN_SL_ATR_MULTIPLIER)
@@ -73,8 +81,7 @@ def evaluate_ict_m1(df, fvgs, sweep, sweep_level, price, atr,
             if res and res.retcode == mt5.TRADE_RETCODE_DONE:
                 _log(f"M1 BUY  Entry={entry}  SL={sl}  TP={tp}  Lot={lot_size}", "TRADE")
                 log_trade("BUY", entry, sl, tp, res, lot_size, session, context=ctx, kronos_gate=s.KRONOS_VETO_GATE)
-                sessions_traded_today.add(session)
-                save_sessions(s.sessions_traded_today)
+                _mark_session_traded(session)
             else:
                 _log(f"M1 BUY FAILED. Code={res.retcode if res else 'N/A'}.", "ERROR")
             return
@@ -101,15 +108,16 @@ def evaluate_ict_m1(df, fvgs, sweep, sweep_level, price, atr,
                 "trend": "BEARISH",
                 "level_sweep": True,
                 "ob_present": ob is not None,
+                "market_phase": market_phase,
                 "fvg_low": fvg_low,
                 "fvg_high": fvg_high,
                 "fvg_50": fvg_50
             }
             if s.KRONOS_VETO_GATE is not None:
-                allowed, reason = KRONOS_VETO_GATE.validate(ctx, df, s.SYMBOL)
+                allowed, reason = s.KRONOS_VETO_GATE.validate(ctx, df, s.SYMBOL)
                 _log(f"[KRONOS] SELL signal: {reason}", "GUARD")
                 if not allowed:
-                    _log(f"Kronos vetoed SELL. Skipping trade.", "GUARD")
+                    _log("Kronos vetoed SELL. Skipping trade.", "GUARD")
                     return
 
             stop = max(atr * s.ATR_MULTIPLIER, atr * s.MIN_SL_ATR_MULTIPLIER)
@@ -120,8 +128,7 @@ def evaluate_ict_m1(df, fvgs, sweep, sweep_level, price, atr,
             if res and res.retcode == mt5.TRADE_RETCODE_DONE:
                 _log(f"M1 SELL  Entry={entry}  SL={sl}  TP={tp}  Lot={lot_size}", "TRADE")
                 log_trade("SELL", entry, sl, tp, res, lot_size, session, context=ctx, kronos_gate=s.KRONOS_VETO_GATE)
-                sessions_traded_today.add(session)
-                save_sessions(s.sessions_traded_today)
+                _mark_session_traded(session)
             else:
                 _log(f"M1 SELL FAILED. Code={res.retcode if res else 'N/A'}.", "ERROR")
             return

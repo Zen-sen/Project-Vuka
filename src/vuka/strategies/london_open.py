@@ -1,12 +1,14 @@
+
 import MetaTrader5 as mt5
-import pandas as pd
-import numpy as np
-import json
-import os
-import time
-from datetime import datetime, timezone, timedelta
-from typing import Optional, Tuple, Any
+
 from vuka.core.state import s
+from vuka.execution.orders import log_trade, place_trade, round_to_tick
+from vuka.risk.filters import (
+    check_panic_candle,
+    check_pre_trade_spread,
+    check_premium_discount_zone,
+)
+from vuka.risk.portfolio import get_spread
 from vuka.utils.unified_logger import get_logger
 
 _logger = get_logger("LondonOpen")
@@ -14,8 +16,17 @@ _logger = get_logger("LondonOpen")
 def _log(msg: str, level: str = "INFO"):
     _logger.log(level=level, message=msg)
 
+
+def _mark_session_traded(session: str):
+    """Record a traded session against the shared singleton, then persist it.
+    bot.py is imported lazily to avoid a circular import at module load."""
+    from vuka.core.bot import save_sessions
+    s.sessions_traded_today.add(session)
+    save_sessions(s.sessions_traded_today)
+
+
 def evaluate_london_breakout(df, fvgs, sweep, sweep_level, price, atr,
-                             lot_size, session):
+                             lot_size, session, market_phase="UNKNOWN", phase_adj=None):
     """
     ICT London Breakout pattern.
     1. Asian range established (00:00-04:00 UTC)
@@ -26,6 +37,10 @@ def evaluate_london_breakout(df, fvgs, sweep, sweep_level, price, atr,
     Key levels: Asian Range High/Low.
     No HTF bias or ADX -- breakout direction is the trend.
     """
+    # bot.py helpers are imported lazily -- this function runs only after bot.py
+    # has finished loading, so no circular-import risk.
+    from vuka.core.bot import get_asian_range, get_pdh_pdl
+
     pdh, pdl = get_pdh_pdl()
     asian_high, asian_low = get_asian_range(df)
 
@@ -41,7 +56,7 @@ def evaluate_london_breakout(df, fvgs, sweep, sweep_level, price, atr,
     spread_pips = spread * 10000 if spread else 0
     spread_ok = spread is not None and spread < s.MIN_SPREAD_PIPS
     _log(f"Price: {price:.5f}  |  ATR: {atr:.5f}  |  "
-        f"Lot: {lot_size}  |  Spread: {spread_pips:.1f}p")
+        f"Lot: {lot_size}  |  Spread: {spread_pips:.1f}p  |  Phase: {market_phase}")
 
     for fvg_type, fvg_low, fvg_high, fvg_idx, ob, fvg_50 in fvgs:
         if check_panic_candle(df, atr):
@@ -105,15 +120,16 @@ def evaluate_london_breakout(df, fvgs, sweep, sweep_level, price, atr,
                 "asian_high": asian_high,
                 "asian_low": asian_low,
                 "ob_present": ob is not None,
+                "market_phase": market_phase,
                 "fvg_low": fvg_low,
                 "fvg_high": fvg_high,
                 "fvg_50": fvg_50
             }
             if s.KRONOS_VETO_GATE is not None:
-                allowed, reason = KRONOS_VETO_GATE.validate(ctx, df, s.SYMBOL)
+                allowed, reason = s.KRONOS_VETO_GATE.validate(ctx, df, s.SYMBOL)
                 _log(f"[KRONOS] BUY signal: {reason}", "GUARD")
                 if not allowed:
-                    _log(f"Kronos vetoed BUY. Skipping trade.", "GUARD")
+                    _log("Kronos vetoed BUY. Skipping trade.", "GUARD")
                     return
 
             stop = max(atr * s.ATR_MULTIPLIER, atr * s.MIN_SL_ATR_MULTIPLIER)
@@ -129,15 +145,14 @@ def evaluate_london_breakout(df, fvgs, sweep, sweep_level, price, atr,
             else:
                 dynamic_rr = s.RISK_REWARD_RATIO - 1.0
             tp = round_to_tick(entry + stop * dynamic_rr, s.SYMBOL)
-            print(f"[DEBUG_ENG] Symbol={s.SYMBOL} | Strategy=LONDON_OPEN | "
+            _log(f"[DEBUG_ENG] Symbol={s.SYMBOL} | Strategy=LONDON_OPEN | "
                   f"Dir=BUY | Entry={entry} | SL={sl} | TP={tp} | "
-                  f"Stop={stop} | Active_RRR={dynamic_rr}")
+                  f"Stop={stop} | Active_RRR={dynamic_rr}", "DEBUG")
             res = place_trade("BUY", entry, sl, tp, lot_size, session=session)
             if res and res.retcode == mt5.TRADE_RETCODE_DONE:
                 _log(f"LONDON BREAKOUT BUY  Entry={entry}  SL={sl}  TP={tp}  Lot={lot_size}", "TRADE")
                 log_trade("BUY", entry, sl, tp, res, lot_size, session, context=ctx, kronos_gate=s.KRONOS_VETO_GATE)
-                sessions_traded_today.add(session)
-                save_sessions(s.sessions_traded_today)
+                _mark_session_traded(session)
             else:
                 _log(f"LONDON BREAKOUT BUY FAILED. Code={res.retcode if res else 'N/A'}.", "ERROR")
             return
@@ -200,15 +215,16 @@ def evaluate_london_breakout(df, fvgs, sweep, sweep_level, price, atr,
                 "asian_high": asian_high,
                 "asian_low": asian_low,
                 "ob_present": ob is not None,
+                "market_phase": market_phase,
                 "fvg_low": fvg_low,
                 "fvg_high": fvg_high,
                 "fvg_50": fvg_50
             }
             if s.KRONOS_VETO_GATE is not None:
-                allowed, reason = KRONOS_VETO_GATE.validate(ctx, df, s.SYMBOL)
+                allowed, reason = s.KRONOS_VETO_GATE.validate(ctx, df, s.SYMBOL)
                 _log(f"[KRONOS] SELL signal: {reason}", "GUARD")
                 if not allowed:
-                    _log(f"Kronos vetoed SELL. Skipping trade.", "GUARD")
+                    _log("Kronos vetoed SELL. Skipping trade.", "GUARD")
                     return
 
             stop = max(atr * s.ATR_MULTIPLIER, atr * s.MIN_SL_ATR_MULTIPLIER)
@@ -224,15 +240,14 @@ def evaluate_london_breakout(df, fvgs, sweep, sweep_level, price, atr,
             else:
                 dynamic_rr = s.RISK_REWARD_RATIO - 1.0
             tp = round_to_tick(entry - stop * dynamic_rr, s.SYMBOL)
-            print(f"[DEBUG_ENG] Symbol={s.SYMBOL} | Strategy=LONDON_OPEN | "
+            _log(f"[DEBUG_ENG] Symbol={s.SYMBOL} | Strategy=LONDON_OPEN | "
                   f"Dir=SELL | Entry={entry} | SL={sl} | TP={tp} | "
-                  f"Stop={stop} | Active_RRR={dynamic_rr}")
+                  f"Stop={stop} | Active_RRR={dynamic_rr}", "DEBUG")
             res = place_trade("SELL", entry, sl, tp, lot_size, session=session)
             if res and res.retcode == mt5.TRADE_RETCODE_DONE:
                 _log(f"LONDON BREAKOUT SELL  Entry={entry}  SL={sl}  TP={tp}  Lot={lot_size}", "TRADE")
                 log_trade("SELL", entry, sl, tp, res, lot_size, session, context=ctx, kronos_gate=s.KRONOS_VETO_GATE)
-                sessions_traded_today.add(session)
-                save_sessions(s.sessions_traded_today)
+                _mark_session_traded(session)
             else:
                 _log(f"LONDON BREAKOUT SELL FAILED. Code={res.retcode if res else 'N/A'}.", "ERROR")
             return

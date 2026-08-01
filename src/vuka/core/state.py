@@ -7,7 +7,7 @@ they share the same State instance.
 
 from __future__ import annotations
 
-from typing import Any, Set
+from typing import Any
 
 
 class State:
@@ -26,6 +26,9 @@ class State:
         self.initial_equity: float | None = None
         self.sessions_traded_today: set[str] = set()
         self.active_trails: dict[int, dict] = {}
+        # RAM cache for consecutive-loss tracking (loaded once, written on change)
+        self.consecutive_losses: int | None = None
+        self.last_counted_ticket: int = 0
         self.BACKTEST_MODE: bool = False
         self.BACKTEST_CSV: str = ""
         self.BACKTEST_SPEED: int = 1

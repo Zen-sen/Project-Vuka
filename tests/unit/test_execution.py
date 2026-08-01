@@ -1,6 +1,4 @@
 """Execution tests — inject missing bot.py names before testing."""
-import sys
-import types
 from unittest.mock import ANY, MagicMock, patch
 
 import pytest
@@ -207,15 +205,13 @@ def _call_log_trade(confidence):
     tele = MagicMock()
     ct = MagicMock()
     ct.get_confidence_score.return_value = confidence
-    fake_bot = types.ModuleType("vuka.core.bot")
-    fake_bot.TRADING_GOVERNOR = MagicMock()
+    s.TRADING_GOVERNOR = MagicMock()
 
     with patch.object(mod, "mt5") as mock_mt5, \
          patch.object(mod, "is_eu_summer", return_value=True), \
          patch.object(mod, "get_spread", return_value=0.0001), \
-         patch("vuka.utils.telemetry_queue.get_telemetry", return_value=tele), \
-         patch("skills.concept_tracker.ConceptTracker", return_value=ct), \
-         patch.dict(sys.modules, {"vuka.core.bot": fake_bot}):
+         patch.object(mod, "get_telemetry", return_value=tele), \
+         patch("skills.concept_tracker.ConceptTracker", return_value=ct):
         mock_mt5.positions_get.return_value = [pos]
         mod.log_trade(
             "BUY", 1.1000, 1.0980, 1.1050, result, 0.10, "London Open",
@@ -254,6 +250,10 @@ class TestActiveTrails:
         tele.submit.assert_called_once_with("trade", ANY)
         assert payload["trade_id"] == "777"
         assert payload["direction"] == "BUY"
+
+    def test_log_trade_records_trade_on_governor(self):
+        tele, payload = _call_log_trade(confidence=0.5)
+        s.TRADING_GOVERNOR.record_trade.assert_called_once()
 
 
 class TestManagePositionsRAM:
