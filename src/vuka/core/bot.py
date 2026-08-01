@@ -47,7 +47,6 @@ from vuka.core.health_monitor import HealthMonitor
 from vuka.ai.kronos_guardian import KronosVetoGate, create_veto_gate
 from vuka.data.database_manager import get_db
 from vuka.utils.unified_logger import get_logger
-from vuka.utils.memory_manager import MemoryManager
 from skills.trading_governor import TradingGovernor
 from skills.concept_tracker import record_concept_trade, record_concept_outcome
 from skills.market_circuit import get_circuit
@@ -90,8 +89,6 @@ from vuka.core.config import (
     load_config, _derive_magic,
 )
 
-
-MEM_MGR = MemoryManager()
 
 # Phase 1: Event-driven tick engine (replaces polling)
 try:
@@ -459,6 +456,7 @@ def now_sast() -> datetime:
 def update_memory():
     """
     Synchronizes current bot state to Memory.md and handover.json.
+    v6.2: File writes offloaded to the TelemetryQueue worker thread.
     """
     try:
         account = mt5.account_info()
@@ -485,7 +483,6 @@ def update_memory():
                 "last_scan": now.strftime("%Y-%m-%d %H:%M:%S")
             }
         }
-        MEM_MGR.update_state(state_data)
         
         # 2. Update handover.json
         _mc_summary = MARKET_CIRCUIT.summary if hasattr(MARKET_CIRCUIT, 'summary') else {}
@@ -504,8 +501,13 @@ def update_memory():
             "market_bos": _mc_summary.get("bos", "NONE"),
             "market_bb_width": _mc_summary.get("bb_width", 0),
         }
-        with open("handover.json", "w") as f:
-            json.dump(handover, f, indent=2)
+        
+        from vuka.utils.telemetry_queue import get_telemetry
+        get_telemetry().submit("memory_state", {
+            "state_data": state_data,
+            "handover": handover,
+            "handover_file": "handover.json",
+        })
             
     except Exception as e:
         log(f"Memory sync failed: {e}", "WARN")
@@ -633,26 +635,16 @@ def save_sessions(sessions: set):
     """
     Save sessions traded today to database (primary) or JSON fallback.
     Atomic writes prevent corruption under concurrent access.
+    v6.2: Offloaded to TelemetryQueue -- the scan loop never blocks on disk.
     """
-    today = datetime.now().strftime("%Y-%m-%d")
-    
-    if DB_AVAILABLE:
-        try:
-            for session_name in sessions:
-                DB.mark_session_traded(today, _arg_symbol, STRATEGY, session_name)
-            return
-        except Exception as e:
-            log(f"Database write error: {e}. Falling back to JSON.", "WARN")
-    
-    # JSON fallback (dual-write for safety during transition)
-    payload = json.dumps({
-        "date":     today,
-        "sessions": list(sessions)
-    }, indent=2)
-    tmp = SESSIONS_FILE + ".tmp"
-    with open(tmp, "w") as f:
-        f.write(payload)
-    os.replace(tmp, SESSIONS_FILE)
+    from vuka.utils.telemetry_queue import get_telemetry
+    get_telemetry().submit("sessions", {
+        "date":     datetime.now().strftime("%Y-%m-%d"),
+        "symbol":   _arg_symbol,
+        "strategy": STRATEGY,
+        "sessions": list(sessions),
+        "sessions_file": SESSIONS_FILE,
+    })
 
 
 # [REMOVED] Section 4 - now in vuka.risk.portfolio
@@ -1300,5 +1292,7 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         log("Keyboard interrupt. Ingwe stands down gracefully.")
     finally:
+        from vuka.utils.telemetry_queue import get_telemetry
+        get_telemetry().flush()
         mt5.shutdown()
         log("MT5 disconnected. Until next sunrise.")

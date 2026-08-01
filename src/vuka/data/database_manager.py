@@ -698,7 +698,7 @@ class DatabaseManager:
                 return True
         except Exception as e:
             logger.error(f"Error in dedup lock for {lock_tag}: {e}")
-            return True  # Allow on error (fail open)
+            return False  # Fail closed: if the lock cannot be secured, do not trade.
 
     def close(self):
         """Close database connection."""

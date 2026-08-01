@@ -25,6 +25,7 @@ class State:
         # Runtime state
         self.initial_equity: float | None = None
         self.sessions_traded_today: set[str] = set()
+        self.active_trails: dict[int, dict] = {}
         self.BACKTEST_MODE: bool = False
         self.BACKTEST_CSV: str = ""
         self.BACKTEST_SPEED: int = 1

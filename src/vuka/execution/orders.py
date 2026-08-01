@@ -1,17 +1,16 @@
-import MetaTrader5 as mt5
-import pandas as pd
-import numpy as np
-import json
-import os
 import time
 from datetime import datetime, timedelta, timezone
-from typing import Optional
 from pathlib import Path
+from typing import Optional
+
+import MetaTrader5 as mt5
+import numpy as np
+import pandas as pd
+
 from vuka.core.state import s
 from vuka.risk.filters import is_eu_summer
 from vuka.risk.portfolio import get_spread
 from vuka.utils.unified_logger import get_logger
-from skills.concept_tracker import record_concept_trade
 
 _logger = get_logger("Orders")
 
@@ -127,74 +126,68 @@ def log_trade(direction, entry, sl, tp, result, lot_size, session, context=None,
         trade_entry["fvg_type_raw"] = context.get("fvg_type", "UNKNOWN")
     
     _log(f"[FILL] req={entry} fill={actual_fill} slip={slippage_pips:.1f}p eff_RR={effective_rr:.2f}", "TRADE")
-    
+
     from vuka.core.bot import TRADING_GOVERNOR
     TRADING_GOVERNOR.record_trade()
-    
-    if s.DB_AVAILABLE:
-        try:
-            s.DB.insert_trade(trade_entry)
-            _log(f"Trade logged -> vuka_trading.db", "TRADE")
-        except Exception as e:
-            _log(f"Database write error: {e}. Falling back to JSON.", "WARN")
-    
-    # JSON fallback (dual-write for safety during transition)
-    trade_log = []
-    if os.path.exists(s.LOG_FILE):
-        try:
-            with open(s.LOG_FILE, "r") as f:
-                trade_log = json.load(f)
-        except json.JSONDecodeError:
-            pass
-    
-    trade_log.append(trade_entry)
-    
-    tmp = s.LOG_FILE + ".tmp"
-    with open(tmp, "w") as f:
-        json.dump(trade_log, f, indent=2)
-    os.replace(tmp, s.LOG_FILE)
-    _log(f"Trade logged -> {s.LOG_FILE}", "TRADE")
 
-    # Phase 1c: Enrich concept tracker with full trade context
+    # Phase 1c: Compute data-driven trail config BEFORE persistence so it
+    # reaches the DB, the JSON log, and the in-memory active_trails dict.
+    concepts_used = []
+    if context:
+        fvg = context.get("fvg_type", "")
+        if fvg and fvg not in ("", "UNKNOWN", None):
+            concepts_used.append(f"fvg_{fvg.lower()}")
+        swp = context.get("sweep", "")
+        if swp and swp not in ("", "UNKNOWN", None):
+            concepts_used.append(f"sweep_{swp.lower()}")
+        st = context.get("setup_type", "")
+        if st and st not in ("", "UNKNOWN", None):
+            concepts_used.append(f"setup_{st.lower()}")
+        sess = context.get("session", "")
+        if sess and sess not in ("", "UNKNOWN", None):
+            concepts_used.append(f"session_{sess.lower().replace(' ', '_')}")
+        mp = context.get("market_phase", "")
+        if mp and mp not in ("", "UNKNOWN", None):
+            concepts_used.append(f"phase_{mp.lower()}")
+        tr = context.get("trend", "")
+        if tr and tr not in ("", "UNKNOWN", None):
+            concepts_used.append(f"trend_{tr.lower()}")
+    if not concepts_used:
+        concepts_used.append("unknown")
+
+    concept_confidence = 0.25
+    trail_be_at = 1.0
     try:
-        concepts_used = []
-        if context:
-            fvg = context.get("fvg_type", "")
-            if fvg and fvg not in ("", "UNKNOWN", None):
-                concepts_used.append(f"fvg_{fvg.lower()}")
-            swp = context.get("sweep", "")
-            if swp and swp not in ("", "UNKNOWN", None):
-                concepts_used.append(f"sweep_{swp.lower()}")
-            st = context.get("setup_type", "")
-            if st and st not in ("", "UNKNOWN", None):
-                concepts_used.append(f"setup_{st.lower()}")
-            sess = context.get("session", "")
-            if sess and sess not in ("", "UNKNOWN", None):
-                concepts_used.append(f"session_{sess.lower().replace(' ', '_')}")
-            mp = context.get("market_phase", "")
-            if mp and mp not in ("", "UNKNOWN", None):
-                concepts_used.append(f"phase_{mp.lower()}")
-            tr = context.get("trend", "")
-            if tr and tr not in ("", "UNKNOWN", None):
-                concepts_used.append(f"trend_{tr.lower()}")
-        if not concepts_used:
-            concepts_used.append("unknown")
-        record_concept_trade(
-            str(position_id) if position_id else trade_entry.get("time", "unknown"),
-            direction,
-            concepts_used,
-            kronos_decision_val,
-            setup_type=context.get("setup_type", "UNKNOWN") if context else "UNKNOWN"
-        )
-        # Phase 2b: Store data-driven trail config in trade entry
         from skills.concept_tracker import ConceptTracker
         _ct = ConceptTracker()
-        _conf_score = _ct.get_confidence_score(concepts_used[0]) if concepts_used else 0.25
-        trade_entry["concept_confidence"] = round(_conf_score, 2)
+        concept_confidence = round(_ct.get_confidence_score(concepts_used[0]), 2)
         # High confidence (>0.6) -> trail BE at 2:1; otherwise BE at 1:1
-        trade_entry["trail_be_at"] = 2.0 if _conf_score > 0.6 else 1.0
+        trail_be_at = 2.0 if concept_confidence > 0.6 else 1.0
     except Exception as e:
-        _log(f"Concept tracker record_trade error: {e}", "WARN")
+        _log(f"Concept tracker confidence error: {e}", "WARN")
+    trade_entry["concept_confidence"] = concept_confidence
+    trade_entry["trail_be_at"] = trail_be_at
+
+    # Inject trail config into RAM -- manage_open_positions reads this dict,
+    # never the trade log from disk, on every scan cycle.
+    if position_id:
+        s.active_trails[position_id] = {
+            "trail_be_at": trail_be_at,
+            "concept_confidence": concept_confidence,
+        }
+
+    # Phase 5b: Offload all blocking I/O (DB insert, JSON dual-write, concept
+    # record) to the TelemetryQueue background worker thread.
+    from vuka.utils.telemetry_queue import get_telemetry
+    get_telemetry().submit("trade", {
+        "log_file": s.LOG_FILE,
+        "trade_entry": trade_entry,
+        "trade_id": str(position_id) if position_id else trade_entry.get("time", "unknown"),
+        "direction": direction,
+        "concepts_used": concepts_used,
+        "kronos_decision": kronos_decision_val,
+        "setup_type": context.get("setup_type", "UNKNOWN") if context else "UNKNOWN",
+    })
 
 
 def place_trade(direction, entry, sl, tp, lot_size, session="unknown"):
@@ -384,28 +377,12 @@ def log_sl_move(ticket: int, entry: float, old_sl: float, new_sl: float, label: 
         "movement": round(new_sl - old_sl, 5),
         "label": label
     }
-    
-    if s.DB_AVAILABLE:
-        try:
-            s.DB.insert_sl_movement(sl_move_entry)
-            return
-        except Exception as e:
-            _log(f"Database write error: {e}. Falling back to JSON.", "WARN")
-    
-    # JSON fallback (dual-write for safety during transition)
-    log_file = Path(f"sl_moves_{s._instance_tag}.json")
-    moves = []
-    if log_file.exists():
-        try:
-            with open(log_file, "r") as f:
-                moves = json.load(f)
-        except:
-            moves = []
-    
-    moves.append(sl_move_entry)
-    
-    with open(log_file, "w") as f:
-        json.dump(moves, f, indent=2)
+
+    from vuka.utils.telemetry_queue import get_telemetry
+    get_telemetry().submit("sl_move", {
+        "entry": sl_move_entry,
+        "log_file": str(Path(f"sl_moves_{s._instance_tag}.json")),
+    })
 
 
 def round_to_tick(price: float, symbol: str) -> float:
