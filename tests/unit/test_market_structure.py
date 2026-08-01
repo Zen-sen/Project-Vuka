@@ -1,22 +1,45 @@
-import pytest
-import pandas as pd
 import numpy as np
+import pandas as pd
 
 from vuka.market_structure.ict import (
-    detect_liquidity_sweep,
-    check_displacement_validity,
-    detect_fvg,
-    detect_immediate_fvg,
-    detect_breaker_blocks,
-    detect_unicorn_zone,
-    detect_m15_bos,
+    _find_swing_points,
     calculate_adx_wilder,
     calculate_atr,
+    check_displacement_validity,
+    detect_breaker_blocks,
+    detect_fvg,
+    detect_immediate_fvg,
+    detect_liquidity_sweep,
+    detect_m15_bos,
+    detect_unicorn_zone,
 )
 
 
 def make_candle(open_, high, low, close):
     return pd.Series({"open": open_, "high": high, "low": low, "close": close})
+
+
+class TestSwingPoints:
+    def test_no_swings_monotonic(self):
+        df = pd.DataFrame({"high": [1, 2, 3, 4, 5], "low": [0.9, 1.9, 2.9, 3.9, 4.9]})
+        assert _find_swing_points(df) == ([], [])
+
+    def test_swing_high(self):
+        df = pd.DataFrame({"high": [1.0, 2.0, 3.0, 2.0, 1.0], "low": [0.5, 1.5, 2.5, 1.5, 0.5]})
+        highs, lows = _find_swing_points(df)
+        assert highs == [(2, 3.0)]
+        assert lows == []
+
+    def test_swing_low(self):
+        df = pd.DataFrame({"high": [2.0, 1.5, 1.0, 1.5, 2.0], "low": [1.5, 1.0, 0.5, 1.0, 1.5]})
+        highs, lows = _find_swing_points(df)
+        assert lows == [(2, 0.5)]
+        assert highs == []
+
+    def test_insufficient_data(self):
+        df = pd.DataFrame({"high": [1.0, 2.0], "low": [0.9, 1.9]})
+        assert _find_swing_points(df) == ([], [])
+        assert _find_swing_points(None) == ([], [])
 
 
 class TestLiquiditySweep:
@@ -39,6 +62,49 @@ class TestLiquiditySweep:
         tail.iloc[-1, tail.columns.get_loc("low")] = tail["low"].iloc[:-1].min() + 0.0001
         result, level = detect_liquidity_sweep(tail)
         assert result is None
+
+    def test_sweep_breaks_structural_swing_high(self):
+        df = pd.DataFrame({
+            "high": [1.0, 2.0, 3.0, 2.0, 1.0, 1.0, 1.0, 1.0, 1.0, 3.5],
+            "low": [0.5, 0.6, 0.7, 0.8, 0.9, 1.0, 1.1, 1.2, 1.3, 1.4],
+            "close": [0.8, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 3.0],
+        })
+        result, level = detect_liquidity_sweep(df)
+        assert result == "SWEEP_HIGH"
+        assert level == 3.0
+
+    def test_sweep_breaks_structural_swing_low(self):
+        df = pd.DataFrame({
+            "high": [1.5, 1.6, 1.7, 1.8, 1.9, 2.0, 2.1, 2.2, 2.3, 2.4],
+            "low": [2.0, 1.8, 1.5, 1.2, 1.0, 1.1, 1.2, 1.3, 1.4, 0.4],
+            "close": [1.5, 1.6, 1.6, 1.6, 1.6, 1.6, 1.6, 1.6, 1.6, 0.5],
+        })
+        result, level = detect_liquidity_sweep(df)
+        assert result == "SWEEP_LOW"
+        assert level == 1.0
+
+    def test_no_sweep_when_swing_not_broken(self):
+        df = pd.DataFrame({
+            "high": [1.0, 2.0, 3.0, 2.0, 1.0, 1.0, 1.0, 1.0, 1.0, 2.9],
+            "low": [0.5, 0.6, 0.7, 0.8, 0.9, 1.0, 1.1, 1.2, 1.3, 1.4],
+            "close": [0.8, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 2.5],
+        })
+        result, level = detect_liquidity_sweep(df)
+        assert result is None
+
+    def test_lookback_hides_old_swing(self):
+        """A swing older than the lookback window is not considered structural."""
+        df = pd.DataFrame({
+            "high": [1.0, 2.0, 3.0, 2.0, 1.0, 1.0, 1.0, 1.0, 1.0, 3.5],
+            "low": [0.5, 0.6, 0.7, 0.8, 0.9, 1.0, 1.1, 1.2, 1.3, 1.4],
+            "close": [0.8, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 3.0],
+        })
+        assert detect_liquidity_sweep(df, lookback=20)[0] == "SWEEP_HIGH"
+        assert detect_liquidity_sweep(df, lookback=3)[0] is None
+
+    def test_insufficient_data(self):
+        df = pd.DataFrame({"high": [1.0], "low": [0.9], "close": [0.95]})
+        assert detect_liquidity_sweep(df) == (None, None)
 
 
 class TestFVG:
@@ -76,6 +142,19 @@ class TestFVG:
         df = pd.DataFrame(candles)
         fvgs = detect_fvg(df)
         assert len(fvgs) == 0
+
+    def test_immediate_fvg_delegates_to_detect_fvg(self):
+        """v6.2: detect_immediate_fvg must be exactly detect_fvg(max_age=3)."""
+        np.random.seed(7)
+        n = 100
+        close = 1.1000 + np.cumsum(np.random.randn(n) * 0.0005)
+        df = pd.DataFrame({
+            "open": close,
+            "high": close + 0.001,
+            "low": close - 0.001,
+            "close": close,
+        })
+        assert detect_immediate_fvg(df) == detect_fvg(df, max_age=3)
 
 
 class TestBOS:
