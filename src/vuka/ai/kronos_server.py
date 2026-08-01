@@ -1,24 +1,21 @@
 """
 Kronos API Server
 FastAPI wrapper for Kronos model inference
-Serves on port 8000, provides /v1/predict and /health endpoints
+Serves on port 8000, provides OHLCV prediction and /health endpoints
 """
-import sys
 import os
-import json
-import logging
+import sys
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
-from pathlib import Path
-from typing import Optional
+from typing import Dict, List, Optional
 
-import torch
 import numpy as np
 import pandas as pd
+import torch
+import uvicorn
 from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel
-from typing import Optional, Dict, List
-import uvicorn
-from contextlib import asynccontextmanager
+
 from vuka.utils.unified_logger import get_logger
 
 # Initialize Unified Logger
@@ -39,26 +36,33 @@ KRONOS_MODEL = "NeoQuasar/Kronos-small"
 MAX_CONTEXT = 512
 REQUEST_TIMEOUT = 2.5
 
-# === LOGGING ===
-LOG_DIR = Path("logs")
-LOG_DIR.mkdir(exist_ok=True)
-LOG_FILE = LOG_DIR / "kronos_api.log"
-
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(message)s',
-    handlers=[
-        logging.FileHandler(LOG_FILE),
-        logging.StreamHandler()
-    ]
-)
-logger = logging.getLogger(__name__)
+# === CONFIDENCE ARITHMETIC CONSTANTS ===
+CONFIDENCE_MIN = 0.1
+CONFIDENCE_MAX = 0.95
+CONFIDENCE_DEFAULT = 0.5
+CONFIDENCE_BOOST_STRONG = 1.25
+CONFIDENCE_BOOST_MEDIUM = 1.15
+CONFIDENCE_BOOST_WEAK = 1.1
+CONFIDENCE_PENALTY_MAJOR = 0.7
+CONFIDENCE_PENALTY_STRONG = 0.75
+CONFIDENCE_PENALTY_MODERATE = 0.8
+WIN_RATE_STRONG = 0.8
+WIN_RATE_MEDIUM = 0.6
+WIN_RATE_WEAK = 0.4
 
 
 def log_json(level: str, message: str, **kwargs):
-    """JSON-structured logging"""
-    _lvl = {"INFO": logging.INFO, "ERROR": logging.ERROR, "WARN": logging.WARNING, "WARNING": logging.WARNING}
-    logger.log(_lvl.get(level.upper(), logging.INFO), message)
+    """Route JSON-structured logging through the unified logger."""
+    _lvl = {
+        "INFO": "INFO",
+        "WARN": "WARN",
+        "WARNING": "WARN",
+        "ERROR": "ERROR",
+        "CRITICAL": "CRITICAL",
+        "GUARD": "GUARD",
+        "TRADE": "TRADE",
+    }
+    logger.log(_lvl.get(level.upper(), "INFO"), message, metadata=kwargs or None)
 
 
 # === GLOBAL STATE (bridge for helper functions not in request context) ===
@@ -66,6 +70,11 @@ tokenizer = None
 model = None
 device = None
 model_loaded = False
+
+
+def _resolve_device() -> torch.device:
+    """Return the active inference device, falling back to CPU when unset."""
+    return device if device is not None else torch.device("cpu")
 
 
 def _sync_state_from_app(app: FastAPI):
@@ -101,19 +110,19 @@ async def lifespan(app: FastAPI):
 
     if torch.cuda.is_available():
         app.state.device = torch.device("cuda:0")
-        logger.info("Using GPU for inference", extra={"device": str(app.state.device)})
+        logger.info("Using GPU for inference", metadata={"device": str(app.state.device)})
     else:
         app.state.device = torch.device("cpu")
-        logger.info("Using CPU for inference", extra={"device": str(app.state.device)})
+        logger.info("Using CPU for inference", metadata={"device": str(app.state.device)})
 
     try:
-        logger.info("Loading KronosTokenizer...", extra={"model": TOKENIZER_MODEL})
+        logger.info("Loading KronosTokenizer...", metadata={"model": TOKENIZER_MODEL})
         app.state.tokenizer = KronosTokenizer.from_pretrained(TOKENIZER_MODEL)
         app.state.tokenizer.to(app.state.device)
         app.state.tokenizer.eval()
         logger.info("Tokenizer loaded successfully")
 
-        logger.info("Loading Kronos model...", extra={"model": KRONOS_MODEL})
+        logger.info("Loading Kronos model...", metadata={"model": KRONOS_MODEL})
         app.state.model = Kronos.from_pretrained(KRONOS_MODEL)
         app.state.model.to(app.state.device)
         app.state.model.eval()
@@ -125,7 +134,7 @@ async def lifespan(app: FastAPI):
 
     except Exception as e:
         msg = f"FATAL: Application context generation failed: {str(e)}"
-        logger.critical(msg)
+        logger.log("CRITICAL", msg)
         app.state.model_loaded = False
         raise e
 
@@ -155,11 +164,6 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Kronos API", version="1.0.0", lifespan=lifespan)
 
 
-class PredictRequest(BaseModel):
-    tokens: list
-    ingwe_signal: str
-
-
 class PredictResponse(BaseModel):
     agree: bool
     confidence: float
@@ -183,7 +187,7 @@ def tokenize_ohlcv(df: pd.DataFrame, max_candles: int = MAX_CONTEXT) -> torch.Te
     """
     if df is None or df.empty:
         # Return a tensor of zeros with shape (1, max_candles, 4) as fallback
-        return torch.zeros(1, max_candles, 4, dtype=torch.float32).to(device)
+        return torch.zeros(1, max_candles, 4, dtype=torch.float32).to(_resolve_device())
     
     df = df.tail(max_candles).copy()
 
@@ -206,7 +210,7 @@ def tokenize_ohlcv(df: pd.DataFrame, max_candles: int = MAX_CONTEXT) -> torch.Te
     features = np.column_stack([close_prices, high_prices, low_prices, volumes])
     
     tensor = torch.tensor(features, dtype=torch.float32).unsqueeze(0)
-    return tensor.to(device)
+    return tensor.to(_resolve_device())
 
 
 def run_inference(ohlcv_tensor: torch.Tensor, direction_hint: str = None) -> tuple[bool, float]:
@@ -252,7 +256,7 @@ def run_inference(ohlcv_tensor: torch.Tensor, direction_hint: str = None) -> tup
             ])
             
             # Run through actual model
-            model_input = torch.tensor(features, dtype=torch.float32).unsqueeze(0).to(device)
+            model_input = torch.tensor(features, dtype=torch.float32).unsqueeze(0).to(_resolve_device())
             
             with torch.no_grad():
                 # Try model forward pass
@@ -308,10 +312,6 @@ def run_inference(ohlcv_tensor: torch.Tensor, direction_hint: str = None) -> tup
             # Model inference failed - use REALISTIC fallback (not fake 90%)
             log_json("WARN", f"Model inference failed, using realistic fallback: {model_error}")
             
-            # Clear GPU cache on inference failure
-            if device and str(device).startswith("cuda"):
-                torch.cuda.empty_cache()
-            
             # Simple but REALISTIC confidence calculation
             # Momentum-based trend follow as base fallback
             n = len(valid_prices)
@@ -346,61 +346,7 @@ def run_inference(ohlcv_tensor: torch.Tensor, direction_hint: str = None) -> tup
     
     except Exception as e:
         log_json("ERROR", f"Inference error: {str(e)}")
-        if device and str(device).startswith("cuda"):
-            torch.cuda.empty_cache()
         return True, 0.60  # Conservative default
-
-
-@app.post("/v1/predict", response_model=PredictResponse)
-async def predict(request: PredictRequest):
-    """Main prediction endpoint for Veto Gate"""
-    if not model_loaded:
-        raise HTTPException(status_code=503, detail="Model not loaded yet")
-
-    try:
-        # Log request
-        log_json("INFO", "Prediction request received",
-                 ingwe_signal=request.ingwe_signal,
-                 token_count=len(request.tokens))
-
-        # If tokens are provided as pre-processed, use them
-        # Otherwise, we need OHLCV data (which Ingwe will provide)
-        # For now, handle the case where tokens are dummy
-        if request.tokens and len(request.tokens) > 100:
-            # Tokens provided - use them directly
-            tokens = torch.tensor([request.tokens[-MAX_CONTEXT:]], dtype=torch.long).to(device)
-        else:
-            # No valid tokens - return default (allow with low confidence)
-            log_json("WARN", "No valid tokens provided, returning default")
-            return PredictResponse(
-                agree=True,
-                confidence=0.5,
-                reason="No valid tokens provided"
-            )
-
-        # Run inference
-        agree, confidence = run_inference(tokens.unsqueeze(0) if len(tokens.shape) == 1 else tokens, request.ingwe_signal)
-
-        log_json("INFO", "Prediction complete",
-                 agree=agree,
-                 confidence=confidence)
-
-        reason = f"Oracle {'Agrees' if agree else 'Disagrees'} ({confidence:.0%})"
-
-        return PredictResponse(
-            agree=agree,
-            confidence=confidence,
-            reason=reason
-        )
-
-    except Exception as e:
-        log_json("ERROR", f"Prediction failed: {str(e)}")
-        # Fallback to ALLOW on error
-        return PredictResponse(
-            agree=True,
-            confidence=0.5,
-            reason=f"API Fallback (Error: {str(e)})"
-        )
 
 
 @app.post("/v1/predict-ohlcv")
@@ -495,20 +441,20 @@ async def predict_structured(request: StructuredRequest):
             reason_detail.append(f"HTF trend ({trend}) conflicts with {direction}")
 
         if setup_type == "CONTINUATION" and not bos_aligned:
-            confidence *= 0.7
+            confidence *= CONFIDENCE_PENALTY_MAJOR
             reason_detail.append("Continuation without BOS")
             log_json("WARN", "Continuation without BOS - confidence reduced",
                      setup_type=setup_type,
                      bos_aligned=bos_aligned)
 
         if not spread_ok:
-            confidence *= 0.8
+            confidence *= CONFIDENCE_PENALTY_MODERATE
             reason_detail.append("Wide spread")
 
         if level_sweep:
-            confidence = min(confidence * 1.1, 0.95)
+            confidence = min(confidence * CONFIDENCE_BOOST_WEAK, CONFIDENCE_MAX)
 
-        confidence = max(0.1, min(0.95, confidence))
+        confidence = max(CONFIDENCE_MIN, min(CONFIDENCE_MAX, confidence))
 
         if context_conflict and confidence > 0.3:
             confidence = 0.3
@@ -573,28 +519,21 @@ def detect_pattern_sequence(df: pd.DataFrame) -> dict:
     prior_low = recent["low"].iloc[:swing_window].min()
     
     last_3 = df.iloc[-3:]
-    sweep_detected = False
+    high_mask = last_3["high"].values > prior_high * 1.001
+    low_mask = last_3["low"].values < prior_low * 0.999
+    first_breach = np.flatnonzero(high_mask | low_mask)
+    sweep_detected = first_breach.size > 0
     sweep_type = None
-    for _, row in last_3.iterrows():
-        if row["high"] > prior_high * 1.001:
-            sweep_detected = True
-            sweep_type = "SWEEP_HIGH"
-            break
-        if row["low"] < prior_low * 0.999:
-            sweep_detected = True
-            sweep_type = "SWEEP_LOW"
-            break
-    
+    if sweep_detected:
+        sweep_type = "SWEEP_HIGH" if high_mask[first_breach[0]] else "SWEEP_LOW"
+
     if not sweep_detected:
         return {"quality": 0.4, "description": "no_sweep"}
     
     # 2. Detect Displacement: is there a candle with body > 1.8x average?
-    displacement_idx = None
-    for i in range(max(0, n - 5), n):
-        body = abs(closes[i] - df["open"].values[i])
-        if body > avg_body * 1.8:
-            displacement_idx = i
-            break
+    bodies = np.abs(closes[max(0, n - 5):n] - df["open"].values[max(0, n - 5):n])
+    disp_candidates = np.flatnonzero(bodies > avg_body * 1.8)
+    displacement_idx = int(max(0, n - 5) + disp_candidates[0]) if disp_candidates.size else None
     
     if displacement_idx is None:
         return {"quality": 0.5, "description": f"sweep_no_displacement"}
@@ -660,21 +599,32 @@ except ImportError as e:
 
 CONCEPT_TRACKER_AVAILABLE = False
 try:
-    from skills.concept_tracker import ConceptTracker
+    from skills.concept_tracker import ConceptTracker, get_pattern_win_rate
     concept_tracker = ConceptTracker()
     CONCEPT_TRACKER_AVAILABLE = True
     log_json("INFO", "Concept Performance Tracker loaded")
 except ImportError:
     concept_tracker = None
+    get_pattern_win_rate = None
+    CONCEPT_TRACKER_AVAILABLE = False
     log_json("WARN", "Concept tracker not available")
 
 SYNTHESIZER_AVAILABLE = False
+_synthesizer = None
 try:
     from skills.decision_synthesizer import DecisionSynthesizer
     SYNTHESIZER_AVAILABLE = True
     log_json("INFO", "Decision Synthesizer loaded")
 except ImportError:
     log_json("WARN", "Decision synthesizer not available")
+
+
+def _get_synthesizer():
+    """Return a cached DecisionSynthesizer, lazily created once."""
+    global _synthesizer
+    if SYNTHESIZER_AVAILABLE and _synthesizer is None:
+        _synthesizer = DecisionSynthesizer(concept_tracker)
+    return _synthesizer
 
 
 class ICTPredictRequest(BaseModel):
@@ -767,9 +717,8 @@ async def predict_ict(request: ICTPredictRequest):
         agree, confidence = run_inference(ohlcv_tensor, direction)
 
         # Phase 4a: Boost confidence with concept_tracker pattern stats
-        try:
-            from skills.concept_tracker import get_pattern_win_rate
-            if ctx.get("session") and ctx.get("setup_type"):
+        if CONCEPT_TRACKER_AVAILABLE and get_pattern_win_rate and ctx.get("session") and ctx.get("setup_type"):
+            try:
                 _wr, _samples = get_pattern_win_rate(
                     ctx.get("symbol", "EURUSD"),
                     ctx.get("session", "unknown"),
@@ -779,45 +728,45 @@ async def predict_ict(request: ICTPredictRequest):
                 if _samples >= 5:
                     # Boost confidence based on historical WR
                     # WR < 40% penalize, WR > 60% boost, WR > 80% strong boost
-                    if _wr < 0.40:
-                        confidence *= 0.75
-                    elif _wr > 0.80:
-                        confidence = min(confidence * 1.25, 0.95)
-                    elif _wr > 0.60:
-                        confidence = min(confidence * 1.15, 0.95)
+                    if _wr < WIN_RATE_WEAK:
+                        confidence *= CONFIDENCE_PENALTY_STRONG
+                    elif _wr > WIN_RATE_STRONG:
+                        confidence = min(confidence * CONFIDENCE_BOOST_STRONG, CONFIDENCE_MAX)
+                    elif _wr > WIN_RATE_MEDIUM:
+                        confidence = min(confidence * CONFIDENCE_BOOST_MEDIUM, CONFIDENCE_MAX)
                     log_json("INFO", "Concept tracker confidence adjustment",
                              win_rate=round(_wr, 2), samples=_samples,
                              adjusted_confidence=round(confidence, 2))
-        except Exception:
-            pass
+            except Exception:
+                pass
 
         # ── v5.5: Pattern Sequence Confidence Adjustment ──
         reason_detail = []
         if pattern_quality < 0.4:
-            confidence *= 0.7
+            confidence *= CONFIDENCE_PENALTY_MAJOR
             reason_detail.append("weak_pattern_sequence")
         elif pattern_quality >= 0.8:
-            confidence = min(confidence * 1.15, 0.95)
+            confidence = min(confidence * CONFIDENCE_BOOST_MEDIUM, CONFIDENCE_MAX)
             reason_detail.append("strong_pattern_sequence")
 
         # ── v5.5: Killzone Timing Confidence Adjustment ───
         if kz_quality < 0.5:
-            confidence *= 0.8
+            confidence *= CONFIDENCE_PENALTY_MODERATE
             reason_detail.append("off_killzone_timing")
         elif kz_quality >= 1.0:
-            confidence = min(confidence * 1.1, 0.95)
+            confidence = min(confidence * CONFIDENCE_BOOST_WEAK, CONFIDENCE_MAX)
             reason_detail.append("killzone_aligned")
 
         expected_trend = "BULLISH" if direction == "BUY" else "BEARISH"
         if trend != expected_trend and trend != "UNKNOWN":
-            confidence *= 0.7
+            confidence *= CONFIDENCE_PENALTY_MAJOR
             reason_detail.append(f"HTF/ICT trend conflict")
 
         if setup_type == "CONTINUATION" and not bos_aligned:
-            confidence *= 0.8
+            confidence *= CONFIDENCE_PENALTY_MODERATE
             reason_detail.append("Continuation without BOS")
 
-        confidence = max(0.1, min(0.95, confidence))
+        confidence = max(CONFIDENCE_MIN, min(CONFIDENCE_MAX, confidence))
 
         agree_str = "Agrees" if agree else "Disagrees"
         reason = f"{agree_str} ({confidence:.0%})"
@@ -960,8 +909,11 @@ async def synthesize_decision(request: SynthesizeRequest):
     - final_score = base_edge * confidence * (1 - conflict_score)
     """
     try:
-        synthesizer = DecisionSynthesizer(concept_tracker)
-        
+        synthesizer = _get_synthesizer()
+        if synthesizer is None:
+            log_json("WARN", "Synthesis unavailable - synthesizer not loaded")
+            return {"error": "Synthesizer not available", "final_score": 0, "verdict": "SKIP"}
+
         decision = synthesizer.synthesize(
             concepts=request.concepts,
             market_context=request.market_context,
