@@ -107,16 +107,20 @@ def get_daily_pnl() -> float:
     deals    = mt5_fetch_with_retry(mt5.history_deals_get, midnight, _server_now())
     if deals is None:
         return 0.0
-    return sum(d.profit for d in deals if d.magic == s._instance_magic)
+    return sum(
+        d.profit + d.swap + d.commission
+        for d in deals if d.magic == s._instance_magic
+    )
 
 
 def check_consecutive_losses() -> bool:
     """
     v5.1 FIX: Persistent consecutive loss tracking across days.
-    Loads saved loss count, checks against threshold (3 losses = pause).
+    Loads saved loss count, checks against the configured threshold
+    (s.MAX_CONSECUTIVE_LOSSES losses = pause).
     """
     loss_count, _ = load_consecutive_losses()
-    if loss_count >= 3:
+    if loss_count >= s.MAX_CONSECUTIVE_LOSSES:
         _log(f"Consecutive loss limit reached ({loss_count} losses) -- Ingwe pauses.", "GUARD")
         return True
     return False
@@ -192,20 +196,21 @@ def update_consecutive_losses():
     if not own_deals:
         return
 
-    last_deal = own_deals[-1]
     current_count, last_ticket = load_consecutive_losses()
 
-    if last_deal.ticket == last_ticket:
+    new_deals = [d for d in own_deals if d.ticket > last_ticket]
+    if not new_deals:
         return
 
-    if last_deal.profit < 0:
-        new_count = current_count + 1
-        save_consecutive_losses(new_count, last_deal.ticket)
-        _log(f"Loss recorded -- consecutive losses: {new_count}", "INFO")
-    else:
-        if current_count > 0:
-            save_consecutive_losses(0, last_deal.ticket)
+    for d in new_deals:
+        if d.profit < 0:
+            current_count += 1
+            _log(f"Loss recorded -- consecutive losses: {current_count}", "INFO")
+        elif current_count > 0:
+            current_count = 0
             _log("Win recorded -- consecutive loss counter reset.", "INFO")
+
+    save_consecutive_losses(current_count, new_deals[-1].ticket)
 
 
 def get_spread() -> float | None:
@@ -260,10 +265,10 @@ def calculate_lot_size(sl_distance: float | None = None) -> float:
 
     min_lot = symbol_info.volume_min
     max_lot = symbol_info.volume_max
-    final_lot = max(min_lot, min(lot_size, max_lot, s.HARD_LOT_CAP))
-
     lot_step = symbol_info.volume_step
+    final_lot = max(min_lot, min(lot_size, max_lot, s.HARD_LOT_CAP))
     final_lot = round(final_lot / lot_step) * lot_step
+    final_lot = max(min_lot, min(final_lot, max_lot, s.HARD_LOT_CAP))
 
     return float(final_lot)
 

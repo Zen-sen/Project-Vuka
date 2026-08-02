@@ -31,6 +31,7 @@ class State:
         "ATR_PERIOD", "ATR_MULTIPLIER", "MIN_SL_ATR_MULTIPLIER",
         "LIMIT_ORDER_EXPIRY_CANDLES", "ADX_PERIOD", "ADX_MIN_THRESHOLD",
         "MIN_SPREAD_PIPS", "MAX_DAILY_LOSS", "MAX_DRAWDOWN_PCT",
+        "MAX_CONSECUTIVE_LOSSES",
         "HARD_LOT_CAP", "SCAN_INTERVAL_SEC", "DATA_STALE_MINUTES",
         "DATA_STALE_MINUTES_ASIAN", "MT5_RETRY_ATTEMPTS", "MT5_RETRY_DELAY_SEC",
         # DB
@@ -91,6 +92,7 @@ class State:
         self.MIN_SPREAD_PIPS: float = 0.0001
         self.MAX_DAILY_LOSS: float = 50.0
         self.MAX_DRAWDOWN_PCT: float = 10.0
+        self.MAX_CONSECUTIVE_LOSSES: int = 3
         self.HARD_LOT_CAP: float = 0.20
         self.SCAN_INTERVAL_SEC: int = 900
         self.DATA_STALE_MINUTES: int = 30

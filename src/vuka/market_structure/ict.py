@@ -55,7 +55,7 @@ def check_displacement_validity(c1: pd.Series, c2: pd.Series) -> bool:
     c1_range = c1["high"] - c1["low"]
     c2_range = c2["high"] - c2["low"]
     if c1_range == 0 or c2_range == 0:
-        return True
+        return False
     range_ok = c2_range > (c1_range * 1.5)
     body     = abs(c2["close"] - c2["open"])
     body_ok  = (body / c2_range) >= 0.6

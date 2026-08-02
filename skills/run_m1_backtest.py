@@ -17,6 +17,10 @@ import pandas as pd
 BASE_DIR = Path(__file__).parent.parent
 RESULTS_FILE = BASE_DIR / "data" / "m1_backtest_results.json"
 
+sys.path.insert(0, str(BASE_DIR))
+sys.path.insert(0, str(BASE_DIR / "src"))
+from vuka.market_structure.ict import calculate_atr as _calculate_atr
+
 ICT_M1_SESSIONS = {
     "Asian": (2, 6),
     "London": (9, 12),
@@ -101,19 +105,10 @@ class M1Backtester:
         print(f"[OK] Loaded {len(self.df)} candles from {self.config.csv_file.name}")
     
     def calculate_atr(self, period: int = 14):
-        if len(self.df) < period + 1:
+        atr = _calculate_atr(self.df, period)
+        if atr is None:
             return 0.0005
-        
-        high = self.df["high"].values
-        low = self.df["low"].values
-        close = self.df["close"].values
-        
-        tr = [max(high[i] - low[i], 
-                  abs(high[i] - close[i-1]), 
-                  abs(low[i] - close[i-1])) 
-              for i in range(1, len(high))]
-        
-        self.atr = sum(tr[:period]) / period
+        self.atr = atr
         return self.atr
     
     def get_session(self) -> str:

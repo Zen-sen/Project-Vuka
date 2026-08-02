@@ -25,7 +25,7 @@ if str(_PROJECT_ROOT / "src") not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT / "src"))
 
 from vuka.core.config import calculate_confluence_score, get_confluence_threshold, load_config
-from vuka.market_structure.ict import calculate_adx_wilder
+from vuka.market_structure.ict import calculate_adx_wilder, calculate_atr
 
 CSV_DIR = BASE_DIR / "data" / "sessions"
 DEFAULT_CSV = CSV_DIR / "GBPUSDc_M15_202601012200_202605110000.csv"
@@ -131,13 +131,10 @@ class LondonOpenBacktester:
         return None
 
     def calculate_atr(self, period: int = 14):
-        if len(self.df) < period + 1:
+        atr = calculate_atr(self.df, period)
+        if atr is None:
             return 0.0005
-        high = self.df["high"].values
-        low = self.df["low"].values
-        close = self.df["close"].values
-        tr = [max(high[i] - low[i], abs(high[i] - close[i-1]), abs(low[i] - close[i-1])) for i in range(1, min(period + 1, len(high)))]
-        self.atr = sum(tr) / len(tr) if tr else 0.0005
+        self.atr = atr
         return self.atr
 
     def calculate_ema(self, period: int = 20) -> float:

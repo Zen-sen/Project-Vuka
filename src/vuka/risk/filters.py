@@ -35,8 +35,8 @@ def get_active_blackouts():
 
 def get_current_session() -> str | None:
     hour = now_sast().hour
-    for session, (s, e) in get_active_killzones().items():
-        if s <= hour < e if s <= e else (hour >= s or hour < e):
+    for session, (start_h, end_h) in get_active_killzones().items():
+        if start_h <= hour < end_h if start_h <= end_h else (hour >= start_h or hour < end_h):
             return session
     return None
 
@@ -50,16 +50,21 @@ def is_in_dead_zone() -> bool:
 
 def get_current_sb_window() -> str | None:
     hour = now_sast().hour
-    for window, (s, e) in get_active_sb_windows().items():
-        if s <= hour < e:
+    for window, (start_h, end_h) in get_active_sb_windows().items():
+        if start_h <= hour < end_h:
             return window
     return None
 
 
 def is_in_news_blackout() -> bool:
     h, m = now_sast().hour, now_sast().minute
+    now_min = h * 60 + m
     for (sh, sm, eh, em) in get_active_blackouts():
-        if (sh < h < eh) or (sh == h and m >= sm) or (eh == h and m < em):
+        start_min, end_min = sh * 60 + sm, eh * 60 + em
+        if start_min <= end_min:
+            if start_min <= now_min < end_min:
+                return True
+        elif now_min >= start_min or now_min < end_min:
             return True
     return False
 

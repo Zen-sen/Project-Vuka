@@ -100,6 +100,23 @@ class TestLotSize:
             lot = mod.calculate_lot_size(sl_distance=0.0)
             assert 0.0 < lot <= 0.20
 
+    def test_lot_rounding_reclamped_to_min(self):
+        """Rounding to lot_step must not push volume below broker min_lot."""
+        s.RISK_PERCENT = 1.0
+        s.HARD_LOT_CAP = 1.0
+        import vuka.risk.portfolio as mod
+        with patch.object(mod, "mt5") as mock_mt5:
+            mock_mt5.account_info.return_value.equity = 1000.0
+            mock_mt5.symbol_info.return_value = MagicMock(
+                trade_tick_value=1.0,
+                trade_tick_size=0.00001,
+                volume_min=0.025,
+                volume_max=100.0,
+                volume_step=0.02,
+            )
+            lot = mod.calculate_lot_size(sl_distance=0.0035)
+            assert lot == 0.025
+
 
 class TestSpread:
     def test_spread_backtest_mode(self):
@@ -156,6 +173,18 @@ class TestDailyPnL:
         pnl = mod.get_daily_pnl()
         assert pnl == 0.0
 
+    def test_pnl_includes_swap_and_commission(self):
+        s._instance_magic = 100
+        import vuka.risk.portfolio as mod
+        deals = [
+            MagicMock(magic=100, profit=50.0, swap=-1.5, commission=-0.8),
+            MagicMock(magic=100, profit=-25.0, swap=-0.6, commission=-0.4),
+            MagicMock(magic=999, profit=999.0, swap=0.0, commission=0.0),
+        ]
+        mod.mt5_fetch_with_retry = MagicMock(return_value=deals)
+        pnl = mod.get_daily_pnl()
+        assert pnl == pytest.approx(21.7)
+
 
 class TestConsecutiveLosses:
     def test_no_losses(self):
@@ -166,6 +195,16 @@ class TestConsecutiveLosses:
     def test_three_losses_triggers_pause(self):
         import vuka.risk.portfolio as mod
         with patch.object(mod, "load_consecutive_losses", return_value=(3, 12345)), \
+             patch.object(mod, "log"):
+            assert mod.check_consecutive_losses() is True
+
+    def test_threshold_reads_config(self):
+        s.MAX_CONSECUTIVE_LOSSES = 5
+        import vuka.risk.portfolio as mod
+        with patch.object(mod, "load_consecutive_losses", return_value=(4, 12345)), \
+             patch.object(mod, "log"):
+            assert mod.check_consecutive_losses() is False
+        with patch.object(mod, "load_consecutive_losses", return_value=(5, 12345)), \
              patch.object(mod, "log"):
             assert mod.check_consecutive_losses() is True
 
@@ -196,6 +235,20 @@ class TestConsecutiveLosses:
              patch.object(mod, "log"):
             mod.update_consecutive_losses()
             mock_save.assert_called_with(2, 999)
+
+    def test_multiple_new_deals_all_counted(self):
+        """Every deal closed since last_ticket must be evaluated, not just the tail."""
+        import vuka.risk.portfolio as mod
+        s._instance_magic = 100
+        loss1 = MagicMock(ticket=1000, profit=-10.0, magic=100)
+        win   = MagicMock(ticket=1001, profit=20.0, magic=100)
+        loss2 = MagicMock(ticket=1002, profit=-15.0, magic=100)
+        mod.mt5_fetch_with_retry = MagicMock(return_value=[loss1, win, loss2])
+        with patch.object(mod, "save_consecutive_losses") as mock_save, \
+             patch.object(mod, "load_consecutive_losses", return_value=(0, 999)), \
+             patch.object(mod, "log"):
+            mod.update_consecutive_losses()
+            mock_save.assert_called_with(1, 1002)
 
 
 class TestConsecutiveLossesRAM:

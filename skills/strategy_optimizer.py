@@ -24,6 +24,10 @@ OPT_RESULTS_FILE = BASE_DIR / "data" / "optimization_results.json"
 BEST_PARAMS_FILE = BASE_DIR / "data" / "best_params.json"
 CONFIG_FILE = BASE_DIR / "data" / "ingwe_config.json"
 
+sys.path.insert(0, str(BASE_DIR))
+sys.path.insert(0, str(BASE_DIR / "src"))
+from vuka.market_structure.ict import calculate_atr as _calculate_atr
+
 PARAM_GRID = {
     "adx_threshold": [15, 20, 25, 30],
     "rrr":           [2.5, 3.0, 3.5],
@@ -98,14 +102,10 @@ def run_real_backtest(rrr: float, risk: float, adx: int = 30, quiet: bool = True
             self.df["time"] = pd.to_datetime(self.df["date"] + " " + self.df["time"])
         
         def calculate_atr(self, period: int = 14):
-            if len(self.df) < period + 1:
+            atr = _calculate_atr(self.df, period)
+            if atr is None:
                 return 0.0005
-            high = self.df["high"].values
-            low = self.df["low"].values
-            close = self.df["close"].values
-            tr = [max(high[i] - low[i], abs(high[i] - close[i-1]), abs(low[i] - close[i-1])) 
-                  for i in range(1, len(high))]
-            self.atr = sum(tr[:period]) / period
+            self.atr = atr
             return self.atr
         
         def get_current_price(self):
