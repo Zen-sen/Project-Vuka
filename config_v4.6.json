@@ -1,0 +1,26 @@
+{
+  "system": {
+    "version": "4.6",
+    "hardening": "defense_in_depth"
+  },
+  "veto_gate": {
+    "enabled": true,
+    "mode": "enforced",
+    "safety_mode": "VETO_SAFE",
+    "endpoint": "http://127.0.0.1:8000/v1/predict-ict",
+    "threshold": 0.40
+  },
+  "state_manager": {
+    "session_file": "sessions_today.json",
+    "backup_dir": "state_backups",
+    "max_backups": 10,
+    "atomic_write_enabled": true
+  },
+  "health_monitor": {
+    "window_size": 100,
+    "anomaly_check_interval": 10,
+    "alert_on_error": true,
+    "alert_on_veto_rate_gt": 0.7,
+    "alert_on_no_sweeps": true
+  }
+}

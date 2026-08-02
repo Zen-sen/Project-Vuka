@@ -1,0 +1,20 @@
+import MetaTrader5 as mt5
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+import pandas as pd
+import numpy as np
+import time
+import json
+import os
+import sys
+import hashlib
+import codecs
+
+# NEW: v4.6 Hardening modules
+from state_manager_v4.6 import StateManager
+from health_monitor_v4.6 import HealthMonitor
+from kronos_guardian_v4.6 import KronosVetoGate, create_veto_gate
+
+if sys.platform == "win32":
+    sys.stdout = codecs.getwriter('utf-8')(sys.stdout.buffer, 'strict')
+    sys.stderr = codecs.getwriter('utf-8')(sys.stderr.buffer, 'strict')

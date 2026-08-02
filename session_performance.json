@@ -1,0 +1,11 @@
+{
+  "session_performance": {
+    "asian": { "buy": 0.29, "sell": 1.00 },
+    "london": { "buy": 0.14, "sell": 0.00 },
+    "new york": { "buy": 0.00, "sell": 0.58 }
+  },
+  "session_asymmetry_bonus": {
+    "asian:sell": 10,
+    "new york:sell": 10
+  }
+}
