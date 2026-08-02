@@ -13,7 +13,7 @@ import codecs
 from typing import Optional
 
 
-__version__ = "5.5.0"
+__version__ = "6.1.0"
 
 # Shared runtime state -- all extracted modules use s.NAME to see updates
 from vuka.core.state import s
