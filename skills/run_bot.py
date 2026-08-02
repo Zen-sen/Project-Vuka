@@ -172,6 +172,12 @@ def cmd_reset(confirmed: bool):
 
 
 def main():
+    try:
+        sys.stdout.reconfigure(encoding="utf-8")
+        sys.stderr.reconfigure(encoding="utf-8")
+    except AttributeError:
+        pass
+
     parser = argparse.ArgumentParser(
         description="🐆 Ingwe Bot Lifecycle Manager",
         formatter_class=argparse.RawDescriptionHelpFormatter,
