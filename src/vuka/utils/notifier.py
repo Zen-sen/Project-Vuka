@@ -141,6 +141,14 @@ def _send_telegram(message: str, bot_token: str = "", chat_id: str = "") -> bool
         return False
 
 
+def _tg_escape(text: str) -> str:
+    """Escape Telegram Markdown v1 special characters so raw user text cannot
+    break the message formatting or trigger a Telegram 400 parse error."""
+    for ch in "\\_*[]()~`>#+-=|{}.!":
+        text = text.replace(ch, "\\" + ch)
+    return text
+
+
 def _cooldown_ok(channel: str, title: str) -> bool:
     """Per-channel-per-title rate limit. Returns True if a send is allowed."""
     now = time.monotonic()
@@ -191,8 +199,8 @@ def send(
     tel_enabled = tel_cfg.get("enabled", False) if telegram is None else telegram
     if tel_enabled:
         if _cooldown_ok("telegram", title):
-            tag = f"[{level}]" if level else ""
-            formatted = f"{tag} *{title}*\n\n{message}"
+            tag = f"[{_tg_escape(level)}]" if level else ""
+            formatted = f"{tag} *{_tg_escape(title)}*\n\n{_tg_escape(message)}"
             result.telegram_ok = _send_telegram(
                 formatted, tel_cfg.get("bot_token", ""), tel_cfg.get("chat_id", "")
             )

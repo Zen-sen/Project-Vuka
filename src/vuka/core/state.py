@@ -7,10 +7,53 @@ they share the same State instance.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from vuka.data.database_manager import DatabaseManager
+    from skills.trading_governor import TradingGovernor
 
 
 class State:
+    # Fixed attribute set -- prevents accidental attribute creation and
+    # trims per-instance memory (no per-instance __dict__).
+    __slots__ = (
+        # Instance identity
+        "STRATEGY", "SYMBOL", "_arg_symbol", "_instance_tag",
+        "_instance_short", "_instance_magic", "LOG_FILE", "SESSIONS_FILE",
+        # Runtime state
+        "initial_equity", "sessions_traded_today", "active_trails",
+        "consecutive_losses", "last_counted_ticket",
+        "BACKTEST_MODE", "BACKTEST_CSV", "BACKTEST_SPEED",
+        "_backtest_index", "_backtest_data",
+        # Strategy config
+        "TIMEFRAME", "RISK_PERCENT", "RISK_REWARD_RATIO",
+        "ATR_PERIOD", "ATR_MULTIPLIER", "MIN_SL_ATR_MULTIPLIER",
+        "LIMIT_ORDER_EXPIRY_CANDLES", "ADX_PERIOD", "ADX_MIN_THRESHOLD",
+        "MIN_SPREAD_PIPS", "MAX_DAILY_LOSS", "MAX_DRAWDOWN_PCT",
+        "HARD_LOT_CAP", "SCAN_INTERVAL_SEC", "DATA_STALE_MINUTES",
+        "DATA_STALE_MINUTES_ASIAN", "MT5_RETRY_ATTEMPTS", "MT5_RETRY_DELAY_SEC",
+        # DB
+        "DB", "DB_AVAILABLE",
+        # Kronos
+        "KRONOS_VETO_GATE", "BUY_THRESHOLD",
+        # Trading governor (P0-FULL filter system)
+        "TRADING_GOVERNOR",
+        # Market circuit
+        "MARKET_CIRCUIT",
+        # Mirrored from bot.py module globals via the state-sync loop
+        "SA_OFFSET", "KILLZONES_WINTER", "KILLZONES_SUMMER",
+        "INGWE_BLACKOUTS_WINTER", "INGWE_BLACKOUTS_SUMMER",
+        "SB_WINDOWS_WINTER", "SB_WINDOWS_SUMMER",
+        "SB_BLACKOUTS_WINTER", "SB_BLACKOUTS_SUMMER",
+        "BTC_KILLZONES", "ICT_M1_SESSIONS",
+        "_SYMBOL_MAP", "CONFIG",
+        "TICK_ENGINE_AVAILABLE", "RUNNING_AS_PACKAGE",
+        "SA_OFFSET_SUMMER", "SA_OFFSET_WINTER",
+        # Per-symbol HTF bias cache (hourly refresh)
+        "htf_bias_cache",
+    )
+
     def __init__(self):
         # Instance identity
         self.STRATEGY: str = ""
@@ -56,7 +99,7 @@ class State:
         self.MT5_RETRY_DELAY_SEC: int = 30
 
         # DB
-        self.DB: Any = None
+        self.DB: DatabaseManager | None = None
         self.DB_AVAILABLE: bool = False
 
         # Kronos
@@ -64,10 +107,14 @@ class State:
         self.BUY_THRESHOLD: float = 0.35
 
         # Trading governor (P0-FULL filter system)
-        self.TRADING_GOVERNOR: Any = None
+        self.TRADING_GOVERNOR: TradingGovernor | None = None
 
         # Market circuit
         self.MARKET_CIRCUIT: Any = None
+
+        # Per-symbol HTF bias cache, keyed by arg_symbol
+        # e.g. {"EURUSD": {"bias": "BULLISH", "timestamp": 123.0}}
+        self.htf_bias_cache: dict = {}
 
 
 s = State()

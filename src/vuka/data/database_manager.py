@@ -425,8 +425,8 @@ class DatabaseManager:
         try:
             conn = self._get_connection()
             cursor = conn.execute(
-                "SELECT * FROM trades WHERE comment = ? ORDER BY time DESC LIMIT 1",
-                (str(position_id),)
+                "SELECT * FROM trades WHERE position_id = ? ORDER BY time DESC LIMIT 1",
+                (position_id,)
             )
             row = cursor.fetchone()
             return dict(row) if row else None

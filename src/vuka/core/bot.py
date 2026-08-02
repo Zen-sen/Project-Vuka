@@ -25,23 +25,27 @@ if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
 # ---- ARGUMENT PARSING ------------------------------------------------
-parser = argparse.ArgumentParser(description="Agent Ingwe -- ICT Trading Bot")
-parser.add_argument("symbol", choices=["EURUSD", "GBPUSD", "USDJPY", "BTCUSD"])
-parser.add_argument("strategy", choices=["INGWE", "SILVER_BULLET", "ICT_M1", "LONDON_OPEN"])
-parser.add_argument("--backtest", action="store_true")
-parser.add_argument("--test", action="store_true")
-parser.add_argument("--check", action="store_true")
-parser.add_argument("--fast", action="store_true")
+def _build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Agent Ingwe -- ICT Trading Bot")
+    parser.add_argument("symbol", choices=["EURUSD", "GBPUSD", "USDJPY", "BTCUSD"])
+    parser.add_argument("strategy", choices=["INGWE", "SILVER_BULLET", "ICT_M1", "LONDON_OPEN"])
+    parser.add_argument("--backtest", action="store_true")
+    parser.add_argument("--test", action="store_true")
+    parser.add_argument("--check", action="store_true")
+    parser.add_argument("--fast", action="store_true")
+    return parser
 
-args = parser.parse_args()
-_arg_symbol = args.symbol.upper()
-_arg_strategy = args.strategy.upper()
-_arg_check = args.check
-_arg_backtest = args.backtest
-_arg_fast = args.fast
-_arg_test = args.test
 
-_instance_tag = f"{_arg_symbol}_{_arg_strategy}"
+# Import-safe defaults. parse_args() runs only inside main(), so importing
+# this module (dashboard, monitor, test harness) never touches sys.argv and
+# never exits with SystemExit. main() overwrites these with real values.
+_arg_symbol = ""
+_arg_strategy = ""
+_arg_check = False
+_arg_backtest = False
+_arg_fast = False
+_arg_test = False
+
 # Core infrastructure
 from vuka.core.health_monitor import HealthMonitor
 from vuka.ai.kronos_guardian import KronosVetoGate, create_veto_gate
@@ -50,9 +54,6 @@ from vuka.utils.unified_logger import get_logger
 from skills.trading_governor import TradingGovernor
 from skills.concept_tracker import record_concept_trade, record_concept_outcome
 from skills.market_circuit import get_circuit
-
-# Initialize Unified Logger
-logger = get_logger(_instance_tag)
 
 # Initialize Memory Manager
 # =======================================================
@@ -86,7 +87,7 @@ from vuka.strategies.london_open import evaluate_london_breakout
 from vuka.strategies.ict_m1 import evaluate_ict_m1
 from vuka.core.config import (
     get_session_multiplier, get_confluence_threshold, calculate_confluence_score,
-    load_config, _derive_magic,
+    load_config, _derive_magic, _SYMBOL_MAP,
 )
 
 
@@ -128,10 +129,10 @@ s.TRADING_GOVERNOR = TRADING_GOVERNOR
 try:
     DB = get_db()
     DB_AVAILABLE = True
-except ImportError:
+except Exception:
     DB = None
     DB_AVAILABLE = False
-    logger.warn("database_manager not available -- falling back to JSON files")
+    get_logger("Ingwe").warn("database_manager not available -- falling back to JSON files")
 
 # =======================================================
 #    PROJECT VUKA -- AGENT INGWE  v{__version__}
@@ -152,151 +153,32 @@ except ImportError:
 # ── STRATEGY & SYMBOL SELECTOR ──────────────────────────
 STRATEGY = _arg_strategy
 
-_SYMBOL_MAP = {
-    "EURUSD": "EURUSDc",
-    "GBPUSD": "GBPUSDc",
-    "USDJPY": "USDJPYc",
-    "BTCUSD": "BTCUSDc",
-}
-SYMBOL = _SYMBOL_MAP[_arg_symbol]
+SYMBOL = _SYMBOL_MAP.get(_arg_symbol, "")
 
 _instance_tag   = f"{_arg_symbol}_{STRATEGY}"
 _instance_short = f"{_arg_symbol[:3]}{'SB' if STRATEGY == 'SILVER_BULLET' else ('M1' if STRATEGY == 'ICT_M1' else ('LO' if STRATEGY == 'LONDON_OPEN' else 'IW'))}"
 
-# Initialize Unified Logger
-logger = get_logger(_instance_tag)
-
 LOG_FILE        = f"trades_{_instance_tag}.json"
 SESSIONS_FILE   = f"sessions_{_instance_tag}.json"
-
-def _derive_magic(tag: str) -> int:
-    """
-    Deterministic magic number from instance tag using SHA-256.
-    Stable across restarts -- hash() randomises per process in Python 3.3+.
-    Range: 234000-244000. Each instance tag maps to exactly one value.
-    """
-    digest = hashlib.sha256(tag.encode()).hexdigest()
-    return int(digest[:8], 16) % 10000 + 234000
 
 _instance_magic = _derive_magic(_instance_tag)
 
 # -------------------------------------------------------
-# CONFIGURATION
+# CONFIGURATION (applied in main() once args are parsed)
 # -------------------------------------------------------
 
-if _arg_symbol == "BTCUSD":
-    TIMEFRAME                = mt5.TIMEFRAME_M1
-    RISK_PERCENT             = 1.0
-    RISK_REWARD_RATIO        = 3.5
-    ATR_PERIOD               = 14
-    ATR_MULTIPLIER           = 1.5
-    MIN_SL_ATR_MULTIPLIER    = 0.5
-    LIMIT_ORDER_EXPIRY_CANDLES = 4
-    ADX_PERIOD               = 14
-    ADX_MIN_THRESHOLD        = 25
-    MIN_SPREAD_PIPS          = 1.0
-    MAX_DAILY_LOSS           = 50.0
-    MAX_DRAWDOWN_PCT         = 10.0
-    HARD_LOT_CAP             = 0.20
-    SCAN_INTERVAL_SEC        = 60
-    DATA_STALE_MINUTES       = 5
-    DATA_STALE_MINUTES_ASIAN = 10
-    MT5_RETRY_ATTEMPTS       = 3
-    MT5_RETRY_DELAY_SEC      = 10
-elif STRATEGY == "ICT_M1":
-    TIMEFRAME                = mt5.TIMEFRAME_M1
-    RISK_PERCENT             = 1.0
-    RISK_REWARD_RATIO        = 2.0
-    ATR_PERIOD               = 14
-    ATR_MULTIPLIER           = 1.0
-    MIN_SL_ATR_MULTIPLIER    = 0.5
-    LIMIT_ORDER_EXPIRY_CANDLES = 4
-    ADX_PERIOD               = 14
-    ADX_MIN_THRESHOLD        = 25
-    MIN_SPREAD_PIPS          = 0.0002
-    MAX_DAILY_LOSS           = 50.0
-    HARD_LOT_CAP             = 0.20
-    SCAN_INTERVAL_SEC        = 60
-    DATA_STALE_MINUTES       = 5
-    DATA_STALE_MINUTES_ASIAN = 10
-    MT5_RETRY_ATTEMPTS       = 3
-    MT5_RETRY_DELAY_SEC      = 10
-elif STRATEGY == "SILVER_BULLET":
-    TIMEFRAME                = mt5.TIMEFRAME_M15
-    RISK_PERCENT             = 1.0
-    RISK_REWARD_RATIO        = 2.0
-    ATR_PERIOD               = 14
-    ATR_MULTIPLIER           = 1.5
-    MIN_SL_ATR_MULTIPLIER    = 0.8
-    LIMIT_ORDER_EXPIRY_CANDLES = 4
-    ADX_PERIOD               = 14
-    ADX_MIN_THRESHOLD        = 25
-    MIN_SPREAD_PIPS          = 0.0002
-    MAX_DAILY_LOSS           = 50.0
-    MAX_DRAWDOWN_PCT         = 10.0
-    HARD_LOT_CAP             = 0.20
-    SCAN_INTERVAL_SEC        = 60
-    DATA_STALE_MINUTES       = 5
-    DATA_STALE_MINUTES_ASIAN = 10
-    MT5_RETRY_ATTEMPTS       = 3
-    MT5_RETRY_DELAY_SEC      = 10
-elif STRATEGY == "LONDON_OPEN":
-    TIMEFRAME                = mt5.TIMEFRAME_M15
-    RISK_PERCENT             = 1.0
-    RISK_REWARD_RATIO        = 2.5
-    ATR_PERIOD               = 14
-    ATR_MULTIPLIER           = 2.0
-    MIN_SL_ATR_MULTIPLIER    = 1.0
-    LIMIT_ORDER_EXPIRY_CANDLES = 4
-    ADX_PERIOD               = 14
-    ADX_MIN_THRESHOLD        = 25
-    MIN_SPREAD_PIPS          = 0.0002
-    MAX_DAILY_LOSS           = 50.0
-    MAX_DRAWDOWN_PCT         = 10.0
-    HARD_LOT_CAP             = 0.20
-    SCAN_INTERVAL_SEC        = 900
-    DATA_STALE_MINUTES       = 30
-    DATA_STALE_MINUTES_ASIAN = 90
-    MT5_RETRY_ATTEMPTS       = 3
-    MT5_RETRY_DELAY_SEC      = 30
-elif _arg_symbol in ("EURUSD", "USDJPY"):
-    TIMEFRAME                = mt5.TIMEFRAME_M15
-    RISK_PERCENT             = 1.0
-    RISK_REWARD_RATIO        = 3.0   # v5.0: Reduced from 3.5 for better win rate
-    ATR_PERIOD               = 14
-    ATR_MULTIPLIER           = 3.0
-    MIN_SL_ATR_MULTIPLIER    = 0.8   # v5.0: Increased from 0.5 for more breathing room
-    LIMIT_ORDER_EXPIRY_CANDLES = 4
-    ADX_PERIOD               = 14
-    ADX_MIN_THRESHOLD        = 25
-    MIN_SPREAD_PIPS          = 0.0002
-    MAX_DAILY_LOSS           = 50.0
-    MAX_DRAWDOWN_PCT         = 10.0
-    HARD_LOT_CAP             = 0.20
-    SCAN_INTERVAL_SEC        = 900
-    DATA_STALE_MINUTES       = 30
-    DATA_STALE_MINUTES_ASIAN = 90
-    MT5_RETRY_ATTEMPTS       = 3
-    MT5_RETRY_DELAY_SEC      = 30
-else:
-    TIMEFRAME                = mt5.TIMEFRAME_M15
-    RISK_PERCENT             = 1.0
-    RISK_REWARD_RATIO        = 3.0   # v5.0: Reduced from 3.5 for better win rate
-    ATR_PERIOD               = 14
-    ATR_MULTIPLIER           = 1.5
-    MIN_SL_ATR_MULTIPLIER    = 0.8   # v5.0: Increased from 0.5 for more breathing room
-    LIMIT_ORDER_EXPIRY_CANDLES = 4
-    ADX_PERIOD               = 14
-    ADX_MIN_THRESHOLD        = 20    # Conservative middle ground -- avoids ranging markets where ICT setups fail
-    MIN_SPREAD_PIPS          = 0.0002
-    MAX_DAILY_LOSS           = 50.0
-    MAX_DRAWDOWN_PCT         = 10.0
-    HARD_LOT_CAP             = 0.20
-    SCAN_INTERVAL_SEC        = 900
-    DATA_STALE_MINUTES       = 30
-    DATA_STALE_MINUTES_ASIAN = 90
-    MT5_RETRY_ATTEMPTS       = 3
-    MT5_RETRY_DELAY_SEC      = 30
+def _apply_strategy_config():
+    """Load strategy-specific risk/scan constants from config.py.
+
+    Single source of truth: config.load_config() returns a dict for this
+    symbol/strategy; we copy it onto module globals (for legacy references)
+    and onto the shared state so extracted modules see the same values.
+    """
+    cfg = load_config(_arg_symbol, STRATEGY, _instance_tag, _arg_symbol)
+    globals().update(cfg)
+    s.CONFIG = cfg
+    for key, value in cfg.items():
+        setattr(s, key, value)
 
 # -------------------------------------------------------
 # BACKTEST MODE (Option B) -- CSV Replay
@@ -389,44 +271,55 @@ initial_equity        = None
 consecutive_losses    = 0
 sessions_traded_today = set()
 
-# Sync all config to shared state (so extracted modules see the values)
-_g = globals()
-for _key in ('STRATEGY', 'SYMBOL', '_arg_symbol', '_instance_tag', '_instance_short',
-             '_instance_magic', 'LOG_FILE', 'SESSIONS_FILE',
-             'TIMEFRAME', 'RISK_PERCENT', 'RISK_REWARD_RATIO',
-             'ATR_PERIOD', 'ATR_MULTIPLIER', 'MIN_SL_ATR_MULTIPLIER',
-             'LIMIT_ORDER_EXPIRY_CANDLES', 'ADX_PERIOD', 'ADX_MIN_THRESHOLD',
-             'MIN_SPREAD_PIPS', 'MAX_DAILY_LOSS', 'MAX_DRAWDOWN_PCT',
-             'HARD_LOT_CAP', 'SCAN_INTERVAL_SEC', 'DATA_STALE_MINUTES',
-             'DATA_STALE_MINUTES_ASIAN', 'MT5_RETRY_ATTEMPTS', 'MT5_RETRY_DELAY_SEC',
-              'BACKTEST_MODE', 'BACKTEST_CSV', 'BACKTEST_SPEED',
-             '_backtest_index', '_backtest_data',
-             'SA_OFFSET', 'initial_equity',
-             'sessions_traded_today',
-             'KILLZONES_WINTER', 'KILLZONES_SUMMER',
-             'INGWE_BLACKOUTS_WINTER', 'INGWE_BLACKOUTS_SUMMER',
-             'SB_WINDOWS_WINTER', 'SB_WINDOWS_SUMMER',
-             'SB_BLACKOUTS_WINTER', 'SB_BLACKOUTS_SUMMER',
-             'BTC_KILLZONES', 'ICT_M1_SESSIONS',
-             '_SYMBOL_MAP', 'CONFIG', 'MARKET_CIRCUIT',
-             'DB', 'DB_AVAILABLE', 'KRONOS_VETO_GATE', 'BUY_THRESHOLD',
-             'TICK_ENGINE_AVAILABLE', 'RUNNING_AS_PACKAGE',
-             'SA_OFFSET_SUMMER', 'SA_OFFSET_WINTER',
-             ):
-    if _key in _g:
-        setattr(s, _key, _g[_key])
+# Sync all config to shared state (so extracted modules see the values).
+# Runs at import (with import-safe defaults) and again inside main() once the
+# real symbol/strategy have been parsed.
+def _sync_state():
+    _g = globals()
+    for _key in ('STRATEGY', 'SYMBOL', '_arg_symbol', '_instance_tag', '_instance_short',
+                 '_instance_magic', 'LOG_FILE', 'SESSIONS_FILE',
+                 'TIMEFRAME', 'RISK_PERCENT', 'RISK_REWARD_RATIO',
+                 'ATR_PERIOD', 'ATR_MULTIPLIER', 'MIN_SL_ATR_MULTIPLIER',
+                 'LIMIT_ORDER_EXPIRY_CANDLES', 'ADX_PERIOD', 'ADX_MIN_THRESHOLD',
+                 'MIN_SPREAD_PIPS', 'MAX_DAILY_LOSS', 'MAX_DRAWDOWN_PCT',
+                 'HARD_LOT_CAP', 'SCAN_INTERVAL_SEC', 'DATA_STALE_MINUTES',
+                 'DATA_STALE_MINUTES_ASIAN', 'MT5_RETRY_ATTEMPTS', 'MT5_RETRY_DELAY_SEC',
+                  'BACKTEST_MODE', 'BACKTEST_CSV', 'BACKTEST_SPEED',
+                 '_backtest_index', '_backtest_data',
+                 'SA_OFFSET', 'initial_equity',
+                 'sessions_traded_today',
+                 'KILLZONES_WINTER', 'KILLZONES_SUMMER',
+                 'INGWE_BLACKOUTS_WINTER', 'INGWE_BLACKOUTS_SUMMER',
+                 'SB_WINDOWS_WINTER', 'SB_WINDOWS_SUMMER',
+                 'SB_BLACKOUTS_WINTER', 'SB_BLACKOUTS_SUMMER',
+                 'BTC_KILLZONES', 'ICT_M1_SESSIONS',
+                 '_SYMBOL_MAP', 'CONFIG', 'MARKET_CIRCUIT',
+                 'DB', 'DB_AVAILABLE', 'KRONOS_VETO_GATE', 'BUY_THRESHOLD',
+                 'TICK_ENGINE_AVAILABLE', 'RUNNING_AS_PACKAGE',
+                 'SA_OFFSET_SUMMER', 'SA_OFFSET_WINTER',
+                 ):
+        if _key in _g:
+            setattr(s, _key, _g[_key])
 
 
-# HTF bias cache — refreshed at most once per hour to prevent MT5 throttling
-_htf_bias_cache: dict = {"bias": None, "timestamp": 0.0}
+_sync_state()
 
 
 # =======================================================
 #  SECTION 1 -- UTILITIES & TIMEZONE
 # =======================================================
 
+# Single logger, instantiated lazily once the real instance tag is known.
+# The log() helper creates it on first use so importing this module for
+# introspection never opens a logger with a placeholder tag.
+logger = None
+
+
 def log(msg: str, level: str = "INFO"):
     """Wrapper for UnifiedLogger to maintain compatibility with existing calls."""
+    global logger
+    if logger is None:
+        logger = get_logger(_instance_tag or "Ingwe")
     logger.log(level=level, message=msg, symbol=_arg_symbol, strategy=STRATEGY)
 
 
@@ -674,15 +567,18 @@ def get_htf_bias() -> str | None:
     Returns 'BULLISH', 'BEARISH', or None (conflicted).
     v5.5: BACKTEST_MODE guard -- skips live MT5 calls during backtest.
     v6.0: HTF data cached for 1 hour to prevent MT5 throttling.
+    v6.x: Cache lives on the shared state, keyed by symbol, so hot reloads and
+          multi-symbol processes never reset or cross-contaminate bias data.
     """
-    global _htf_bias_cache
-    if BACKTEST_MODE:
+    if BACKTEST_MODE or s.BACKTEST_MODE:
         return None
 
-    now = time.time()
-    cache_age = now - _htf_bias_cache["timestamp"]
-    if cache_age < 3600 and _htf_bias_cache["bias"] is not None:
-        return _htf_bias_cache["bias"]
+    cache = s.htf_bias_cache.setdefault(_arg_symbol, {"bias": None, "timestamp": 0.0})
+
+    now = time.monotonic()
+    cache_age = now - cache["timestamp"]
+    if cache_age < 3600 and cache["bias"] is not None:
+        return cache["bias"]
 
     d1_rates = mt5_fetch_with_retry(
         mt5.copy_rates_from_pos, SYMBOL, mt5.TIMEFRAME_D1, 0, 50
@@ -710,11 +606,13 @@ def get_htf_bias() -> str | None:
     h4_bias = "BULLISH" if h4_ema10 > h4_ema30 else ("BEARISH" if h4_ema10 < h4_ema30 else None)
     
     if d1_bias and h4_bias and d1_bias == h4_bias:
-        _htf_bias_cache = {"bias": d1_bias, "timestamp": now}
+        cache["bias"] = d1_bias
+        cache["timestamp"] = now
         return d1_bias
     
     log(f"HTF bias split -- D1: {d1_bias}  H4: {h4_bias}. No HTF confirmation.")
-    _htf_bias_cache = {"bias": None, "timestamp": now}
+    cache["bias"] = None
+    cache["timestamp"] = now
     return None
 
 def get_draw_on_liquidity(direction: str) -> tuple[str, float] | tuple[None, None]:
@@ -761,8 +659,13 @@ def get_candles() -> pd.DataFrame | None:
         if _backtest_index >= len(_backtest_data):
             log("Backtest complete.", "INFO")
             return None
-        
-        return _backtest_data.iloc[:_backtest_index + 1]
+
+        # Trailing window instead of copying rows 0..N on every scan.
+        # Mirrors live mode's 200-candle fetch so strategy behaviour (df.iloc[-1]
+        # == current candle, .tail(N) lookbacks) is identical, while bounding
+        # per-cycle memory to 200 rows instead of N rows.
+        start = max(0, _backtest_index - 199)
+        return _backtest_data.iloc[start:_backtest_index + 1]
     
     rates = mt5_fetch_with_retry(
         mt5.copy_rates_from_pos, SYMBOL, TIMEFRAME, 0, 200
@@ -812,7 +715,6 @@ def get_asian_range(df: pd.DataFrame) -> tuple[float, float] | tuple[None, None]
 # -------------------------------------------------------
 # BACKTEST HELPERS (Option B)
 # -------------------------------------------------------
-_backtest_pending_orders = []
 
 def get_backtest_price() -> tuple[float, float] | None:
     """Get current bid/ask from backtest CSV data."""
@@ -830,17 +732,11 @@ def check_backtest_limit_fill(direction: str, entry_price: float, expiry_candles
     Simulate limit order fill: price must retrace to entry within expiry_candles.
     Returns True if filled, False if expired.
     """
-    global _backtest_index, _backtest_data, _backtest_pending_orders
+    global _backtest_index, _backtest_data
     if _backtest_data is None:
         return False
     
     candle_time = _backtest_index
-    _backtest_pending_orders.append({
-        "direction": direction,
-        "entry": entry_price,
-        "placed_at": candle_time,
-        "expiry": candle_time + expiry_candles
-    })
     
     for i in range(expiry_candles):
         check_idx = _backtest_index + i + 1
@@ -908,8 +804,17 @@ def reset_daily_sessions():
 MARKET_CIRCUIT = get_circuit()
 
 
+# MTF cache: M15/H1 refresh only on their candle boundaries -- M1 is the only
+# frame fetched every scan cycle. Slashes MT5 copy_rates traffic by ~2/3.
+_mtf_cache: dict = {}
+
+
 def _fetch_mtf_data():
-    """Fetch M1, M15, H1 data for market circuit detection."""
+    """Fetch M1, M15, H1 data for market circuit detection.
+
+    M15 is refetched only when a new M15 candle opens; H1 only on the hour.
+    """
+    now = datetime.now(timezone.utc)
     df_m1 = df_m15 = df_h1 = None
     try:
         rates = mt5_fetch_with_retry(mt5.copy_rates_from_pos, SYMBOL, mt5.TIMEFRAME_M1, 0, 100)
@@ -918,20 +823,35 @@ def _fetch_mtf_data():
             df_m1["time"] = pd.to_datetime(df_m1["time"], unit="s", utc=True)
     except Exception:
         pass
-    try:
-        rates = mt5_fetch_with_retry(mt5.copy_rates_from_pos, SYMBOL, mt5.TIMEFRAME_M15, 0, 100)
-        if rates is not None:
-            df_m15 = pd.DataFrame(rates)
-            df_m15["time"] = pd.to_datetime(df_m15["time"], unit="s", utc=True)
-    except Exception:
-        pass
-    try:
-        rates = mt5_fetch_with_retry(mt5.copy_rates_from_pos, SYMBOL, mt5.TIMEFRAME_H1, 0, 100)
-        if rates is not None:
-            df_h1 = pd.DataFrame(rates)
-            df_h1["time"] = pd.to_datetime(df_h1["time"], unit="s", utc=True)
-    except Exception:
-        pass
+
+    m15_key = now.timestamp() // 900
+    cached = _mtf_cache.get("m15")
+    if cached is not None and cached["key"] == m15_key and cached["df"] is not None:
+        df_m15 = cached["df"]
+    else:
+        try:
+            rates = mt5_fetch_with_retry(mt5.copy_rates_from_pos, SYMBOL, mt5.TIMEFRAME_M15, 0, 100)
+            if rates is not None:
+                df_m15 = pd.DataFrame(rates)
+                df_m15["time"] = pd.to_datetime(df_m15["time"], unit="s", utc=True)
+                _mtf_cache["m15"] = {"key": m15_key, "df": df_m15}
+        except Exception:
+            pass
+
+    h1_key = now.timestamp() // 3600
+    cached = _mtf_cache.get("h1")
+    if cached is not None and cached["key"] == h1_key and cached["df"] is not None:
+        df_h1 = cached["df"]
+    else:
+        try:
+            rates = mt5_fetch_with_retry(mt5.copy_rates_from_pos, SYMBOL, mt5.TIMEFRAME_H1, 0, 100)
+            if rates is not None:
+                df_h1 = pd.DataFrame(rates)
+                df_h1["time"] = pd.to_datetime(df_h1["time"], unit="s", utc=True)
+                _mtf_cache["h1"] = {"key": h1_key, "df": df_h1}
+        except Exception:
+            pass
+
     return df_m1, df_m15, df_h1
 
 
@@ -1158,17 +1078,32 @@ def fallback_polling_loop():
 #  SECTION 14 -- BOOT SEQUENCE
 # =======================================================
 
-# Inject bot.py functions into vuka.risk.filters so bare-name calls resolve
-import vuka.risk.filters as _filters
-_filters.now_sast = now_sast
-_filters.is_eu_summer = is_eu_summer
-_filters.get_active_killzones = get_active_killzones
-_filters.get_active_sb_windows = get_active_sb_windows
-_filters.get_active_blackouts = get_active_blackouts
-_filters.get_spread = get_spread
-_filters.log = log
+def main():
+    global _arg_symbol, _arg_strategy, _arg_check, _arg_backtest, _arg_fast, _arg_test
+    global STRATEGY, SYMBOL, _instance_tag, _instance_short, _instance_magic
+    global LOG_FILE, SESSIONS_FILE, logger, sessions_traded_today
 
-if __name__ == "__main__":
+    args = _build_parser().parse_args()
+    _arg_symbol = args.symbol.upper()
+    _arg_strategy = args.strategy.upper()
+    _arg_check = args.check
+    _arg_backtest = args.backtest
+    _arg_fast = args.fast
+    _arg_test = args.test
+
+    STRATEGY = _arg_strategy
+    SYMBOL = _SYMBOL_MAP[_arg_symbol]
+    _instance_tag   = f"{_arg_symbol}_{STRATEGY}"
+    _instance_short = f"{_arg_symbol[:3]}{'SB' if STRATEGY == 'SILVER_BULLET' else ('M1' if STRATEGY == 'ICT_M1' else ('LO' if STRATEGY == 'LONDON_OPEN' else 'IW'))}"
+    _instance_magic = _derive_magic(_instance_tag)
+    LOG_FILE        = f"trades_{_instance_tag}.json"
+    SESSIONS_FILE   = f"sessions_{_instance_tag}.json"
+
+    _apply_strategy_config()
+    _sync_state()
+
+    # Single logger, created only now that the instance tag is final.
+    logger = get_logger(_instance_tag)
 
     _errors = []
     if not (0 < RISK_PERCENT <= 5.0):
@@ -1216,15 +1151,15 @@ if __name__ == "__main__":
 
     if STRATEGY == "SILVER_BULLET":
         print("   ACTIVE SILVER BULLET WINDOWS (SAST):")
-        for name, (s, e) in get_active_sb_windows().items():
+        for name, (hs, he) in get_active_sb_windows().items():
             ny_offset = -6 if summer else -7
-            ny_s = (s + ny_offset) % 24
-            ny_e = (e + ny_offset) % 24
-            print(f"     {name:<14} {s:02d}:00-{e:02d}:00 SAST   ({ny_s:02d}:00-{ny_e:02d}:00 NY)")
+            ny_s = (hs + ny_offset) % 24
+            ny_e = (he + ny_offset) % 24
+            print(f"     {name:<14} {hs:02d}:00-{he:02d}:00 SAST   ({ny_s:02d}:00-{ny_e:02d}:00 NY)")
     else:
         print("   ACTIVE KILLZONES (SAST):")
-        for name, (s, e) in get_active_killzones().items():
-            print(f"     {name:<18} {s:02d}:00-{e:02d}:00")
+        for name, (hs, he) in get_active_killzones().items():
+            print(f"     {name:<18} {hs:02d}:00-{he:02d}:00")
     print()
     import sys; sys.stdout.flush()
 
@@ -1301,3 +1236,7 @@ if __name__ == "__main__":
         get_telemetry().flush()
         mt5.shutdown()
         log("MT5 disconnected. Until next sunrise.")
+
+
+if __name__ == "__main__":
+    main()

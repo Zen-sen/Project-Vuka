@@ -1,9 +1,16 @@
 import MetaTrader5 as mt5
 import hashlib
+import json
 from datetime import datetime, timedelta
 import os
+from pathlib import Path
 
-# ── SYMBOL MAP ────────────────────────────────────────
+# ── PATHS ─────────────────────────────────────────────────────
+_PROJECT_ROOT = Path(__file__).resolve().parents[3]
+SESSION_PERFORMANCE_FILE = _PROJECT_ROOT / "session_performance.json"
+
+
+# ── SYMBOL MAP ────────────────────────────────────────────────
 _SYMBOL_MAP = {
     "EURUSD": "EURUSDc",
     "GBPUSD": "GBPUSDc",
@@ -12,7 +19,7 @@ _SYMBOL_MAP = {
 }
 
 
-# ── MAGIC NUMBER DERIVATION ─────────────────────────────
+# ── MAGIC NUMBER DERIVATION ─────────────────────────────────────
 def _derive_magic(tag: str) -> int:
     """
     Deterministic magic number from instance tag using SHA-256.
@@ -23,171 +30,213 @@ def _derive_magic(tag: str) -> int:
     return int(digest[:8], 16) % 10000 + 234000
 
 
-# ── CONFIG LOADER ────────────────────────────────────────
-# Module-level globals set at runtime by load_config().
-# Kept so that legacy functions (e.g. confluence scoring) can
-# reference them directly without parameter changes.
-TIMEFRAME                = None
-RISK_PERCENT             = None
-RISK_REWARD_RATIO        = None
-ATR_PERIOD               = None
-ATR_MULTIPLIER           = None
-MIN_SL_ATR_MULTIPLIER    = None
-LIMIT_ORDER_EXPIRY_CANDLES = None
-ADX_PERIOD               = None
-ADX_MIN_THRESHOLD        = None
-MIN_SPREAD_PIPS          = None
-MAX_DAILY_LOSS           = None
-MAX_DRAWDOWN_PCT         = None
-HARD_LOT_CAP             = None
-SCAN_INTERVAL_SEC        = None
-DATA_STALE_MINUTES       = None
-DATA_STALE_MINUTES_ASIAN = None
-MT5_RETRY_ATTEMPTS       = None
-MT5_RETRY_DELAY_SEC      = None
+# ── SESSION PERFORMANCE (data-driven, calibrator-updated) ──────
+# Defaults used ONLY when session_performance.json is missing.
+# The calibrator (Step 3) rewrites that file after each N trades, so
+# these numbers drift with live performance instead of going stale.
+_DEFAULT_SESSION_PERFORMANCE = {
+    "asian": {"buy": 0.29, "sell": 1.00},
+    "london": {"buy": 0.14, "sell": 0.00},
+    "new york": {"buy": 0.00, "sell": 0.58},
+}
+
+_DEFAULT_SESSION_ASYMMETRY_BONUS = {
+    ("asian", "sell"): 10,
+    ("new york", "sell"): 10,
+}
 
 
+def load_session_performance() -> tuple[dict, dict]:
+    """
+    Load (session_performance, session_asymmetry_bonus) from JSON.
+
+    The JSON file uses string keys ("asian:sell") because tuples are not
+    JSON-serialisable; the loader rehydrates them into ("asian", "sell").
+    Falls back to the hardcoded defaults if the file is missing/corrupt.
+    """
+    try:
+        if SESSION_PERFORMANCE_FILE.exists():
+            raw = json.loads(SESSION_PERFORMANCE_FILE.read_text(encoding="utf-8"))
+            perf = raw.get("session_performance") or _DEFAULT_SESSION_PERFORMANCE
+            asym_raw = raw.get("session_asymmetry_bonus") or {}
+            asym = {}
+            for key, value in asym_raw.items():
+                parts = key.split(":")
+                if len(parts) == 2:
+                    asym[(parts[0].strip().lower(), parts[1].strip().lower())] = int(value)
+            if not asym:
+                asym = dict(_DEFAULT_SESSION_ASYMMETRY_BONUS)
+            return perf, asym
+    except Exception as e:
+        print(f"[config] Failed to load session performance table: {e}")
+    return dict(_DEFAULT_SESSION_PERFORMANCE), dict(_DEFAULT_SESSION_ASYMMETRY_BONUS)
+
+
+def save_session_performance(perf: dict | None = None, asym: dict | None = None) -> Path:
+    """
+    Persist the session performance table for the calibrator (Step 3).
+    ``perf`` / ``asym`` default to the currently-loaded tables.
+    """
+    perf = perf if perf is not None else SESSION_PERFORMANCE
+    asym = asym if asym is not None else SESSION_ASYMMETRY_BONUS
+    data = {
+        "session_performance": perf,
+        "session_asymmetry_bonus": {":".join(k): v for k, v in asym.items()},
+    }
+    SESSION_PERFORMANCE_FILE.write_text(
+        json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
+    return SESSION_PERFORMANCE_FILE
+
+
+SESSION_PERFORMANCE, SESSION_ASYMMETRY_BONUS = load_session_performance()
+
+
+# ── CONFLUENCE THRESHOLDS (ICT rationale) ──────────────────────
+# ADX > ADX_STRONG_TREND means the trend is strong and setups are
+# more reliable, so we require LESS confluence (lower base threshold).
+# ADX in the 25-40 band is trending but unreliable -- require more.
+BASE_THRESHOLD_STRONG_TREND = 60  # ADX > 40: strong trend, setups more reliable
+BASE_THRESHOLD_DEFAULT = 70       # ADX 25-40: require higher confluence
+ADX_STRONG_TREND = 40             # ADX above this = strong directional trend
+ADX_BELOW_MIN_RETURN = 80         # ADX < min: block unless extremely high score
+ADX_MIN_THRESHOLD = 25            # default ADX gate; per-instance value comes from load_config()
+MAX_CONFLUENCE_SCORE = 120        # hard ceiling on calculate_confluence_score()
+
+
+# ── CONFIG LOADER ──────────────────────────────────────────────
 def load_config(symbol: str, strategy: str, instance_tag: str, arg_symbol: str) -> dict:
-    global TIMEFRAME, RISK_PERCENT, RISK_REWARD_RATIO
-    global ATR_PERIOD, ATR_MULTIPLIER, MIN_SL_ATR_MULTIPLIER
-    global LIMIT_ORDER_EXPIRY_CANDLES, ADX_PERIOD, ADX_MIN_THRESHOLD
-    global MIN_SPREAD_PIPS, MAX_DAILY_LOSS, MAX_DRAWDOWN_PCT
-    global HARD_LOT_CAP, SCAN_INTERVAL_SEC, DATA_STALE_MINUTES
-    global DATA_STALE_MINUTES_ASIAN, MT5_RETRY_ATTEMPTS, MT5_RETRY_DELAY_SEC
+    """
+    Build the strategy/symbol config as a plain dict.
 
+    No module-level globals are mutated -- each caller owns the returned
+    dict (bot.py stores it on the shared state). This removes the
+    import-order/None-globals and multi-bot cross-contamination bugs.
+    """
     if arg_symbol == "BTCUSD":
-        TIMEFRAME                = mt5.TIMEFRAME_M1
-        RISK_PERCENT             = 1.0
-        RISK_REWARD_RATIO        = 3.5
-        ATR_PERIOD               = 14
-        ATR_MULTIPLIER           = 1.5
-        MIN_SL_ATR_MULTIPLIER    = 0.5
-        LIMIT_ORDER_EXPIRY_CANDLES = 4
-        ADX_PERIOD               = 14
-        ADX_MIN_THRESHOLD        = 25
-        MIN_SPREAD_PIPS          = 1.0
-        MAX_DAILY_LOSS           = 50.0
-        MAX_DRAWDOWN_PCT         = 10.0
-        HARD_LOT_CAP             = 0.20
-        SCAN_INTERVAL_SEC        = 60
-        DATA_STALE_MINUTES       = 5
-        DATA_STALE_MINUTES_ASIAN = 10
-        MT5_RETRY_ATTEMPTS       = 3
-        MT5_RETRY_DELAY_SEC      = 10
-    elif strategy == "ICT_M1":
-        TIMEFRAME                = mt5.TIMEFRAME_M1
-        RISK_PERCENT             = 1.0
-        RISK_REWARD_RATIO        = 2.0
-        ATR_PERIOD               = 14
-        ATR_MULTIPLIER           = 1.0
-        MIN_SL_ATR_MULTIPLIER    = 0.5
-        LIMIT_ORDER_EXPIRY_CANDLES = 4
-        ADX_PERIOD               = 14
-        ADX_MIN_THRESHOLD        = 25
-        MIN_SPREAD_PIPS          = 0.0002
-        MAX_DAILY_LOSS           = 50.0
-        HARD_LOT_CAP             = 0.20
-        SCAN_INTERVAL_SEC        = 60
-        DATA_STALE_MINUTES       = 5
-        DATA_STALE_MINUTES_ASIAN = 10
-        MT5_RETRY_ATTEMPTS       = 3
-        MT5_RETRY_DELAY_SEC      = 10
-    elif strategy == "SILVER_BULLET":
-        TIMEFRAME                = mt5.TIMEFRAME_M15
-        RISK_PERCENT             = 1.0
-        RISK_REWARD_RATIO        = 2.0
-        ATR_PERIOD               = 14
-        ATR_MULTIPLIER           = 1.5
-        MIN_SL_ATR_MULTIPLIER    = 0.8
-        LIMIT_ORDER_EXPIRY_CANDLES = 4
-        ADX_PERIOD               = 14
-        ADX_MIN_THRESHOLD        = 25
-        MIN_SPREAD_PIPS          = 0.0002
-        MAX_DAILY_LOSS           = 50.0
-        MAX_DRAWDOWN_PCT         = 10.0
-        HARD_LOT_CAP             = 0.20
-        SCAN_INTERVAL_SEC        = 60
-        DATA_STALE_MINUTES       = 5
-        DATA_STALE_MINUTES_ASIAN = 10
-        MT5_RETRY_ATTEMPTS       = 3
-        MT5_RETRY_DELAY_SEC      = 10
-    elif strategy == "LONDON_OPEN":
-        TIMEFRAME                = mt5.TIMEFRAME_M15
-        RISK_PERCENT             = 1.0
-        RISK_REWARD_RATIO        = 2.5
-        ATR_PERIOD               = 14
-        ATR_MULTIPLIER           = 2.0
-        MIN_SL_ATR_MULTIPLIER    = 1.0
-        LIMIT_ORDER_EXPIRY_CANDLES = 4
-        ADX_PERIOD               = 14
-        ADX_MIN_THRESHOLD        = 25
-        MIN_SPREAD_PIPS          = 0.0002
-        MAX_DAILY_LOSS           = 50.0
-        MAX_DRAWDOWN_PCT         = 10.0
-        HARD_LOT_CAP             = 0.20
-        SCAN_INTERVAL_SEC        = 900
-        DATA_STALE_MINUTES       = 30
-        DATA_STALE_MINUTES_ASIAN = 90
-        MT5_RETRY_ATTEMPTS       = 3
-        MT5_RETRY_DELAY_SEC      = 30
-    elif arg_symbol in ("EURUSD", "USDJPY"):
-        TIMEFRAME                = mt5.TIMEFRAME_M15
-        RISK_PERCENT             = 1.0
-        RISK_REWARD_RATIO        = 3.0
-        ATR_PERIOD               = 14
-        ATR_MULTIPLIER           = 3.0
-        MIN_SL_ATR_MULTIPLIER    = 0.8
-        LIMIT_ORDER_EXPIRY_CANDLES = 4
-        ADX_PERIOD               = 14
-        ADX_MIN_THRESHOLD        = 25
-        MIN_SPREAD_PIPS          = 0.0002
-        MAX_DAILY_LOSS           = 50.0
-        MAX_DRAWDOWN_PCT         = 10.0
-        HARD_LOT_CAP             = 0.20
-        SCAN_INTERVAL_SEC        = 900
-        DATA_STALE_MINUTES       = 30
-        DATA_STALE_MINUTES_ASIAN = 90
-        MT5_RETRY_ATTEMPTS       = 3
-        MT5_RETRY_DELAY_SEC      = 30
-    else:
-        TIMEFRAME                = mt5.TIMEFRAME_M15
-        RISK_PERCENT             = 1.0
-        RISK_REWARD_RATIO        = 3.0
-        ATR_PERIOD               = 14
-        ATR_MULTIPLIER           = 1.5
-        MIN_SL_ATR_MULTIPLIER    = 0.8
-        LIMIT_ORDER_EXPIRY_CANDLES = 4
-        ADX_PERIOD               = 14
-        ADX_MIN_THRESHOLD        = 20
-        MIN_SPREAD_PIPS          = 0.0002
-        MAX_DAILY_LOSS           = 50.0
-        MAX_DRAWDOWN_PCT         = 10.0
-        HARD_LOT_CAP             = 0.20
-        SCAN_INTERVAL_SEC        = 900
-        DATA_STALE_MINUTES       = 30
-        DATA_STALE_MINUTES_ASIAN = 90
-        MT5_RETRY_ATTEMPTS       = 3
-        MT5_RETRY_DELAY_SEC      = 30
-
+        return {
+            "TIMEFRAME": mt5.TIMEFRAME_M1,
+            "RISK_PERCENT": 1.0,
+            "RISK_REWARD_RATIO": 3.5,
+            "ATR_PERIOD": 14,
+            "ATR_MULTIPLIER": 1.5,
+            "MIN_SL_ATR_MULTIPLIER": 0.5,
+            "LIMIT_ORDER_EXPIRY_CANDLES": 4,
+            "ADX_PERIOD": 14,
+            "ADX_MIN_THRESHOLD": 25,
+            "MIN_SPREAD_PIPS": 1.0,
+            "MAX_DAILY_LOSS": 50.0,
+            "MAX_DRAWDOWN_PCT": 10.0,
+            "HARD_LOT_CAP": 0.20,
+            "SCAN_INTERVAL_SEC": 60,
+            "DATA_STALE_MINUTES": 5,
+            "DATA_STALE_MINUTES_ASIAN": 10,
+            "MT5_RETRY_ATTEMPTS": 3,
+            "MT5_RETRY_DELAY_SEC": 10,
+        }
+    if strategy == "ICT_M1":
+        return {
+            "TIMEFRAME": mt5.TIMEFRAME_M1,
+            "RISK_PERCENT": 1.0,
+            "RISK_REWARD_RATIO": 2.0,
+            "ATR_PERIOD": 14,
+            "ATR_MULTIPLIER": 1.0,
+            "MIN_SL_ATR_MULTIPLIER": 0.5,
+            "LIMIT_ORDER_EXPIRY_CANDLES": 4,
+            "ADX_PERIOD": 14,
+            "ADX_MIN_THRESHOLD": 25,
+            "MIN_SPREAD_PIPS": 0.0002,
+            "MAX_DAILY_LOSS": 50.0,
+            "HARD_LOT_CAP": 0.20,
+            "SCAN_INTERVAL_SEC": 60,
+            "DATA_STALE_MINUTES": 5,
+            "DATA_STALE_MINUTES_ASIAN": 10,
+            "MT5_RETRY_ATTEMPTS": 3,
+            "MT5_RETRY_DELAY_SEC": 10,
+        }
+    if strategy == "SILVER_BULLET":
+        return {
+            "TIMEFRAME": mt5.TIMEFRAME_M15,
+            "RISK_PERCENT": 1.0,
+            "RISK_REWARD_RATIO": 2.0,
+            "ATR_PERIOD": 14,
+            "ATR_MULTIPLIER": 1.5,
+            "MIN_SL_ATR_MULTIPLIER": 0.8,
+            "LIMIT_ORDER_EXPIRY_CANDLES": 4,
+            "ADX_PERIOD": 14,
+            "ADX_MIN_THRESHOLD": 25,
+            "MIN_SPREAD_PIPS": 0.0002,
+            "MAX_DAILY_LOSS": 50.0,
+            "MAX_DRAWDOWN_PCT": 10.0,
+            "HARD_LOT_CAP": 0.20,
+            "SCAN_INTERVAL_SEC": 60,
+            "DATA_STALE_MINUTES": 5,
+            "DATA_STALE_MINUTES_ASIAN": 10,
+            "MT5_RETRY_ATTEMPTS": 3,
+            "MT5_RETRY_DELAY_SEC": 10,
+        }
+    if strategy == "LONDON_OPEN":
+        return {
+            "TIMEFRAME": mt5.TIMEFRAME_M15,
+            "RISK_PERCENT": 1.0,
+            "RISK_REWARD_RATIO": 2.5,
+            "ATR_PERIOD": 14,
+            "ATR_MULTIPLIER": 2.0,
+            "MIN_SL_ATR_MULTIPLIER": 1.0,
+            "LIMIT_ORDER_EXPIRY_CANDLES": 4,
+            "ADX_PERIOD": 14,
+            "ADX_MIN_THRESHOLD": 25,
+            "MIN_SPREAD_PIPS": 0.0002,
+            "MAX_DAILY_LOSS": 50.0,
+            "MAX_DRAWDOWN_PCT": 10.0,
+            "HARD_LOT_CAP": 0.20,
+            "SCAN_INTERVAL_SEC": 900,
+            "DATA_STALE_MINUTES": 30,
+            "DATA_STALE_MINUTES_ASIAN": 90,
+            "MT5_RETRY_ATTEMPTS": 3,
+            "MT5_RETRY_DELAY_SEC": 30,
+        }
+    if arg_symbol in ("EURUSD", "USDJPY"):
+        return {
+            "TIMEFRAME": mt5.TIMEFRAME_M15,
+            "RISK_PERCENT": 1.0,
+            "RISK_REWARD_RATIO": 3.0,
+            "ATR_PERIOD": 14,
+            "ATR_MULTIPLIER": 3.0,
+            "MIN_SL_ATR_MULTIPLIER": 0.8,
+            "LIMIT_ORDER_EXPIRY_CANDLES": 4,
+            "ADX_PERIOD": 14,
+            "ADX_MIN_THRESHOLD": 25,
+            "MIN_SPREAD_PIPS": 0.0002,
+            "MAX_DAILY_LOSS": 50.0,
+            "MAX_DRAWDOWN_PCT": 10.0,
+            "HARD_LOT_CAP": 0.20,
+            "SCAN_INTERVAL_SEC": 900,
+            "DATA_STALE_MINUTES": 30,
+            "DATA_STALE_MINUTES_ASIAN": 90,
+            "MT5_RETRY_ATTEMPTS": 3,
+            "MT5_RETRY_DELAY_SEC": 30,
+        }
+    # Fallback: any symbol/strategy not matched above
     return {
-        "TIMEFRAME": TIMEFRAME,
-        "RISK_PERCENT": RISK_PERCENT,
-        "RISK_REWARD_RATIO": RISK_REWARD_RATIO,
-        "ATR_PERIOD": ATR_PERIOD,
-        "ATR_MULTIPLIER": ATR_MULTIPLIER,
-        "MIN_SL_ATR_MULTIPLIER": MIN_SL_ATR_MULTIPLIER,
-        "LIMIT_ORDER_EXPIRY_CANDLES": LIMIT_ORDER_EXPIRY_CANDLES,
-        "ADX_PERIOD": ADX_PERIOD,
-        "ADX_MIN_THRESHOLD": ADX_MIN_THRESHOLD,
-        "MIN_SPREAD_PIPS": MIN_SPREAD_PIPS,
-        "MAX_DAILY_LOSS": MAX_DAILY_LOSS,
-        "MAX_DRAWDOWN_PCT": MAX_DRAWDOWN_PCT,
-        "HARD_LOT_CAP": HARD_LOT_CAP,
-        "SCAN_INTERVAL_SEC": SCAN_INTERVAL_SEC,
-        "DATA_STALE_MINUTES": DATA_STALE_MINUTES,
-        "DATA_STALE_MINUTES_ASIAN": DATA_STALE_MINUTES_ASIAN,
-        "MT5_RETRY_ATTEMPTS": MT5_RETRY_ATTEMPTS,
-        "MT5_RETRY_DELAY_SEC": MT5_RETRY_DELAY_SEC,
+        "TIMEFRAME": mt5.TIMEFRAME_M15,
+        "RISK_PERCENT": 1.0,
+        "RISK_REWARD_RATIO": 3.0,
+        "ATR_PERIOD": 14,
+        "ATR_MULTIPLIER": 1.5,
+        "MIN_SL_ATR_MULTIPLIER": 0.8,
+        "LIMIT_ORDER_EXPIRY_CANDLES": 4,
+        "ADX_PERIOD": 14,
+        "ADX_MIN_THRESHOLD": 20,
+        "MIN_SPREAD_PIPS": 0.0002,
+        "MAX_DAILY_LOSS": 50.0,
+        "MAX_DRAWDOWN_PCT": 10.0,
+        "HARD_LOT_CAP": 0.20,
+        "SCAN_INTERVAL_SEC": 900,
+        "DATA_STALE_MINUTES": 30,
+        "DATA_STALE_MINUTES_ASIAN": 90,
+        "MT5_RETRY_ATTEMPTS": 3,
+        "MT5_RETRY_DELAY_SEC": 30,
     }
 
 
@@ -272,21 +321,6 @@ ICT_M1_SESSIONS = {
     "Late_NY":  (22, 2),
 }
 
-# =========================================================
-# SECTION 9 -- CONFLUENCE SCORING
-# =========================================================
-
-SESSION_PERFORMANCE = {
-    "asian": {"buy": 0.29, "sell": 1.00},
-    "london": {"buy": 0.14, "sell": 0.00},
-    "new york": {"buy": 0.00, "sell": 0.58},
-}
-
-SESSION_ASYMMETRY_BONUS = {
-    ("asian", "sell"): 10,
-    ("new york", "sell"): 10,
-}
-
 
 def get_session_multiplier(session: str, direction: str) -> float:
     """Return threshold multiplier based on historical session performance."""
@@ -305,13 +339,24 @@ def get_session_multiplier(session: str, direction: str) -> float:
         return 1.30
 
 
-def get_confluence_threshold(adx: float, session: str = "", direction: str = "") -> int:
-    if adx is None or adx < ADX_MIN_THRESHOLD:
-        return 80
+def get_confluence_threshold(adx: float, session: str = "", direction: str = "",
+                             adx_min_threshold: float = ADX_MIN_THRESHOLD) -> int:
+    """
+    Return the confluence score required to trade.
 
-    base = 70
-    if adx > 40:
-        base = 60
+    ICT rationale for the base values:
+      - ADX > 40: strong directional trend -- entries are more reliable,
+        so a LOWER bar (60) is acceptable.
+      - ADX 25-40: trending but noisy -- require MORE confluence (70).
+      - ADX < min threshold: no trend -- 80 blocks unless the score is
+        exceptionally high (reached via the session multiplier only).
+    """
+    if adx is None or adx < adx_min_threshold:
+        return ADX_BELOW_MIN_RETURN
+
+    base = BASE_THRESHOLD_DEFAULT
+    if adx > ADX_STRONG_TREND:
+        base = BASE_THRESHOLD_STRONG_TREND
 
     multiplier = get_session_multiplier(session, direction)
     return int(base * multiplier)
@@ -324,10 +369,13 @@ def calculate_confluence_score(trend, fvg_ok, zone_ok, spread_ok, adx_ok,
                                 session: str = "",
                                 direction: str = "") -> int:
     """
-    v5.5: Rebalanced weights, asymmetry encoding added. Max score 120.
+    v5.5: Rebalanced weights, asymmetry encoding added. Capped at 120.
       Trend +30 | FVG +30 | Zone +15 | Spread +10
       Key level sweep +5 | BOS +5 | HTF bias +15
       Session-direction asymmetry +10 (for high-probability pairs)
+
+    The return is clamped to MAX_CONFLUENCE_SCORE (120) so a loaded
+    asymmetry bonus can never push the score above the documented scale.
     """
     score = 0
     if trend in ("BULLISH", "BEARISH"):
@@ -347,4 +395,4 @@ def calculate_confluence_score(trend, fvg_ok, zone_ok, spread_ok, adx_ok,
     key = (session.lower().strip(), direction.lower().strip())
     if key in SESSION_ASYMMETRY_BONUS:
         score += SESSION_ASYMMETRY_BONUS[key]
-    return score
+    return min(score, MAX_CONFLUENCE_SCORE)

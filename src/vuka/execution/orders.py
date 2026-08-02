@@ -103,8 +103,8 @@ def log_trade(direction, entry, sl, tp, result, lot_size, session, context=None,
     kronos_confidence_val = 0.0
     circuit_breaker_val = "CLOSED"
     api_latency_val = 0.0
-    if kronos_gate and kronos_gate.last_decision:
-        kd = kronos_gate.last_decision
+    kd = kronos_gate.get_last_decision() if kronos_gate else None
+    if kd:
         kronos_decision_val = kd.get("decision", "ALLOW")
         kronos_confidence_val = kd.get("confidence", 0.0)
         circuit_breaker_val = kd.get("circuit_breaker_state", "CLOSED")

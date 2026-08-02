@@ -18,6 +18,9 @@ Performance:
 """
 
 import concurrent.futures
+import contextlib
+import queue
+import threading
 import MetaTrader5 as mt5
 from datetime import datetime, timedelta, timezone
 import time
@@ -27,7 +30,58 @@ import sys
 class HeartbeatTick:
     """Synthetic tick emitted when MT5 goes silent past max_idle_seconds."""
     def __init__(self):
-        self.time = datetime.now()
+        # Aware UTC: comparisons against MT5 tick times must never mix
+        # naive and aware datetimes.
+        self.time = datetime.now(timezone.utc)
+
+
+class _DaemonTickExecutor:
+    """Single daemon worker isolating blocking MT5 API calls.
+
+    A hung ``mt5.copy_ticks_from`` runs on a daemon thread, so it can never
+    block interpreter shutdown. A plain ThreadPoolExecutor worker is joined
+    at exit and would keep the process alive until MT5 responds -- the
+    "zombie process" failure mode. This executor drops that risk while
+    still exposing the same submit()/shutdown() contract.
+    """
+
+    def __init__(self):
+        self._queue: "queue.SimpleQueue" = queue.SimpleQueue()
+        self._thread = threading.Thread(
+            target=self._run, name="vuka-mt5-tick", daemon=True
+        )
+        self._thread.start()
+
+    def _run(self):
+        while True:
+            item = self._queue.get()
+            if item is None:
+                break
+            future, fn, args, kwargs = item
+            if future.set_running_or_notify_cancel():
+                try:
+                    result = fn(*args, **kwargs)
+                except BaseException as exc:
+                    future.set_exception(exc)
+                else:
+                    future.set_result(result)
+
+    def submit(self, fn, *args, **kwargs):
+        future = concurrent.futures.Future()
+        self._queue.put((future, fn, args, kwargs))
+        return future
+
+    def shutdown(self, wait=True, *, cancel_futures=False):
+        # `wait` mirrors ThreadPoolExecutor's contract. A daemon worker never
+        # needs joining, so it is accepted and ignored.
+        self._queue.put(None)
+        if cancel_futures:
+            while True:
+                try:
+                    item = self._queue.get_nowait()
+                except queue.Empty:
+                    break
+                item[0].cancel()
 
 
 class TickEngine:
@@ -59,8 +113,9 @@ class TickEngine:
         self.last_candle_open = None
         self.tick_count = 0
         self.candle_count = 0
-        self.start_time = datetime.now()
-        self._last_tick_time = datetime.now()
+        self.start_time = datetime.now(timezone.utc)
+        self._last_tick_time = datetime.now(timezone.utc)
+        self._stopped = False
         
         # Timeframe mapping (MT5 TIMEFRAME constants → seconds)
         self.timeframe_seconds = {
@@ -79,8 +134,8 @@ class TickEngine:
                            f"Supported: {list(self.timeframe_seconds.keys())}")
         
         self.candle_duration = self.timeframe_seconds[timeframe]
-        
-        self._executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+
+        self._executor = _DaemonTickExecutor()
 
         if verbose:
             print(f"[TickEngine] Initialized: {symbol} @ {self._timeframe_name()} "
@@ -116,7 +171,13 @@ class TickEngine:
         """
         if tick_time is None:
             return None
-            
+
+        # MT5 returns naive UTC datetimes; heartbeat ticks are aware UTC.
+        # Treat a naive timestamp as UTC so .timestamp() is not misread as
+        # local wall-clock time.
+        if tick_time.tzinfo is None:
+            tick_time = tick_time.replace(tzinfo=timezone.utc)
+
         # Convert to Unix timestamp
         timestamp = tick_time.timestamp()
         
@@ -156,7 +217,7 @@ class TickEngine:
             self.candle_count += 1
             
             if self.verbose:
-                elapsed = datetime.now() - self.start_time
+                elapsed = datetime.now(timezone.utc) - self.start_time
                 print(f"[TickEngine] Candle #{self.candle_count} @ {current_candle_open} "
                       f"(ticks: {self.tick_count}, elapsed: {elapsed.total_seconds():.1f}s)")
             
@@ -177,11 +238,13 @@ class TickEngine:
         Yields:
             Tick objects from MT5, or synthetic heartbeat dummies
         """
-        time_from = datetime.now() - timedelta(milliseconds=timeout_ms)
-        idle_start = datetime.now()
+        time_from = datetime.now(timezone.utc) - timedelta(milliseconds=timeout_ms)
+        idle_start = datetime.now(timezone.utc)
         _consecutive_timeouts = 0
-        
+
         while True:
+            if self._stopped:
+                return
             try:
                 future = self._executor.submit(
                     mt5.copy_ticks_from, self.symbol, time_from, mt5.COPY_TICKS_ALL
@@ -205,16 +268,16 @@ class TickEngine:
                     for tick in ticks:
                         yield tick
                         time_from = tick.time
-                        self._last_tick_time = datetime.now()
-                        idle_start = datetime.now()
+                        self._last_tick_time = datetime.now(timezone.utc)
+                        idle_start = datetime.now(timezone.utc)
                 else:
-                    idle_secs = (datetime.now() - idle_start).total_seconds()
+                    idle_secs = (datetime.now(timezone.utc) - idle_start).total_seconds()
                     if idle_secs >= self.max_idle_seconds:
                         if self.verbose:
                             print(f"[TickEngine] {idle_secs:.0f}s without ticks -- "
                                   f"heartbeat fallback")
                         yield HeartbeatTick()
-                        idle_start = datetime.now()
+                        idle_start = datetime.now(timezone.utc)
                     else:
                         time.sleep(0.01)
                     
@@ -276,10 +339,25 @@ class TickEngine:
             print(f"[TickEngine] Fatal error: {e}", file=sys.stderr)
             self._print_stats()
             raise
-    
+        
+        finally:
+            self.stop()
+
+    def stop(self):
+        """Shut down the MT5 worker thread. Safe to call multiple times."""
+        if not self._stopped:
+            self._stopped = True
+            self._executor.shutdown(wait=False, cancel_futures=True)
+
+    def __del__(self):
+        # Best-effort cleanup if the engine is abandoned without an explicit
+        # stop() (symbol switch, reconnection, GC).
+        with contextlib.suppress(Exception):
+            self.stop()
+
     def _print_stats(self):
         """Print engine statistics (useful for debugging)"""
-        elapsed = datetime.now() - self.start_time
+        elapsed = datetime.now(timezone.utc) - self.start_time
         
         if elapsed.total_seconds() > 0:
             tick_rate = self.tick_count / elapsed.total_seconds()

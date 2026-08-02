@@ -6,7 +6,6 @@ double-click, Task Scheduler, subprocess call).
 """
 import sys
 import time
-import socket
 import subprocess
 import psutil
 import urllib.request
@@ -14,7 +13,7 @@ import urllib.error
 from pathlib import Path
 
 VUKA_DIR   = Path(__file__).parent.resolve()
-PYTHON     = r"C:\Users\classic\AppData\Local\Python\pythoncore-3.14-64\python.exe"
+PYTHON     = sys.executable  # always spawn with the interpreter running us
 BOOT_DELAY = 2       # seconds between bot instance starts
 KRONOS_URL = "http://127.0.0.1:8000/health"
 KRONOS_MAX_WAIT = 60  # seconds to wait for Kronos to be ready (model load can take 30-45s)
@@ -75,11 +74,7 @@ def wait_for_kronos(timeout: int = KRONOS_MAX_WAIT) -> bool:
     log(f"Waiting for Kronos (max {timeout}s)...")
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        s.settimeout(1)
         try:
-            s.connect(('127.0.0.1', 8000))
-            s.close()
             with urllib.request.urlopen(KRONOS_URL, timeout=10) as r:
                 if r.status == 200:
                     log("  Kronos ready [OK]")
@@ -90,16 +85,35 @@ def wait_for_kronos(timeout: int = KRONOS_MAX_WAIT) -> bool:
     log("  !! Kronos did not respond within timeout -- bots will start in VETO_SAFE mode")
     return False
 
+def _is_vuka_process(proc) -> bool:
+    """True only if the process is one of ours (cmdline mentions vuka/kronos)."""
+    try:
+        cmdline = " ".join(proc.info.get("cmdline") or []).lower()
+    except (psutil.NoSuchProcess, psutil.AccessDenied):
+        return False
+    return any(tag in cmdline for tag in ("vuka", "kronos"))
+
 def kill_port_8000():
-    """Free port 8000 if something is still bound to it."""
+    """Free port 8000 if a stale Vuka/Kronos process is still bound to it.
+
+    Only kills the listener if its command line identifies it as ours -- never
+    an unrelated service that happens to use port 8000 (Jupyter, proxies, etc).
+    """
     for conn in psutil.net_connections(kind="tcp"):
         if conn.laddr.port == 8000 and conn.status == "LISTEN":
             try:
-                psutil.Process(conn.pid).kill()
-                log(f"  Freed port 8000 (killed PID {conn.pid})")
-                time.sleep(1)
-            except Exception:
-                pass
+                proc = psutil.Process(conn.pid)
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                continue
+            if _is_vuka_process(proc):
+                try:
+                    proc.kill()
+                    log(f"  Freed port 8000 (killed PID {conn.pid})")
+                    time.sleep(1)
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    pass
+            else:
+                log(f"  Port 8000 in use by non-Vuka process PID {conn.pid} -- leaving it alone")
 
 def main():
     print()

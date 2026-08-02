@@ -204,6 +204,9 @@ class KronosVetoGate:
         
         # Last decision (consumed by enrichment pipeline)
         self.last_decision: Optional[dict] = None
+        # Guard concurrent read/write of last_decision (heartbeat/telemetry
+        # workers run in background threads alongside the scan thread).
+        self._decision_lock = threading.Lock()
         
         # Circuit breaker
         self.circuit_breaker = CircuitBreaker(
@@ -244,8 +247,14 @@ class KronosVetoGate:
             "reason": reason
         }
         logger.info(json.dumps(entry))
-        self.last_decision = entry
+        with self._decision_lock:
+            self.last_decision = entry
         self._persist_decision(entry)
+
+    def get_last_decision(self) -> Optional[dict]:
+        """Thread-safe snapshot of the last decision for the enrichment path."""
+        with self._decision_lock:
+            return self.last_decision
 
     def _persist_decision(self, entry: dict):
         """Append decision to structured JSON array for enrichment pipeline."""

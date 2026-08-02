@@ -1,32 +1,36 @@
+from datetime import datetime, timedelta, timezone
+
 from vuka.core.state import s
+from vuka.risk.portfolio import get_spread, is_eu_summer
+from vuka.utils.unified_logger import get_logger
 
-
-def now_sast():
-    raise NotImplementedError("bot.py should overwrite this")
-
-
-def is_eu_summer():
-    raise NotImplementedError("bot.py should overwrite this")
-
-
-def get_active_killzones():
-    raise NotImplementedError("bot.py should overwrite this")
-
-
-def get_active_sb_windows():
-    raise NotImplementedError("bot.py should overwrite this")
-
-
-def get_active_blackouts():
-    raise NotImplementedError("bot.py should overwrite this")
-
-
-def get_spread():
-    raise NotImplementedError("bot.py should overwrite this")
+_logger = get_logger("Filters")
 
 
 def log(msg: str, level: str = "INFO"):
-    raise NotImplementedError("bot.py should overwrite this")
+    _logger.log(level=level, message=msg, symbol=s._arg_symbol, strategy=s.STRATEGY)
+
+
+def now_sast():
+    return datetime.now(timezone.utc) + timedelta(hours=getattr(s, "SA_OFFSET", 2))
+
+
+def get_active_killzones():
+    if s.STRATEGY == "ICT_M1":
+        return s.ICT_M1_SESSIONS
+    if s._arg_symbol == "BTCUSD":
+        return s.BTC_KILLZONES
+    return s.KILLZONES_SUMMER if is_eu_summer() else s.KILLZONES_WINTER
+
+
+def get_active_sb_windows():
+    return s.SB_WINDOWS_SUMMER if is_eu_summer() else s.SB_WINDOWS_WINTER
+
+
+def get_active_blackouts():
+    if s.STRATEGY == "SILVER_BULLET":
+        return s.SB_BLACKOUTS_SUMMER if is_eu_summer() else s.SB_BLACKOUTS_WINTER
+    return s.INGWE_BLACKOUTS_SUMMER if is_eu_summer() else s.INGWE_BLACKOUTS_WINTER
 
 
 def get_current_session() -> str | None:
