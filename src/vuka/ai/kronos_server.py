@@ -942,7 +942,11 @@ async def synthesize_decision(request: SynthesizeRequest):
         return {"error": str(e), "final_score": 0, "verdict": "SKIP"}
 
 
-if __name__ == "__main__":
+def main():
     log_json("INFO", "Starting Kronos API Server...", host=HOST, port=PORT)
     log_json("INFO", f"ICT RAG Integration: {'ENABLED' if ICT_CONTEXT_AVAILABLE else 'DISABLED'}")
     uvicorn.run(app, host=HOST, port=PORT, log_level="info")
+
+
+if __name__ == "__main__":
+    main()

@@ -393,6 +393,10 @@ class CommandCenter:
                 time.sleep(1.0)
 
 
-if __name__ == "__main__":
+def main():
     cmd_center = CommandCenter()
     cmd_center.run()
+
+
+if __name__ == "__main__":
+    main()
