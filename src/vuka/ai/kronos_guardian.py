@@ -104,7 +104,6 @@ class CircuitBreaker:
         self.state = CircuitBreakerState.CLOSED
         self.last_failure_time = None
         self.last_state_change = time.time()
-        self.half_open_calls = 0
         self.current_half_open_calls = 0
         self._lock = threading.Lock()
     
@@ -119,7 +118,6 @@ class CircuitBreaker:
             if self.state == CircuitBreakerState.OPEN:
                 if time.time() - self.last_state_change > self.recovery_timeout:
                     self.state = CircuitBreakerState.HALF_OPEN
-                    self.half_open_calls = 0
                     self.current_half_open_calls = 0
                     self.last_state_change = time.time()
                     logger.info(f"Circuit breaker: OPEN -> HALF_OPEN (recovery test)")
@@ -615,7 +613,7 @@ def create_veto_gate(config: Optional[dict] = None) -> KronosVetoGate:
 
     return KronosVetoGate(
         endpoint=config.get("endpoint", "http://127.0.0.1:8000/v1/predict-ict"),
-        threshold=config.get("threshold", 0.75),
+        threshold=config.get("threshold", 0.40),
         enabled=config.get("enabled", True),
         mode=config.get("mode", "enforced"),
         safety_mode=config.get("safety_mode", "VETO_SAFE"),

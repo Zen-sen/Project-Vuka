@@ -4,7 +4,7 @@ import MetaTrader5 as mt5
 from vuka.core.state import s
 from vuka.execution.orders import log_trade, place_trade, round_to_tick
 from vuka.risk.filters import check_panic_candle, check_pre_trade_spread
-from vuka.risk.portfolio import get_spread
+from vuka.risk.portfolio import calculate_lot_size, get_spread
 from vuka.utils.unified_logger import get_logger
 
 _logger = get_logger("ICTm1")
@@ -77,6 +77,8 @@ def evaluate_ict_m1(df, fvgs, sweep, sweep_level, price, atr,
             entry = round_to_tick(price, s.SYMBOL)
             sl = round_to_tick(entry - stop, s.SYMBOL)
             tp = round_to_tick(entry + stop * s.RISK_REWARD_RATIO, s.SYMBOL)
+            # Risk-fix: size against the ACTUAL stop distance.
+            lot_size = calculate_lot_size(abs(entry - sl))
             res = place_trade("BUY", entry, sl, tp, lot_size, session=session)
             if res and res.retcode == mt5.TRADE_RETCODE_DONE:
                 _log(f"M1 BUY  Entry={entry}  SL={sl}  TP={tp}  Lot={lot_size}", "TRADE")
@@ -124,6 +126,8 @@ def evaluate_ict_m1(df, fvgs, sweep, sweep_level, price, atr,
             entry = round_to_tick(price, s.SYMBOL)
             sl = round_to_tick(entry + stop, s.SYMBOL)
             tp = round_to_tick(entry - stop * s.RISK_REWARD_RATIO, s.SYMBOL)
+            # Risk-fix: size against the ACTUAL stop distance.
+            lot_size = calculate_lot_size(abs(entry - sl))
             res = place_trade("SELL", entry, sl, tp, lot_size, session=session)
             if res and res.retcode == mt5.TRADE_RETCODE_DONE:
                 _log(f"M1 SELL  Entry={entry}  SL={sl}  TP={tp}  Lot={lot_size}", "TRADE")

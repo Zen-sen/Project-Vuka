@@ -248,3 +248,9 @@ class TestDisplacement:
         c2 = make_candle(1.1005, 1.1030, 1.0995, 1.1020)
         result = check_displacement_validity(c1, c2)
         assert bool(result) is False
+
+    def test_zero_range_candle_fails_closed(self):
+        flat = make_candle(1.1000, 1.1000, 1.1000, 1.1000)
+        c2 = make_candle(1.1015, 1.1060, 1.1010, 1.1050)
+        assert check_displacement_validity(flat, c2) is False
+        assert check_displacement_validity(c2, flat) is False

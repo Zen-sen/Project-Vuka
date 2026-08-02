@@ -8,7 +8,7 @@ from vuka.risk.filters import (
     check_pre_trade_spread,
     check_premium_discount_zone,
 )
-from vuka.risk.portfolio import get_spread
+from vuka.risk.portfolio import calculate_lot_size, get_spread
 from vuka.utils.unified_logger import get_logger
 
 _logger = get_logger("LondonOpen")
@@ -148,6 +148,8 @@ def evaluate_london_breakout(df, fvgs, sweep, sweep_level, price, atr,
             _log(f"[DEBUG_ENG] Symbol={s.SYMBOL} | Strategy=LONDON_OPEN | "
                   f"Dir=BUY | Entry={entry} | SL={sl} | TP={tp} | "
                   f"Stop={stop} | Active_RRR={dynamic_rr}", "DEBUG")
+            # Risk-fix: size against the ACTUAL stop distance.
+            lot_size = calculate_lot_size(abs(entry - sl))
             res = place_trade("BUY", entry, sl, tp, lot_size, session=session)
             if res and res.retcode == mt5.TRADE_RETCODE_DONE:
                 _log(f"LONDON BREAKOUT BUY  Entry={entry}  SL={sl}  TP={tp}  Lot={lot_size}", "TRADE")
@@ -243,6 +245,8 @@ def evaluate_london_breakout(df, fvgs, sweep, sweep_level, price, atr,
             _log(f"[DEBUG_ENG] Symbol={s.SYMBOL} | Strategy=LONDON_OPEN | "
                   f"Dir=SELL | Entry={entry} | SL={sl} | TP={tp} | "
                   f"Stop={stop} | Active_RRR={dynamic_rr}", "DEBUG")
+            # Risk-fix: size against the ACTUAL stop distance.
+            lot_size = calculate_lot_size(abs(entry - sl))
             res = place_trade("SELL", entry, sl, tp, lot_size, session=session)
             if res and res.retcode == mt5.TRADE_RETCODE_DONE:
                 _log(f"LONDON BREAKOUT SELL  Entry={entry}  SL={sl}  TP={tp}  Lot={lot_size}", "TRADE")

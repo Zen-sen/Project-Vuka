@@ -4,7 +4,7 @@ import MetaTrader5 as mt5
 from vuka.core.state import s
 from vuka.execution.orders import log_trade, place_trade, round_to_tick
 from vuka.risk.filters import check_panic_candle, check_pre_trade_spread
-from vuka.risk.portfolio import get_spread
+from vuka.risk.portfolio import calculate_lot_size, get_spread
 from vuka.utils.unified_logger import get_logger
 
 _logger = get_logger("SilverBullet")
@@ -93,6 +93,8 @@ def evaluate_silver_bullet(df, fvgs, sweep, sweep_level, price, atr,
                 sl      = round_to_tick(bb_low - atr * s.ATR_MULTIPLIER, s.SYMBOL)
                 sl_dist = abs(entry - sl)
                 tp      = round_to_tick(entry + sl_dist * s.RISK_REWARD_RATIO, s.SYMBOL)
+                # Risk-fix: size against the ACTUAL stop distance.
+                lot_size = calculate_lot_size(abs(entry - sl))
                 res     = place_trade("BUY", entry, sl, tp, lot_size, session=window)
                 if res and res.retcode == mt5.TRADE_RETCODE_DONE:
                     _log(f"[UNICORN] UNICORN BUY  Entry={entry}  SL={sl}  TP={tp}  "
@@ -150,6 +152,8 @@ def evaluate_silver_bullet(df, fvgs, sweep, sweep_level, price, atr,
                 sl      = round_to_tick(bb_high + atr * s.ATR_MULTIPLIER, s.SYMBOL)
                 sl_dist = abs(sl - entry)
                 tp      = round_to_tick(entry - sl_dist * s.RISK_REWARD_RATIO, s.SYMBOL)
+                # Risk-fix: size against the ACTUAL stop distance.
+                lot_size = calculate_lot_size(abs(sl - entry))
                 res     = place_trade("SELL", entry, sl, tp, lot_size, session=window)
                 if res and res.retcode == mt5.TRADE_RETCODE_DONE:
                     _log(f"[UNICORN] UNICORN SELL  Entry={entry}  SL={sl}  TP={tp}  "
@@ -223,6 +227,8 @@ def evaluate_silver_bullet(df, fvgs, sweep, sweep_level, price, atr,
                 sl = round_to_tick(calculated_sl, s.SYMBOL)
             sl_dist = abs(entry - sl)
             tp      = round_to_tick(entry + sl_dist * s.RISK_REWARD_RATIO, s.SYMBOL)
+            # Risk-fix: size against the ACTUAL stop distance.
+            lot_size = calculate_lot_size(abs(entry - sl))
             res     = place_trade("BUY", entry, sl, tp, lot_size, session=window)
             if res and res.retcode == mt5.TRADE_RETCODE_DONE:
                 _log(f"SB BUY  Entry={entry}  SL={sl}  TP={tp}  Lot={lot_size}", "TRADE")
@@ -287,6 +293,8 @@ def evaluate_silver_bullet(df, fvgs, sweep, sweep_level, price, atr,
                 sl = round_to_tick(calculated_sl, s.SYMBOL)
             sl_dist = abs(sl - entry)
             tp      = round_to_tick(entry - sl_dist * s.RISK_REWARD_RATIO, s.SYMBOL)
+            # Risk-fix: size against the ACTUAL stop distance.
+            lot_size = calculate_lot_size(abs(sl - entry))
             res     = place_trade("SELL", entry, sl, tp, lot_size, session=window)
             if res and res.retcode == mt5.TRADE_RETCODE_DONE:
                 _log(f"SB SELL  Entry={entry}  SL={sl}  TP={tp}  Lot={lot_size}", "TRADE")

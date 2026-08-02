@@ -15,7 +15,7 @@ from vuka.risk.filters import (
     check_pre_trade_spread,
     check_premium_discount_zone,
 )
-from vuka.risk.portfolio import get_overlap_multiplier, get_spread
+from vuka.risk.portfolio import calculate_lot_size, get_overlap_multiplier, get_spread
 from vuka.utils.unified_logger import get_logger
 
 _logger = get_logger("Ingwe")
@@ -246,6 +246,10 @@ def evaluate_ingwe(df, fvgs, sweep, sweep_level, price, atr, lot_size, session,
             entry = round_to_tick(price, s.SYMBOL)
             sl    = round_to_tick(entry - stop, s.SYMBOL)
             tp    = round_to_tick(entry + stop * s.RISK_REWARD_RATIO, s.SYMBOL)
+            # Risk-fix: size against the ACTUAL stop distance (max(ATR*mult, min_sl)).
+            lot_size = calculate_lot_size(abs(entry - sl))
+            if multiplier > 1.0:
+                lot_size = min(round(lot_size * multiplier, 2), s.HARD_LOT_CAP)
             res   = place_trade("BUY", entry, sl, tp, lot_size, session=session)
             if res and res.retcode == mt5.TRADE_RETCODE_DONE:
                 _log(f"BUY MARKET  Entry={entry}  SL={sl}  TP={tp}  Lot={lot_size}", "TRADE")
@@ -314,6 +318,10 @@ def evaluate_ingwe(df, fvgs, sweep, sweep_level, price, atr, lot_size, session,
             entry = round_to_tick(price, s.SYMBOL)
             sl    = round_to_tick(entry + stop, s.SYMBOL)
             tp    = round_to_tick(entry - stop * s.RISK_REWARD_RATIO, s.SYMBOL)
+            # Risk-fix: size against the ACTUAL stop distance (max(ATR*mult, min_sl)).
+            lot_size = calculate_lot_size(abs(entry - sl))
+            if multiplier > 1.0:
+                lot_size = min(round(lot_size * multiplier, 2), s.HARD_LOT_CAP)
             res   = place_trade("SELL", entry, sl, tp, lot_size, session=session)
             if res and res.retcode == mt5.TRADE_RETCODE_DONE:
                 _log(f"SELL MARKET  Entry={entry}  SL={sl}  TP={tp}  Lot={lot_size}", "TRADE")
@@ -330,8 +338,10 @@ def evaluate_ingwe(df, fvgs, sweep, sweep_level, price, atr, lot_size, session,
                 continue
             _log(f"Zone context: {_zone_context(df, price)}")
             bos_aligned = (m15_bos == "BEARISH_BOS")
+            # Zone honesty: continuation paths do NOT run the premium/discount
+            # filter, so they must not claim the +15 zone points.
             score = calculate_confluence_score(
-                trend, True, True, spread_ok, True,
+                trend, True, False, spread_ok, True,
                 level_sweep, bos_aligned, htf_bias_ok,
                 session, "SELL"
             )
@@ -382,6 +392,10 @@ def evaluate_ingwe(df, fvgs, sweep, sweep_level, price, atr, lot_size, session,
             entry = round_to_tick(price, s.SYMBOL)
             sl    = round_to_tick(entry + stop, s.SYMBOL)
             tp    = round_to_tick(entry - stop * s.RISK_REWARD_RATIO, s.SYMBOL)
+            # Risk-fix: size against the ACTUAL stop distance (max(ATR*mult, min_sl)).
+            lot_size = calculate_lot_size(abs(entry - sl))
+            if multiplier > 1.0:
+                lot_size = min(round(lot_size * multiplier, 2), s.HARD_LOT_CAP)
             res   = place_trade("SELL", entry, sl, tp, lot_size, session=session)
             if res and res.retcode == mt5.TRADE_RETCODE_DONE:
                 _log(f"SELL MARKET  Entry={entry}  SL={sl}  TP={tp}  Lot={lot_size}", "TRADE")
@@ -416,8 +430,10 @@ def evaluate_ingwe(df, fvgs, sweep, sweep_level, price, atr, lot_size, session,
                 _log(f"HTF bias ({htf_bias}) not bullish. Flagging for Kronos review.", "WARN")
             _log(f"Zone context: {_zone_context(df, price)}")
             bos_aligned = (m15_bos == "BULLISH_BOS")
+            # Zone honesty: continuation paths do NOT run the premium/discount
+            # filter, so they must not claim the +15 zone points.
             score = calculate_confluence_score(
-                trend, True, True, spread_ok, True,
+                trend, True, False, spread_ok, True,
                 level_sweep, bos_aligned, htf_bias_ok,
                 session, "BUY"
             )
@@ -469,6 +485,10 @@ def evaluate_ingwe(df, fvgs, sweep, sweep_level, price, atr, lot_size, session,
             entry = round_to_tick(price, s.SYMBOL)
             sl    = round_to_tick(entry - stop, s.SYMBOL)
             tp    = round_to_tick(entry + stop * s.RISK_REWARD_RATIO, s.SYMBOL)
+            # Risk-fix: size against the ACTUAL stop distance (max(ATR*mult, min_sl)).
+            lot_size = calculate_lot_size(abs(entry - sl))
+            if multiplier > 1.0:
+                lot_size = min(round(lot_size * multiplier, 2), s.HARD_LOT_CAP)
             res   = place_trade("BUY", entry, sl, tp, lot_size, session=session)
             if res and res.retcode == mt5.TRADE_RETCODE_DONE:
                 _log(f"BUY MARKET  Entry={entry}  SL={sl}  TP={tp}  Lot={lot_size}", "TRADE")

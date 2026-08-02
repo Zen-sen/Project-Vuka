@@ -113,8 +113,8 @@ _veto_cfg = CONFIG.get("veto_gate", {})
 _heartbeat_cfg = CONFIG.get("heartbeat", {"enabled": False, "interval_seconds": 60})
 KRONOS_VETO_GATE = create_veto_gate({
     "enabled": _veto_cfg.get("enabled", True),
-    "mode": _veto_cfg.get("mode", "warn"),
-    "threshold": _veto_cfg.get("threshold", 0.30),
+    "mode": _veto_cfg.get("mode", "enforced"),
+    "threshold": _veto_cfg.get("threshold", 0.40),
     "heartbeat_interval": _heartbeat_cfg.get("interval_seconds", 0) if _heartbeat_cfg.get("enabled", False) else 0,
 })
 
@@ -1038,7 +1038,11 @@ def run_agent():
         log("ATR unavailable.", "WARN")
         return
 
-    lot_size = calculate_lot_size(atr)
+    # Risk-fix: size against the projected stop (ATR x multiplier), matching what
+    # every strategy actually places. Each strategy still resizes to its exact
+    # final stop distance immediately before placing the order -- this value is
+    # now only a pre-trade estimate for logging/display.
+    lot_size = calculate_lot_size(atr * s.ATR_MULTIPLIER)
 
     # ── STRATEGY BRANCH ──────────────────────────────────
     if STRATEGY == "SILVER_BULLET":
