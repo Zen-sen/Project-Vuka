@@ -969,8 +969,8 @@ def run_agent():
         if not active:
             log("No Silver Bullet window active. Ingwe watches...")
             return
-        s, e = get_active_sb_windows()[active]
-        log(f"SB WINDOW: {active} ({s:02d}:00-{e:02d}:00 SAST)")
+        win_start, win_end = get_active_sb_windows()[active]
+        log(f"SB WINDOW: {active} ({win_start:02d}:00-{win_end:02d}:00 SAST)")
     else:
         active = get_current_session()
         if not active:
@@ -983,8 +983,8 @@ def run_agent():
             log(f"Session filtered: {active} ({reason}). Ingwe waits.", "GUARD")
             return
         
-        s, e = get_active_killzones()[active]
-        log(f"KILLZONE: {active} ({s:02d}:00-{e:02d}:00 SAST)")
+        win_start, win_end = get_active_killzones()[active]
+        log(f"KILLZONE: {active} ({win_start:02d}:00-{win_end:02d}:00 SAST)")
 
     if active in sessions_traded_today:
         log(f"Already traded {active} today. Ingwe waits.")
