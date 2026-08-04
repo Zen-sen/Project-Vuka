@@ -1,0 +1,60 @@
+{
+  "system": {
+    "version": "4.6",
+    "hardening": "defense_in_depth"
+  },
+  "veto_gate": {
+    "enabled": true,
+    "mode": "enforced",
+    "safety_mode": "VETO_SAFE",
+    "endpoint": "http://127.0.0.1:8000/v1/predict-ict",
+    "threshold": 0.40,
+    "buy_threshold": 0.35
+  },
+  "notifications": {
+    "desktop": {
+      "enabled": true,
+      "timeout": 5
+    },
+    "telegram": {
+      "enabled": true,
+      "bot_token": "",
+      "chat_id": ""
+    }
+  },
+  "heartbeat": {
+    "enabled": true,
+    "interval_seconds": 60
+  },
+  "market_circuit": {
+    "enabled": true,
+    "adx_trend_min": 25.0,
+    "squeeze_bb_pct": 15.0,
+    "consolidation_range_ratio": 0.35,
+    "bb_period": 20,
+    "bb_std": 2.0
+  },
+  "trading_governor": {
+    "enabled": true,
+    "blocked_sessions": [],
+    "allowed_sessions": ["Asian", "London Close", "London Open", "New York Open"],
+    "allowed_directions": ["SELL", "BUY"],
+    "htf_aligned_exception": true,
+    "daily_loss_limit": 50.0,
+    "weekly_trade_cap": 10,
+    "log_rejections": true,
+    "data_driven": {
+      "enabled": true,
+      "min_samples": 15,
+      "veto_win_rate": 0.40,
+      "approve_win_rate": 0.60,
+      "min_buy_win_rate": 0.45
+    },
+    "market_circuit": {
+      "enabled": true,
+      "block_phases": ["CHOP"],
+      "caution_phases": ["SQUEEZE", "CONSOLIDATION"],
+      "prefer_phases": ["EXPANSION_BULLISH", "EXPANSION_BEARISH"]
+    }
+  }
+}

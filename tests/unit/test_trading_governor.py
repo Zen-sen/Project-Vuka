@@ -137,3 +137,30 @@ class TestSpreadFilter:
         s.MIN_SPREAD_PIPS = 0.0002
         s._arg_symbol = "EURUSD"
         assert mod.check_pre_trade_spread(atr=0.001) is False
+
+
+class TestGovernorSessionWhitelist:
+    """P0-C session whitelist behavior.
+
+    Regression: with config_v4.6.json missing the governor fell back to
+    defaults that excluded "New York Open" (the only killzone the bots
+    never traded). The restored full config must whitelist it.
+    """
+
+    def test_full_config_whitelists_ny_open(self):
+        from skills.trading_governor import TradingGovernor
+        cfg = {
+            "enabled": True,
+            "allowed_sessions": ["Asian", "London Close", "London Open", "New York Open"],
+            "blocked_sessions": [],
+        }
+        gov = TradingGovernor(cfg)
+        allowed, reason = gov.check_session("New York Open", "TEST")
+        assert allowed is True
+
+    def test_default_config_excludes_ny_open(self):
+        from skills.trading_governor import TradingGovernor
+        gov = TradingGovernor({"enabled": True})
+        allowed, reason = gov.check_session("New York Open", "TEST")
+        assert allowed is False
+        assert "WHITELIST" in reason

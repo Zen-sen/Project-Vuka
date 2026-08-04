@@ -945,10 +945,12 @@ def run_agent():
     try:
         df_m1, df_m15, df_h1 = _fetch_mtf_data()
         if df_m1 is not None and df_m15 is not None and df_h1 is not None:
-            MARKET_CIRCUIT._scan_phase = MARKET_CIRCUIT.detect(df_m1, df_m15, df_h1, "NONE")
+            m15_bos = detect_m15_bos(df_m15)
+            MARKET_CIRCUIT._scan_phase = MARKET_CIRCUIT.detect(df_m1, df_m15, df_h1, m15_bos or "NONE")
             MARKET_CIRCUIT._scan_phase_conf = MARKET_CIRCUIT.confidence
             MARKET_CIRCUIT._scan_phase_adj = _get_phase_adjustments(MARKET_CIRCUIT._scan_phase, MARKET_CIRCUIT._scan_phase_conf)
             log(f"MARKET CIRCUIT: {MARKET_CIRCUIT._scan_phase} (confidence={MARKET_CIRCUIT._scan_phase_conf}% | "
+                f"BOS={m15_bos or 'NONE'} | "
                 f"threshold_mod={MARKET_CIRCUIT._scan_phase_adj['threshold_mod']:+d} | "
                 f"favor={MARKET_CIRCUIT._scan_phase_adj['direction_favor']})")
         else:
@@ -977,8 +979,8 @@ def run_agent():
             log("No killzone active. Ingwe watches...")
             return
         
-        # P0-A / P0-C: Session filter gate
-        allowed, reason = TRADING_GOVERNOR.check_session(active, _instance_tag)
+        # P0-A / P0-C: Session filter gate - variant-aware
+        allowed, reason = TRADING_GOVERNOR.check_session(active, _instance_tag, getattr(s, 'ATR_MULTIPLIER', 1.0))
         if not allowed:
             log(f"Session filtered: {active} ({reason}). Ingwe waits.", "GUARD")
             return

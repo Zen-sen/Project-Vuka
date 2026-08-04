@@ -14,6 +14,7 @@ import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from vuka.utils.unified_logger import get_logger
+from vuka.core.state import s
 
 BASE_DIR = Path(__file__).parent.parent
 CONFIG_PATH = BASE_DIR / "config_v4.6.json"
@@ -42,9 +43,13 @@ class TradingGovernor:
 
         self.enabled = cfg.get("enabled", True)
 
-        # P0-A / P0-C: Session filters
+        # P0-A / P0-C: Session filters - wider SL/survival variant includes NY Open
         self.blocked_sessions = cfg.get("blocked_sessions", [])
-        self.allowed_sessions = cfg.get("allowed_sessions", ["Asian", "London Close", "London Open"])
+        # Wider-SL variant: include New York Open for survival mode
+        if s.ATR_MULTIPLIER and s.ATR_MULTIPLIER >= 2.0:
+            self.allowed_sessions = cfg.get("allowed_sessions", ["Asian", "London Close", "London Open", "New York Open"])
+        else:
+            self.allowed_sessions = cfg.get("allowed_sessions", ["Asian", "London Close", "London Open"])
 
         # P0-B: Direction filter
         self.allowed_directions = cfg.get("allowed_directions", ["SELL", "BUY"])
@@ -155,10 +160,11 @@ class TradingGovernor:
 
     # ── Filter: Session ────────────────────────────────────────────
 
-    def check_session(self, session: str, signal_id: str = "") -> tuple:
+    def check_session(self, session: str, signal_id: str = "", atr_multiplier: float = None) -> tuple:
         """
         Returns (allowed: bool, reason: str).
         P0-A blocks specific sessions. P0-C whitelists sessions.
+        Variant-aware: widens session whitelist for survival mode (wider SL variants).
         """
         if not self.enabled:
             return True, "GOVERNOR_DISABLED"
@@ -169,11 +175,39 @@ class TradingGovernor:
                 logger.log("GUARD", f"[P0-A] Blocked session '{session}' for {signal_id}")
             return False, "P0_SESSION_BLOCKED"
 
+        # Variant-aware: Determine mode from explicit parameter or state
+        # Check if we have an explicit atr_multiplier parameter, otherwise get from state
+        mode_atr = atr_multiplier
+        if mode_atr is None:
+            from vuka.core.state import s
+            mode_atr = getattr(s, 'ATR_MULTIPLIER', 1.0)
+        
+        is_survival_mode = mode_atr >= 3.0
+        is_wider_sl_mode = mode_atr >= 2.0
+        
         # Whitelist check (P0-C) — if a whitelist is configured
-        if self.allowed_sessions and session not in self.allowed_sessions:
-            if self.log_rejections:
-                logger.log("GUARD", f"[P0-C] Session '{session}' not whitelisted for {signal_id}")
-            return False, "P0_SESSION_NOT_WHITELISTED"
+        # Survival mode (ATR_MULTIPLIER >= 3.0) includes all sessions for resilience
+        # Wider-SL mode (ATR_MULTIPLIER >= 2.0) includes NY Open for additional opportunities
+        if self.allowed_sessions:
+            if is_survival_mode:
+                # Survival mode: allow all sessions (no restrictions for maximum opportunities)
+                return True, f"SURVIVAL_MODE_ALL_SESSIONS (ATR_MULTIPLIER={mode_atr})"
+            elif is_wider_sl_mode:
+                # Wider-SL mode: include NY Open in addition to standard sessions
+                if session in self.allowed_sessions:
+                    return True, f"WIDER_SL_SESSION_OK (ATR_MULTIPLIER={mode_atr})"
+                # Special handling: NY Open allowed in wider-sl mode even if not in base whitelist
+                if session == "New York Open":
+                    return True, f"WIDER_SL_NY_OPEN_EXPANDED (ATR_MULTIPLIER={mode_atr})"
+                if self.log_rejections:
+                    logger.log("GUARD", f"[P0-C] Session '{session}' not whitelisted for {signal_id} (wider-sl mode ATR_MULTIPLIER={mode_atr})")
+                return False, "P0_SESSION_NOT_WHITELISTED"
+            else:
+                # Standard mode: use strict whitelist
+                if session not in self.allowed_sessions:
+                    if self.log_rejections:
+                        logger.log("GUARD", f"[P0-C] Session '{session}' not whitelisted for {signal_id}")
+                    return False, "P0_SESSION_NOT_WHITELISTED"
 
         return True, "SESSION_OK"
 
