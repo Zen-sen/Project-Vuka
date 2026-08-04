@@ -801,7 +801,7 @@ def reset_daily_sessions():
 #  SECTION 12 -- MAIN SCAN LOOP
 # =======================================================
 
-MARKET_CIRCUIT = get_circuit()
+MARKET_CIRCUIT = None  # set in main() once the real instance tag is known
 
 
 # MTF cache: M15/H1 refresh only on their candle boundaries -- M1 is the only
@@ -1110,6 +1110,12 @@ def main():
 
     # Single logger, created only now that the instance tag is final.
     logger = get_logger(_instance_tag)
+
+    # Market circuit instance -- tagged by symbol_strategy so each bot owns its
+    # own state file (no cross-process writes to one shared market_circuit.json).
+    global MARKET_CIRCUIT
+    MARKET_CIRCUIT = get_circuit()
+    _sync_state()
 
     _errors = []
     if not (0 < RISK_PERCENT <= 5.0):

@@ -5,6 +5,7 @@ Provides a unified circuit state that bots, governor, and Kronos can read.
 """
 
 import json
+import os
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -27,6 +28,19 @@ CONFIG_PATH = BASE_DIR / "config_v4.6.json"
 CIRCUIT_LOG = BASE_DIR / "logs" / "market_circuit.log"
 
 logger = get_logger("MarketCircuit")
+
+
+def _current_instance_tag() -> str:
+    """Resolve the running bot's instance tag from shared state.
+
+    Empty string outside a bot process (tools, backtests, tests), which
+    resolves to the shared default state file.
+    """
+    try:
+        from vuka.core.state import s
+        return getattr(s, "_instance_tag", "") or ""
+    except Exception:
+        return ""
 
 PHASES = [
     "EXPANSION_BULLISH",
@@ -54,6 +68,8 @@ class MarketCircuit:
         breakout_body_pct: float = 0.60,
         bb_period: int = 20,
         bb_std: float = 2.0,
+        instance_tag: str = "",
+        persist: bool = True,
     ):
         self.adx_trend_min = adx_trend_min
         self.squeeze_bb_pct = squeeze_bb_pct
@@ -72,6 +88,17 @@ class MarketCircuit:
         self._adx = 0.0
         self._bos = "NONE"
         self._trend = "NONE"
+
+        # Per-instance persistence. Each bot process (tagged by symbol_strategy)
+        # owns its own state file so 4 processes never race on one JSON.
+        # Tools/backtests/tests can opt out entirely with persist=False.
+        tag = instance_tag or _current_instance_tag()
+        self._state_path = (
+            STATE_PATH
+            if not tag
+            else STATE_PATH.with_name(f"market_circuit_{tag}.json")
+        )
+        self._persist = persist
         self._load()
 
     # ── Public API ────────────────────────────────────────────
@@ -326,19 +353,25 @@ class MarketCircuit:
     # ── Persistence ───────────────────────────────────────────
 
     def _load(self):
+        if not self._persist:
+            return
         try:
-            if STATE_PATH.exists():
-                with open(STATE_PATH) as f:
+            if self._state_path.exists():
+                with open(self._state_path) as f:
                     data = json.load(f)
                 self._phase = data.get("phase", "UNKNOWN")
                 self._confidence = data.get("confidence", 0)
-                self._transitions = data.get("transitions", [])
+                trans = data.get("transitions", [])
+                if isinstance(trans, list):
+                    self._transitions = [t for t in trans if isinstance(t, dict)]
                 self._last_update = data.get("last_update")
         except Exception:
             pass
 
     def _save(self):
-        STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        if not self._persist:
+            return
+        self._state_path.parent.mkdir(parents=True, exist_ok=True)
         payload = {
             "phase": self._phase,
             "confidence": self._confidence,
@@ -350,27 +383,53 @@ class MarketCircuit:
             "transitions": self._transitions[-20:] if self._transitions else [],
             "last_update": self._last_update,
         }
-        with open(STATE_PATH, "w") as f:
-            json.dump(payload, f, indent=2)
+        # Unique temp name per process so concurrent writers never collide;
+        # os.replace() is atomic so readers never see a torn file.
+        tmp = self._state_path.with_name(
+            f"{self._state_path.name}.{os.getpid()}.tmp"
+        )
+        try:
+            with open(tmp, "w") as f:
+                json.dump(payload, f, indent=2)
+            os.replace(tmp, self._state_path)
+        except OSError:
+            # Best effort: a stale lock/tmp from a crashed process must not
+            # break the scan loop. Clean up and retry once.
+            try:
+                tmp.unlink(missing_ok=True)
+                with open(tmp, "w") as f:
+                    json.dump(payload, f, indent=2)
+                os.replace(tmp, self._state_path)
+            except OSError:
+                pass
 
 
 # ── Global Singleton ────────────────────────────────────────
 
-_CIRCUIT: Optional[MarketCircuit] = None
+_CIRCUITS: Dict[str, MarketCircuit] = {}
 
 
 def get_circuit() -> MarketCircuit:
-    global _CIRCUIT
-    if _CIRCUIT is None:
+    """Return the circuit for the current process.
+
+    Keyed by the bot instance tag from shared state, so each bot process
+    owns an independent circuit + state file (no cross-process file races).
+    Tools/backtests/tests (no instance tag) share the default circuit.
+    """
+    tag = _current_instance_tag() or "_default"
+    circuit = _CIRCUITS.get(tag)
+    if circuit is None:
         cfg = _load_mc_config()
-        _CIRCUIT = MarketCircuit(
+        circuit = MarketCircuit(
             adx_trend_min=cfg.get("adx_trend_min", 25.0),
             squeeze_bb_pct=cfg.get("squeeze_bb_pct", 15.0),
             consolidation_range_ratio=cfg.get("consolidation_range_ratio", 0.35),
             bb_period=cfg.get("bb_period", 20),
             bb_std=cfg.get("bb_std", 2.0),
+            instance_tag="" if tag == "_default" else tag,
         )
-    return _CIRCUIT
+        _CIRCUITS[tag] = circuit
+    return circuit
 
 
 def _load_mc_config() -> dict:

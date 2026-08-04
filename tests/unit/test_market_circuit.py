@@ -43,25 +43,25 @@ def _h1_chop(n: int = 200) -> pd.DataFrame:
 
 class TestPhaseFlipsOutOfChop:
     def test_bullish_trend_with_bos_is_expansion_not_chop(self):
-        circuit = MarketCircuit()
+        circuit = MarketCircuit(persist=False)
         df = _h1_uptrend()
         phase = circuit.detect(df, df, df, bos="BULLISH_BOS")
         assert phase == "EXPANSION_BULLISH"
 
     def test_bearish_trend_with_bos_is_expansion_not_chop(self):
-        circuit = MarketCircuit()
+        circuit = MarketCircuit(persist=False)
         df = _h1_downtrend()
         phase = circuit.detect(df, df, df, bos="BEARISH_BOS")
         assert phase == "EXPANSION_BEARISH"
 
     def test_strong_trend_without_bos_is_not_chop(self):
-        circuit = MarketCircuit()
+        circuit = MarketCircuit(persist=False)
         df = _h1_uptrend()
         phase = circuit.detect(df, df, df, bos="NONE")
         assert phase in ("EXPANSION_BULLISH", "BREAKOUT_BULLISH")
 
     def test_chop_stays_chop(self):
-        circuit = MarketCircuit()
+        circuit = MarketCircuit(persist=False)
         df = _h1_chop()
         phase = circuit.detect(df, df, df, bos="NONE")
         assert phase == "CHOP"
