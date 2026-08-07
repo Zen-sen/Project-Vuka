@@ -436,14 +436,14 @@ def is_market_open() -> bool:
 # =======================================================
 
 def mt5_fetch_with_retry(fetch_fn, *args, **kwargs):
-    for attempt in range(1, MT5_RETRY_ATTEMPTS + 1):
+    for attempt in range(1, s.MT5_RETRY_ATTEMPTS + 1):
         result = fetch_fn(*args, **kwargs)
         if result is not None:
             return result
         error = mt5.last_error()
-        log(f"MT5 fetch failed (attempt {attempt}/{MT5_RETRY_ATTEMPTS}). "
-            f"Error: {error}. Waiting {MT5_RETRY_DELAY_SEC}s...", "WARN")
-        time.sleep(MT5_RETRY_DELAY_SEC)
+        log(f"MT5 fetch failed (attempt {attempt}/{s.MT5_RETRY_ATTEMPTS}). "
+            f"Error: {error}. Waiting {s.MT5_RETRY_DELAY_SEC}s...", "WARN")
+        time.sleep(s.MT5_RETRY_DELAY_SEC)
     log("All MT5 fetch attempts exhausted.", "ERROR")
     return None
 
