@@ -28,7 +28,7 @@
   },
   "market_circuit": {
     "enabled": true,
-    "adx_trend_min": 25.0,
+    "adx_trend_min": 18.0,
     "squeeze_bb_pct": 15.0,
     "consolidation_range_ratio": 0.35,
     "bb_period": 20,
@@ -52,8 +52,8 @@
     },
     "market_circuit": {
       "enabled": true,
-      "block_phases": ["CHOP"],
-      "caution_phases": ["SQUEEZE", "CONSOLIDATION"],
+      "block_phases": [],
+      "caution_phases": ["SQUEEZE", "CONSOLIDATION", "CHOP"],
       "prefer_phases": ["EXPANSION_BULLISH", "EXPANSION_BEARISH"]
     }
   }

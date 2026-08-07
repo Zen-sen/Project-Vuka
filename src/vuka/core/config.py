@@ -209,7 +209,7 @@ def load_config(symbol: str, strategy: str, instance_tag: str, arg_symbol: str) 
             "MIN_SL_ATR_MULTIPLIER": 0.8,
             "LIMIT_ORDER_EXPIRY_CANDLES": 4,
             "ADX_PERIOD": 14,
-            "ADX_MIN_THRESHOLD": 25,
+            "ADX_MIN_THRESHOLD": 20,
             "MIN_SPREAD_PIPS": 0.0002,
             "MAX_DAILY_LOSS": 50.0,
             "MAX_DRAWDOWN_PCT": 10.0,

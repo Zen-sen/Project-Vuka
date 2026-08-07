@@ -42,12 +42,18 @@ def detect_liquidity_sweep(df: pd.DataFrame, lookback: int = 20):
         return None, None
 
     swing_highs, swing_lows = _find_swing_points(df, lookback)
-    last = df.iloc[-1]
 
-    if swing_highs and last["high"] > swing_highs[-1][1]:
-        return "SWEEP_HIGH", swing_highs[-1][1]
-    if swing_lows and last["low"] < swing_lows[-1][1]:
-        return "SWEEP_LOW", swing_lows[-1][1]
+    # v6.3: Sweep may be confirmed on the just-closed candle OR the one prior.
+    # A sweep and its follow-through displacement usually land on successive
+    # candles -- the sweep breaks the pivot (candle N) and the FVG forms on
+    # candle N+1 -- so requiring a break on the very latest bar only would
+    # miss setups where the pivot break closed 1 bar ago.
+    for offset in (-1, -2):
+        bar = df.iloc[offset]
+        if swing_highs and bar["high"] > swing_highs[-1][1]:
+            return "SWEEP_HIGH", swing_highs[-1][1]
+        if swing_lows and bar["low"] < swing_lows[-1][1]:
+            return "SWEEP_LOW", swing_lows[-1][1]
     return None, None
 
 

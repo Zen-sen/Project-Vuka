@@ -58,9 +58,19 @@ def evaluate_ingwe(df, fvgs, sweep, sweep_level, price, atr, lot_size, session,
     _log(f"ADX: {adx:.1f}  |  +DI: {plus_di:.1f}  |  -DI: {minus_di:.1f}")
 
     # ── ADX GATE ──────────────────────────────────────────
-    if adx < s.ADX_MIN_THRESHOLD:
-        _log(f"ADX {adx} below minimum ({s.ADX_MIN_THRESHOLD}) -- Extreme chop. Standing down.", "GUARD")
+    # Trust the market circuit's H1-phase verdict: if the circuit already
+    # qualified this market as EXPANSION/BREAKOUT, the strategy-timeframe
+    # (M15) ADX read is redundant and must not block an aligned setup.
+    # Hard-block remains for markets the circuit itself calls non-trending.
+    circuit_trending = market_phase in (
+        "EXPANSION_BULLISH", "EXPANSION_BEARISH",
+        "BREAKOUT_BULLISH", "BREAKOUT_BEARISH",
+    )
+    if adx < s.ADX_MIN_THRESHOLD and not circuit_trending:
+        _log(f"ADX {adx} below minimum ({s.ADX_MIN_THRESHOLD}) and circuit not trending -- standing down.", "GUARD")
         return
+    if adx < s.ADX_MIN_THRESHOLD and circuit_trending:
+        _log(f"ADX {adx} below M15 min ({s.ADX_MIN_THRESHOLD}) but circuit={market_phase} -- proceeding.", "GUARD")
 
     # ── MARKET CIRCUIT: PHASE DIRECTION FILTER ──────────────
     _phase_direction = phase_adj["direction_favor"]
@@ -181,13 +191,13 @@ def evaluate_ingwe(df, fvgs, sweep, sweep_level, price, atr, lot_size, session,
             if not check_premium_discount_zone(df, price, "BUY"):
                 _log("Not in discount zone. Skip.", "GUARD")
                 continue
-            # v5.0 FIX: Require strong HTF bias for BUY signals
+            # v6.3: HTF bias conflict no longer hard-blocks -- the setup is
+            # flagged and Kronos decides (mirrors Path C). htf_bias_ok stays
+            # False in the context so the veto gate sees the conflict.
             if not htf_bias_ok:
-                _log("HTF bias required for BUY. No D1/H4 confirmation. Skip.", "GUARD")
-                continue
-            if htf_bias != "BULLISH":
-                _log(f"HTF bias ({htf_bias}) not bullish. Skip BUY.", "GUARD")
-                continue
+                _log(f"HTF bias ({htf_bias}) not confirmed for BUY. Flagging for Kronos review.", "WARN")
+            elif htf_bias != "BULLISH":
+                _log(f"HTF bias ({htf_bias}) not bullish. Flagging for Kronos review.", "WARN")
             bos_aligned = (m15_bos == "BULLISH_BOS")
             score = calculate_confluence_score(
                 trend, True, True, spread_ok, True,
